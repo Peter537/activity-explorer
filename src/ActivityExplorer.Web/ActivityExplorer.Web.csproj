@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../ActivityExplorer.Core/ActivityExplorer.Core.csproj" />
+    <ProjectReference Include="../ActivityExplorer.Infrastructure/ActivityExplorer.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

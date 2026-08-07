@@ -1,0 +1,109 @@
+@page "/routes"
+@implements IDisposable
+@inject IRouteService RouteService
+@inject ProfileState ProfileState
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>Routes - Activity Explorer</PageTitle>
+<PageHeader Title="Routes" Summary="Save activity tracks, draw a path, import GPX, and export standard GPX files." />
+@if (_message is not null) { <div class="notice" role="alert">@_message</div> }
+@if (ProfileState.Profiles.Count > 0)
+{
+    <section class="dashboard-grid">
+    <section class="panel form-panel shared-path-fields">
+        <h2>Route details</h2>
+        <div class="form-grid">
+            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label><span>Sport</span><select @bind="_sport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label class="wide"><span>Name</span><input @bind="_name" /></label>
+        </div>
+    </section>
+        <article class="panel form-panel">
+            <div class="panel-heading"><h2>Draw a route</h2><span>@_drawn.Count points</span></div>
+            <MapCanvas @ref="_drawMap" Editable="true" PointsChanged="DrawingChanged" CssClass="detail-map" Label="Route drawing map" ShowDisclosure="true" />
+            <div class="button-row"><button class="button" @onclick="Undo">Undo point</button><button class="button" @onclick="Clear">Clear</button><button class="button primary" disabled="@(!CanSave || _busyAction)" @onclick="CreateDrawn">@(_busyAction ? "Saving route..." : "Save route")</button></div>
+        </article>
+        <article class="panel form-panel">
+            <h2>Import a GPX path</h2>
+            <p class="muted">Track and route points are read with a hardened XML parser. No account or routing service is contacted.</p>
+            <label class="file-drop" for="route-import-file"><span>Choose a GPX route file</span><input id="route-import-file" type="file" accept=".gpx,application/gpx+xml" /></label>
+            <button class="button" disabled="@(!CanName || _busyAction)" @onclick="ImportGpx">@(_busyAction ? "Importing GPX..." : "Import GPX")</button>
+        </article>
+    </section>
+}
+else
+{
+    <section class="empty-state"><h2>Create a profile first</h2><p>Routes belong to a local profile. Create one before drawing or importing a path.</p><a class="button primary" href="/profiles">Create profile</a></section>
+}
+@if (_routes is null) { <div class="loading" role="status">Loading routes...</div> }
+else if (_routes.Count == 0) { <section class="empty-state"><h2>No routes saved</h2><p>Draw a route above, import GPX, or save a GPS activity as a route.</p><a class="button" href="/activities">Browse activities</a></section> }
+else
+{
+    <section class="card-grid">
+    @foreach (var route in _routes)
+    {
+        <a class="entity-card" href="@($"/routes/{route.Id}")"><span class="eyebrow">@route.Sport - @route.OwnerName</span><h2>@route.Name</h2><div class="entity-metrics"><span><strong>@Format.Distance(route.DistanceMeters)</strong><small>distance</small></span><span><strong>@($"{route.ElevationMeters:N0} m")</strong><small>elevation</small></span></div></a>
+    }
+    </section>
+}
+@code {
+    private IReadOnlyList<RouteSummary>? _routes;
+    private IReadOnlyList<TrackPoint> _drawn = [];
+    private MapCanvas? _drawMap;
+    private Guid _ownerId;
+    private string _sport = nameof(SportKind.Cycling);
+    private string _name = "New route";
+    private string? _message;
+    private bool _busyAction;
+    private bool CanName => _ownerId != Guid.Empty && !string.IsNullOrWhiteSpace(_name);
+    private bool CanSave => CanName && _drawn.Count >= 2;
+
+    protected override async Task OnInitializedAsync()
+    {
+
+
+
+        ProfileState.Changed += Changed;
+        await ProfileState.InitializeAsync();
+        SetOwner();
+        await Load();
+    }
+
+    private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
+    private async Task Load() => _routes = await RouteService.ListAsync(ProfileState.SelectedOwnerId);
+    private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
+    private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }
+    private async Task Clear() { if (_drawMap is not null) await _drawMap.ClearAsync(); }
+
+    private async Task CreateDrawn()
+    {
+        _busyAction = true;
+        try
+        {
+            var sport = Enum.Parse<SportKind>(_sport);
+            var id = await RouteService.CreateAsync(new CreateRoutePathRequest(_ownerId, _name, "Drawn locally", sport, _drawn));
+            Navigation.NavigateTo($"/routes/{id}");
+        }
+
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _busyAction = false; }
+    }
+
+    private async Task ImportGpx()
+    {
+        _busyAction = true;
+        try
+        {
+            var id = await JS.InvokeAsync<Guid>("activityExplorerImports.uploadRoute", "route-import-file", _ownerId, _sport, _name);
+            Navigation.NavigateTo($"/routes/{id}");
+        }
+        catch (JSException exception) { _message = exception.Message; }
+        finally { _busyAction = false; }
+    }
+
+    private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
+
+    public void Dispose() => ProfileState.Changed -= Changed;
+}

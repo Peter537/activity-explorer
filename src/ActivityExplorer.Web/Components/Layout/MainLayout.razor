@@ -1,0 +1,93 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject ProfileState ProfileState
+
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<div class="app-shell" @onkeydown="HandleKeyDown">
+    @if (_navigationOpen)
+    {
+        <button class="nav-backdrop" type="button" aria-label="Close navigation" @onclick="CloseNavigationAsync"></button>
+    }
+    <aside id="primary-navigation" class="@($"sidebar {(_navigationOpen ? "open" : string.Empty)}")"
+           @onclick="CloseNavigationWithoutFocus">
+        <button class="nav-close" type="button" @ref="_closeButton" aria-label="Close navigation" @onclick="CloseNavigationAsync">&times;</button>
+        <a class="brand" href="/" aria-label="Activity Explorer dashboard">
+            <span class="brand-mark">AE</span>
+            <span><strong>Activity Explorer</strong><small>Local activity library</small></span>
+        </a>
+        <NavMenu />
+        <div class="privacy-chip"><span aria-hidden="true"></span> v0.1.0</div>
+    </aside>
+    <div class="main-column">
+        <header class="topbar">
+            <button class="mobile-menu" type="button" @ref="_menuButton" @onclick="ToggleNavigationAsync"
+                    aria-label="Toggle navigation" aria-controls="primary-navigation" aria-expanded="@(_navigationOpen ? "true" : "false")">&#9776;</button>
+            <label class="profile-picker">
+                <span>Viewing</span>
+                <select value="@SelectedValue" @onchange="SelectProfile" aria-label="Profile selector">
+                    <option value="">All profiles</option>
+                    @foreach (var profile in ProfileState.Profiles)
+                    {
+                        <option value="@profile.Id">@profile.DisplayName</option>
+                    }
+                </select>
+            </label>
+            <a class="import-cta" href="/imports">Import files</a>
+        </header>
+        <main id="main-content" class="content" tabindex="-1">@Body</main>
+    </div>
+</div>
+
+@code {
+    private string SelectedValue => ProfileState.SelectedOwnerId?.ToString() ?? "";
+    private bool _navigationOpen;
+    private ElementReference _closeButton;
+    private bool _focusCloseOnRender;
+    private ElementReference _menuButton;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ProfileState.Changed += OnChanged;
+        await ProfileState.InitializeAsync();
+    }
+
+    private void SelectProfile(ChangeEventArgs args)
+    {
+        ProfileState.Select(Guid.TryParse(args.Value?.ToString(), out var id) ? id : null);
+    }
+
+    private async Task ToggleNavigationAsync()
+    {
+        _navigationOpen = !_navigationOpen;
+        if (_navigationOpen)
+        {
+            _focusCloseOnRender = true;
+        }
+        else
+        {
+            await _menuButton.FocusAsync();
+        }
+    }
+
+    private async Task CloseNavigationAsync()
+    {
+        if (!_navigationOpen) return;
+        _navigationOpen = false;
+        await _menuButton.FocusAsync();
+    }
+
+    private void CloseNavigationWithoutFocus() => _navigationOpen = false;
+    private Task HandleKeyDown(KeyboardEventArgs args) =>
+        args.Key == "Escape" ? CloseNavigationAsync() : Task.CompletedTask;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusCloseOnRender) return;
+        _focusCloseOnRender = false;
+        await _closeButton.FocusAsync();
+    }
+
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => ProfileState.Changed -= OnChanged;
+}

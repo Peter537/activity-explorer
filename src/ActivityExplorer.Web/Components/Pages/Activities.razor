@@ -1,0 +1,316 @@
+@page "/activities"
+@implements IDisposable
+@inject IActivityQueryService ActivitiesService
+@inject ProfileState ProfileState
+@using ActivityExplorer.Web.Components.Shared
+@inject NavigationManager Navigation
+
+<PageTitle>Activities - Activity Explorer</PageTitle>
+<PageHeader Title="Activities" Summary="Search, filter, and inspect every imported activity." />
+<form class="filter-bar" aria-label="Activity filters" @onsubmit="Apply" @onsubmit:preventDefault>
+    <label><span>Search</span><input @bind="_search" @bind:after="FiltersChanged" placeholder="Title or notes" /></label>
+    <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option><option value="Cycling">Cycling</option><option value="Running">Running</option><option value="Walking">Walking</option></select></label>
+    <details class="more-filters" open="@HasSecondaryFilters">
+        <summary>More filters <span class="filter-count">@SecondaryFilterCount active</span></summary>
+        <div class="filter-fields">
+            <label><span>From</span><input type="date" @bind="_from" @bind:after="FiltersChanged" /></label>
+            <label><span>To</span><input type="date" @bind="_to" @bind:after="FiltersChanged" /></label>
+            <label><span>Power</span><select @bind="_power" @bind:after="FiltersChanged"><option value="">Any</option><option value="yes">Has power</option><option value="no">No power</option></select></label>
+            <label><span>Device</span><input @bind="_device" @bind:after="FiltersChanged" placeholder="Device name" /></label>
+        </div>
+    </details>
+    <label><span>Sort</span><select @bind="_sort" @bind:after="FiltersChanged"><option value="start-desc">Newest</option><option value="start-asc">Oldest</option><option value="distance-desc">Longest</option><option value="duration-desc">Most time</option><option value="elevation-desc">Most elevation</option></select></label>
+    <button class="button primary" type="submit" disabled="@_busy">Apply filters</button>
+    <button class="button" type="button" disabled="@_busy" @onclick="Reset">Reset</button>
+</form>
+
+<StatusMessage Message="@_statusMessage" />
+<StatusMessage Message="@_warningMessage" IsWarning="true" />
+<StatusMessage Message="@_errorMessage" IsError="true" />
+
+@if (_result is null) { <div class="loading" role="status">Loading activities...</div> }
+else if (_result.Total == 0)
+{
+    @if (HasFilters)
+    {
+        <section class="empty-state"><h2>No matching activities</h2><p>Adjust or reset the filters to search the full library.</p><button class="button" type="button" @onclick="Reset">Reset filters</button></section>
+    }
+    else
+    {
+        <section class="empty-state"><h2>No activities yet</h2><p>Import activity files to start building your local library.</p><a class="button primary" href="/imports">Import files</a></section>
+    }
+}
+else
+{
+    <div class="bulk-actions" aria-label="Activity deletion actions">
+        <div>
+            <strong>@_result.Total.ToString("N0") activities</strong>
+            <span aria-live="polite">@SelectedSummary</span>
+        </div>
+        <div class="bulk-action-buttons">
+            <button class="button" type="button" disabled="@(_busy || _deleteConfirming)" @onclick="ToggleCurrentPageSelection">@(AllCurrentPageSelected ? "Clear this page" : "Select this page")</button>
+            <button class="button danger" type="button" disabled="@(_busy || _deleteConfirming || _selectedIds.Count == 0)" @onclick="BeginSelectedDelete">Delete selected</button>
+            <button class="button danger" type="button" disabled="@(_busy || _deleteConfirming)" @onclick="BeginAllMatchingDelete">Delete all @_result.Total.ToString("N0") matching</button>
+        </div>
+    </div>
+    @if (_deleteConfirming)
+    {
+        <ActivityDeleteConfirmation Count="@_pendingDeleteIds.Count" ActivityName="@_pendingActivityName"
+                                    ScopeDescription="@_pendingScopeDescription" Busy="@_busy"
+                                    OnConfirm="ConfirmDelete" OnCancel="CancelDelete" />
+    }
+    <section class="panel flush">
+        <div class="activity-list">
+        @foreach (var activity in _result.Items)
+        {
+            <div class="activity-selection-row">
+                <label class="activity-selector">
+                    <input type="checkbox" checked="@_selectedIds.Contains(activity.Id)" disabled="@(_busy || _deleteConfirming)"
+                           @onchange="eventArgs => SetSelected(activity.Id, eventArgs.Value is true)" />
+                    <span class="visually-hidden">Select @activity.Title recorded @activity.StartTime.ToLocalTime().ToString("g")</span>
+                </label>
+                <a class="activity-row" href="@($"/activities/{activity.Id}")">
+                    <span class="sport-icon @activity.Sport.ToString().ToLowerInvariant()" aria-hidden="true">@activity.Sport.ToString()[0]</span>
+                    <span class="activity-title"><strong>@activity.Title</strong><small>@activity.OwnerName - @activity.StartTime.ToLocalTime().ToString("g") @if (activity.DeviceName is not null) { <text>- @activity.DeviceName</text> }</small></span>
+                    <span><strong>@Format.Distance(activity.DistanceMeters)</strong><small>distance</small></span>
+                    <span><strong>@Format.Duration(activity.MovingSeconds)</strong><small>moving</small></span>
+                    <span><strong>@($"{activity.ElevationMeters:N0} m")</strong><small>elevation</small></span>
+                    <span class="row-arrow">&rarr;</span>
+                </a>
+            </div>
+        }
+        </div>
+    </section>
+    <nav class="pager" aria-label="Activity pages">
+        <button type="button" disabled="@(_result.Page <= 1 || _busy)" @onclick="Previous">Previous</button>
+        <span>Page @_result.Page of @_result.TotalPages</span>
+        <button type="button" disabled="@(_result.Page >= _result.TotalPages || _busy)" @onclick="Next">Next</button>
+    </nav>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery(Name = "q")] public string? QuerySearch { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "from")] public string? QueryFrom { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? QueryTo { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "power")] public string? QueryPower { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "device")] public string? QueryDevice { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "sort")] public string? QuerySort { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "page")] public int? QueryPage { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "deleted")] public int? QueryDeleted { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "cleanupPending")] public bool? QueryCleanupPending { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "statisticsPending")] public bool? QueryStatisticsPending { get; set; }
+
+    private static readonly HashSet<string> SortValues = ["start-desc", "start-asc", "distance-desc", "duration-desc", "elevation-desc"];
+    private PagedResult<ActivitySummary>? _result;
+    private string _search = "";
+    private string _sport = "";
+    private DateTime? _from;
+    private DateTime? _to;
+    private string _power = "";
+    private string _device = "";
+    private string _sort = "start-desc";
+    private int _page = 1;
+    private readonly HashSet<Guid> _selectedIds = [];
+    private IReadOnlyList<Guid> _pendingDeleteIds = [];
+    private string? _pendingActivityName;
+    private string _pendingScopeDescription = "";
+    private bool _deleteConfirming;
+    private bool _busy;
+    private string? _statusMessage;
+    private string? _warningMessage;
+    private string? _errorMessage;
+
+    protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
+    protected override async Task OnParametersSetAsync()
+    {
+        ClearSelectionAndConfirmation();
+        _search = QuerySearch?.Trim() ?? "";
+        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) ? sport.ToString() : "";
+        _from = ParseDate(QueryFrom);
+        _to = ParseDate(QueryTo);
+        _power = QueryPower is "yes" or "no" ? QueryPower : "";
+        _device = QueryDevice?.Trim() ?? "";
+        _sort = QuerySort is not null && SortValues.Contains(QuerySort) ? QuerySort : "start-desc";
+        _page = Math.Max(1, QueryPage ?? 1);
+        _statusMessage = QueryDeleted is > 0
+            ? $"Permanently deleted {QueryDeleted.Value:N0} {(QueryDeleted.Value == 1 ? "activity" : "activities")}."
+            : null;
+        _warningMessage = BuildPendingWarning(QueryCleanupPending == true, QueryStatisticsPending == true);
+        _errorMessage = null;
+        await LoadAsync();
+    }
+    private SportKind? Sport => Enum.TryParse<SportKind>(_sport, out var value) ? value : null;
+    private DateOnly? From => _from.HasValue ? DateOnly.FromDateTime(_from.Value) : null;
+    private DateOnly? To => _to.HasValue ? DateOnly.FromDateTime(_to.Value) : null;
+    private bool HasSecondaryFilters => SecondaryFilterCount > 0;
+    private int SecondaryFilterCount => new[] { _from.HasValue, _to.HasValue, !string.IsNullOrWhiteSpace(_power), !string.IsNullOrWhiteSpace(_device) }.Count(value => value);
+    private bool? HasPower => _power switch { "yes" => true, "no" => false, _ => null };
+    private bool HasFilters => !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_sport) || HasSecondaryFilters;
+    private ActivityFilter CurrentFilter(int page = 1) =>
+        new(ProfileState.SelectedOwnerId, Sport, From, To, _search, HasPower, _device, Page: page, Sort: _sort);
+    private async Task LoadAsync()
+    {
+        _result = await ActivitiesService.SearchAsync(CurrentFilter(_page));
+        if (_result.TotalPages > 0 && _page > _result.TotalPages)
+        {
+            _page = _result.TotalPages;
+            Navigation.NavigateTo(BuildUri(), replace: true);
+        }
+    }
+
+    private Task Apply() { ClearSelectionAndConfirmation(); _page = 1; return NavigateOrLoadAsync(); }
+    private Task Reset() { ClearSelectionAndConfirmation(); _search = _sport = _power = _device = ""; _from = _to = null; _sort = "start-desc"; _page = 1; return NavigateOrLoadAsync(); }
+    private Task Previous() { ClearSelectionAndConfirmation(); _page = Math.Max(1, _page - 1); return NavigateOrLoadAsync(); }
+    private Task Next() { ClearSelectionAndConfirmation(); _page++; return NavigateOrLoadAsync(); }
+
+    private async Task NavigateOrLoadAsync()
+    {
+        var target = BuildUri();
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await LoadAsync();
+        else Navigation.NavigateTo(target);
+    }
+
+    private string BuildUri()
+    {
+        var values = new List<string>();
+        Add("q", _search);
+        Add("sport", string.IsNullOrWhiteSpace(_sport) ? null : _sport.ToLowerInvariant());
+        Add("from", _from?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        Add("to", _to?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        Add("power", _power);
+        Add("device", _device);
+        Add("sort", _sort == "start-desc" ? null : _sort);
+        Add("page", _page <= 1 ? null : _page.ToString(CultureInfo.InvariantCulture));
+        return values.Count == 0 ? "/activities" : $"/activities?{string.Join('&', values)}";
+
+        void Add(string name, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) values.Add($"{name}={Uri.EscapeDataString(value.Trim())}");
+        }
+    }
+
+    private static DateTime? ParseDate(string? value) => DateTime.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date : null;
+    private string SelectedSummary => _selectedIds.Count == 0 ? "No activities selected" : $"{_selectedIds.Count:N0} selected";
+    private bool AllCurrentPageSelected => _result?.Items.Count > 0 && _result.Items.All(activity => _selectedIds.Contains(activity.Id));
+
+    private void FiltersChanged() => ClearSelectionAndConfirmation();
+
+    private void SetSelected(Guid activityId, bool selected)
+    {
+        if (selected) _selectedIds.Add(activityId);
+        else _selectedIds.Remove(activityId);
+        _errorMessage = null;
+    }
+
+    private void ToggleCurrentPageSelection()
+    {
+        if (_result is null) return;
+        if (AllCurrentPageSelected)
+            foreach (var activity in _result.Items) _selectedIds.Remove(activity.Id);
+        else
+            foreach (var activity in _result.Items) _selectedIds.Add(activity.Id);
+    }
+
+    private void BeginSelectedDelete()
+    {
+        if (_busy || _selectedIds.Count == 0) return;
+        _pendingDeleteIds = _selectedIds.ToArray();
+        _pendingActivityName = _pendingDeleteIds.Count == 1
+            ? _result?.Items.FirstOrDefault(activity => activity.Id == _pendingDeleteIds[0])?.Title
+            : null;
+        _pendingScopeDescription = _pendingDeleteIds.Count == 1
+            ? "You are about to permanently delete the selected activity."
+            : $"You are about to permanently delete {_pendingDeleteIds.Count:N0} selected activities from this page.";
+        _deleteConfirming = true;
+        _errorMessage = null;
+    }
+
+    private async Task BeginAllMatchingDelete()
+    {
+        if (_busy || _result is null) return;
+        _busy = true;
+        _errorMessage = null;
+        try
+        {
+            _pendingDeleteIds = await ActivitiesService.GetMatchingActivityIdsAsync(CurrentFilter());
+            if (_pendingDeleteIds.Count == 0)
+            {
+                _errorMessage = "No activities match the current filters anymore. Refresh the list and try again.";
+                return;
+            }
+            _pendingActivityName = null;
+            _pendingScopeDescription = $"This exact snapshot contains {_pendingDeleteIds.Count:N0} activities matching the current filters. Activities imported after this confirmation appeared will not be included.";
+            _deleteConfirming = true;
+        }
+        catch (Exception exception)
+        {
+            _errorMessage = $"The matching activities could not be prepared for deletion. {exception.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ConfirmDelete()
+    {
+        if (_busy || _pendingDeleteIds.Count == 0) return;
+        _busy = true;
+        _errorMessage = null;
+        try
+        {
+            var result = await ActivitiesService.DeleteAsync(_pendingDeleteIds);
+            _statusMessage = $"Permanently deleted {result.DeletedCount:N0} {(result.DeletedCount == 1 ? "activity" : "activities")}.";
+            _warningMessage = BuildPendingWarning(result.FileCleanupPending, result.StatisticsRefreshPending);
+            ClearSelectionAndConfirmation();
+            await LoadAsync();
+            if (_result is not null && _result.TotalPages > 0 && _page > _result.TotalPages)
+            {
+                _page = _result.TotalPages;
+                await LoadAsync();
+            }
+        }
+        catch (Exception exception)
+        {
+            _errorMessage = $"Nothing was deleted. {exception.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void CancelDelete()
+    {
+        if (_busy) return;
+        _pendingDeleteIds = [];
+        _pendingActivityName = null;
+        _pendingScopeDescription = "";
+        _deleteConfirming = false;
+        _errorMessage = null;
+    }
+
+    private void ClearSelectionAndConfirmation()
+    {
+        _selectedIds.Clear();
+        _pendingDeleteIds = [];
+        _pendingActivityName = null;
+        _pendingScopeDescription = "";
+        _deleteConfirming = false;
+    }
+
+    private static string? BuildPendingWarning(bool cleanupPending, bool statisticsPending)
+    {
+        if (cleanupPending && statisticsPending)
+            return "The activities were deleted, but original-file cleanup and record refresh are pending. Activity Explorer will retry recovery on startup.";
+        if (cleanupPending)
+            return "The activities were deleted, but original-file cleanup is pending. Activity Explorer will retry recovery on startup.";
+        if (statisticsPending)
+            return "The activities were deleted, but records could not be refreshed. Activity Explorer will retry the missing snapshots on startup.";
+        return null;
+    }
+
+    private void ProfileChanged() => InvokeAsync(async () => { ClearSelectionAndConfirmation(); _page = 1; await NavigateOrLoadAsync(); StateHasChanged(); });
+    public void Dispose() => ProfileState.Changed -= ProfileChanged;
+}

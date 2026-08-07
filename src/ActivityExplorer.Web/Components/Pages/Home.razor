@@ -1,0 +1,101 @@
+@page "/"
+@implements IDisposable
+@inject IActivityQueryService Activities
+@inject ProfileState ProfileState
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>Dashboard - Activity Explorer</PageTitle>
+<PageHeader Title="Dashboard" Summary="Training history, records, and recent imports - kept on this device.">
+    <Actions><a class="button primary" href="/imports">Import activities</a></Actions>
+</PageHeader>
+
+@if (_summary is null)
+{
+    <div class="loading" role="status">Loading dashboard...</div>
+}
+else if (_summary.ActivityCount == 0)
+{
+    <section class="empty-state">
+        <span class="empty-icon">&#9788;</span>
+        <h2>Bring your history home</h2>
+        <p>Import an official Garmin or Strava export, or add individual FIT, GPX, and TCX files. No API credentials required.</p>
+        <a class="button primary" href="/imports">Start your first import</a>
+    </section>
+}
+else
+{
+    <section class="metric-grid">
+        <MetricCard Label="Activities" Value="@_summary.ActivityCount.ToString("N0")" Hint="Cycling / Running / Walking" />
+        <MetricCard Label="Distance" Value="@Format.Distance(_summary.DistanceMeters)" />
+        <MetricCard Label="Moving time" Value="@Format.Duration(_summary.MovingSeconds)" />
+        <MetricCard Label="Elevation" Value="@($"{_summary.ElevationMeters:N0} m")" />
+    </section>
+    <section class="dashboard-grid">
+        <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Breakdown</span><h2>By sport</h2></div></div>
+            @foreach (var sport in _summary.Sports.OrderBy(x => x.Sport))
+            {
+                <div class="sport-row"><span class="sport-dot @sport.Sport.ToString().ToLowerInvariant()"></span><strong>@sport.Sport</strong><span>@sport.Count activities</span><span>@Format.Distance(sport.DistanceMeters)</span><span>@Format.Duration(sport.MovingSeconds)</span></div>
+            }
+        </article>
+        <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Highlights</span><h2>Records</h2></div><a href="/records">View all</a></div>
+            @if (_summary.Highlights.Count == 0) { <p class="muted">Records are calculated after an import.</p> }
+            @foreach (var record in _summary.Highlights)
+            {
+                <a class="record-row" href="@($"/activities/{record.ActivityId}")"><span><small>@record.Sport - @record.Key</small><strong>@RecordValue(record)</strong></span><span>&rarr;</span></a>
+            }
+        </article>
+    </section>
+    <section class="dashboard-grid">
+        <SparkChart Title="Distance over the last 12 months" Unit="km"
+                    Values="@_summary.MonthlyTrend.Select(x => (double?)(x.DistanceMeters / 1000d)).ToArray()"
+                    Labels="@_summary.MonthlyTrend.Select(x => x.Period.ToString("MMM yyyy", CultureInfo.CurrentCulture)).ToArray()" />
+        <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Equipment</span><h2>Devices and gear</h2></div></div>
+            @if (_summary.Devices.Count == 0 && _summary.Gear.Count == 0) { <p class="muted">Device and gear names appear when supplied by source files.</p> }
+            @foreach (var device in _summary.Devices) { <div class="compact-row"><strong>@device.Name</strong><span>@device.Count activities</span><small>device</small></div> }
+            @foreach (var item in _summary.Gear) { <div class="compact-row"><strong>@item.Name</strong><span>@item.Count activities</span><small>gear</small></div> }
+        </article>
+    </section>
+    <section class="panel">
+        <div class="panel-heading"><div><span class="eyebrow">Latest</span><h2>Recent activities</h2></div><a href="/activities">Browse all</a></div>
+        <div class="activity-list">
+        @foreach (var activity in _summary.Recent)
+        {
+            <a class="activity-row" href="@($"/activities/{activity.Id}")">
+                <span class="sport-icon @activity.Sport.ToString().ToLowerInvariant()">@activity.Sport.ToString()[0]</span>
+                <span class="activity-title"><strong>@activity.Title</strong><small>@activity.OwnerName - @activity.StartTime.ToLocalTime().ToString("d")</small></span>
+                <span><strong>@Format.Distance(activity.DistanceMeters)</strong><small>distance</small></span>
+                <span><strong>@Format.Duration(activity.MovingSeconds)</strong><small>moving</small></span>
+                <span class="row-arrow">&rarr;</span>
+            </a>
+        }
+        </div>
+    </section>
+}
+
+@code {
+    private DashboardSummary? _summary;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ProfileState.Changed += Refresh;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync() => _summary = await Activities.GetDashboardAsync(ProfileState.SelectedOwnerId);
+    private void Refresh() => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+
+    private static string RecordValue(PersonalRecord record) => record.Kind switch
+    {
+        RecordKind.Distance => Format.Distance(record.Value),
+        RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
+        RecordKind.Elevation => $"{record.Value:N0} m",
+        RecordKind.AverageSpeed => $"{record.Value * 3.6:N1} km/h",
+        RecordKind.PowerCurve => $"{record.Value:N0} W",
+        _ => $"{record.Value:N1}"
+    };
+
+    public void Dispose() => ProfileState.Changed -= Refresh;
+}

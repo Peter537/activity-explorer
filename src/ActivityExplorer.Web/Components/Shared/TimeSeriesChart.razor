@@ -1,0 +1,111 @@
+<div class="chart-panel time-series-chart" data-chart-id="@_chartId" data-unit="@Unit">
+    <div class="chart-heading">
+        <div><strong>@Title</strong><small>@Summary</small></div>
+        <span>@Unit</span>
+    </div>
+    @if (_series.Samples.Count < 2)
+    {
+        <p class="muted chart-empty">@EmptyMessage</p>
+    }
+    else
+    {
+        <div class="chart-canvas">
+            <svg viewBox="0 0 800 180" preserveAspectRatio="none" role="img" aria-label="@($"{Title} chart. {Summary}")">
+                @foreach (var segment in _segments)
+                {
+                    <polyline class="chart-line" points="@segment"></polyline>
+                }
+                <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
+                @foreach (var sample in _series.Samples)
+                {
+                    var coordinate = Coordinate(sample);
+                    <circle class="chart-sample" cx="@coordinate.X" cy="@coordinate.Y"
+                            data-axis="@Invariant(sample.X)" data-value="@Invariant(sample.Value)"></circle>
+                }
+            </svg>
+            <output class="chart-tooltip" aria-live="polite"></output>
+        </div>
+        <details class="chart-accessible-values">
+            <summary>Inspect exact values</summary>
+            <p id="@_inspectorHelpId">Move the slider to step through recorded samples. The exact @AxisName and value update below.</p>
+            <label>
+                <span>@Title sample</span>
+                <input type="range" min="0" max="@(_series.Samples.Count - 1)" step="1"
+                       aria-describedby="@_inspectorHelpId" aria-valuetext="@SelectedValueText"
+                       @bind="_selectedIndex" @bind:event="oninput" />
+            </label>
+            <output class="chart-exact-output" aria-live="polite">
+                <span>Sample @(_selectedIndex + 1) of @_series.Samples.Count</span>
+                <strong>@SelectedValueText</strong>
+            </output>
+            <details>
+                <summary>View @Title data table</summary>
+                <div class="chart-data-table"><table><caption>@Title values</caption><thead><tr><th scope="col">Position</th><th scope="col">Value</th></tr></thead><tbody>
+                    @foreach (var sample in _series.Samples)
+                    {
+                        <tr><td>@FormatAxis(sample.X)</td><td>@sample.Value.ToString("N1") @Unit</td></tr>
+                    }
+                </tbody></table></div>
+            </details>
+        </details>
+    }
+</div>
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string Unit { get; set; } = "";
+    [Parameter] public string EmptyMessage { get; set; } = "Not recorded in the source";
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter, EditorRequired] public Func<TrackPoint, double?> Selector { get; set; } = _ => null;
+    [Parameter] public ChartAxisKind Axis { get; set; } = ChartAxisKind.ElapsedTime;
+    [Parameter, EditorRequired] public string GroupId { get; set; } = "";
+    private readonly string _chartId = $"chart-{Guid.NewGuid():N}";
+    private readonly string _inspectorHelpId = $"chart-help-{Guid.NewGuid():N}";
+    private ChartSeriesData _series = new([], null, null, null, 0, 0);
+    private IReadOnlyList<string> _segments = [];
+    private int _selectedIndex;
+
+    protected override void OnParametersSet()
+    {
+        _series = ChartSeriesBuilder.Build(Points, Selector, Axis);
+        _segments = ChartSeriesBuilder.ToSvgSegments(_series);
+        _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_series.Samples.Count - 1, 0));
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_series.Samples.Count >= 2)
+            await JS.InvokeVoidAsync("activityCharts.bind", GroupId);
+    }
+
+    private string Summary => _series.Average.HasValue
+        ? $"Average {_series.Average.Value:N1} | Range {_series.Minimum:N1}-{_series.Maximum:N1} | {_series.CoveragePercent:N0}% coverage"
+        : "No samples";
+
+    private string SelectedValueText => _series.Samples.Count == 0
+        ? "No samples"
+        : $"{AxisName} {FormatAxis(_series.Samples[_selectedIndex].X)}; value {_series.Samples[_selectedIndex].Value:N1} {Unit}";
+
+    private string AxisName => Axis == ChartAxisKind.Distance ? "distance" : "elapsed time";
+
+    private string FormatAxis(double value)
+    {
+        if (Axis == ChartAxisKind.Distance) return $"{value / 1000:N2} km";
+        var duration = TimeSpan.FromSeconds(Math.Max(0, value));
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
+            : $"{duration.Minutes}:{duration.Seconds:00}";
+    }
+
+    private (string X, string Y) Coordinate(ChartSample sample)
+    {
+        var span = Math.Max((_series.Maximum ?? 0) - (_series.Minimum ?? 0), 1e-9);
+        var x = 800d * sample.X / Math.Max(_series.AxisMaximum, 1e-9);
+        var y = 166d - 152d * (sample.Value - (_series.Minimum ?? 0)) / span;
+        return (Invariant(x), Invariant(y));
+    }
+
+    private static string Invariant(double value) =>
+        value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+}

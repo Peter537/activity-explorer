@@ -1,0 +1,67 @@
+@page "/map"
+@implements IDisposable
+@inject ProfileState ProfileState
+@using ActivityExplorer.Web.Components.Shared
+@inject NavigationManager Navigation
+
+<PageTitle>World Map - Activity Explorer</PageTitle>
+<PageHeader Title="World Map" Summary="Explore your activities, routes, and local segments together." />
+<form class="filter-bar map-filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
+    <label><span>Sport</span><select @bind="_sport"><option value="">All sports</option><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+    <label><span>From</span><input type="date" @bind="_from" /></label>
+    <label><span>To</span><input type="date" @bind="_to" /></label>
+    <button class="button primary" type="submit">Apply filters</button>
+    <button class="button" type="button" @onclick="Reset">Reset</button>
+</form>
+<section class="panel flush map-panel" @key="_mapKey">
+    <MapCanvas ActivityUrl="@Url("activities")" RouteUrl="@Url("routes")" SegmentUrl="@Url("segments")"
+               CssClass="world-map" Label="Activity, route, and segment world map" ShowDisclosure="true" />
+</section>
+<div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div>
+
+@code {
+    private string _sport = "";
+    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "from")] public string? QueryFrom { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? QueryTo { get; set; }
+    private DateTime? _from;
+    private DateTime? _to;
+    private int _mapKey;
+
+    protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
+    protected override void OnParametersSet()
+    {
+        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) ? sport.ToString() : "";
+        _from = ParseDate(QueryFrom);
+        _to = ParseDate(QueryTo);
+        _mapKey++;
+    }
+
+    private string Url(string kind)
+    {
+        var parts = new List<string>();
+        if (ProfileState.SelectedOwnerId.HasValue) parts.Add($"ownerId={ProfileState.SelectedOwnerId}");
+        if (!string.IsNullOrWhiteSpace(_sport)) parts.Add($"sport={Uri.EscapeDataString(_sport)}");
+        if (_from.HasValue) parts.Add($"from={_from.Value:yyyy-MM-dd}");
+        if (_to.HasValue) parts.Add($"to={_to.Value:yyyy-MM-dd}");
+        return $"/internal/map/{kind}" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
+    }
+    private void RefreshMap()
+    {
+        var target = BuildUri();
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) _mapKey++;
+        else Navigation.NavigateTo(target);
+    }
+    private void Reset() { _sport = ""; _from = _to = null; RefreshMap(); }
+    private string BuildUri()
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_sport)) parts.Add($"sport={Uri.EscapeDataString(_sport.ToLowerInvariant())}");
+        if (_from.HasValue) parts.Add($"from={_from.Value:yyyy-MM-dd}");
+        if (_to.HasValue) parts.Add($"to={_to.Value:yyyy-MM-dd}");
+        return "/map" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
+    }
+    private static DateTime? ParseDate(string? value) => DateTime.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date : null;
+    private void ProfileChanged() => InvokeAsync(() => { _mapKey++; StateHasChanged(); });
+    public void Dispose() => ProfileState.Changed -= ProfileChanged;
+}

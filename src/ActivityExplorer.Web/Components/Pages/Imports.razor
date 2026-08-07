@@ -1,0 +1,254 @@
+@page "/imports"
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject IImportHistoryService History
+@inject IWatchedFolderService WatchedFolders
+@inject ProfileState ProfileState
+
+<PageTitle>Imports - Activity Explorer</PageTitle>
+<PageHeader Title="Imports" Summary="Stream files into a durable local queue. Accepted activity originals are preserved in private storage." />
+<section class="card-grid import-workflows">
+    <article class="panel form-panel">
+        <h2>Official account-export ZIP</h2>
+        <p class="muted">Recognizes both <code>DI_Connect-fitness-Uploaded-Files</code> and <code>DI-Connect-Uploaded-Files</code> folder forms, including nested activity archives, while ignoring unrelated wellness files.</p>
+        @if (ProfileState.Profiles.Count == 0)
+        {
+            <div class="notice">Create a profile before importing.</div><a class="button" href="/profiles">Create profile</a>
+        }
+        else
+        {
+            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label class="file-drop" for="@_garminInputId"><span>Choose the Garmin export ZIP</span><input id="@_garminInputId" type="file" accept=".zip" /></label>
+            <div class="workflow-actions">
+                <button class="button primary" disabled="@_uploading" @onclick="UploadGarmin">@(_uploading ? "Uploading Garmin export..." : "Queue Garmin history")</button>
+                <a href="https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8" target="_blank" rel="noreferrer">Official export guide &rarr;</a>
+            </div>
+        }
+    </article>
+    <article class="panel form-panel">
+        <h2>Multi-file import</h2>
+        @if (ProfileState.Profiles.Count == 0)
+        {
+            <div class="notice">Create a profile before importing.</div><a class="button" href="/profiles">Create profile</a>
+        }
+        else
+        {
+            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <p class="muted">Choose several FIT, TCX, GPX, GZ, or ZIP files. Two uploads run at a time and known activities are skipped.</p>
+            <label class="file-drop" for="@_recentInputId"><span>Choose one or more files</span><input id="@_recentInputId" type="file" multiple accept=".zip,.fit,.gpx,.tcx,.gz" /></label>
+            <button class="button primary" disabled="@_uploading" @onclick="UploadRecent">@(_uploading ? "Uploading..." : "Queue selected files")</button>
+            <StatusMessage Message="@_status" IsError="@_statusIsError" />
+        }
+    </article>
+    <article class="panel guide-panel">
+        <h2>Watch a computer folder</h2>
+        <p class="muted">This imports stable files manually copied to the computer. It does not sync from a watch or phone and never moves or deletes your files.</p>
+        <label><span>Absolute folder path</span><input @bind="_folderPath" placeholder="C:\Activities or /path/to/activities" /></label>
+        <button class="button" disabled="@(_ownerId == Guid.Empty || _folderBusy)" @onclick="AddFolder">@(_folderBusy ? "Adding local inbox..." : "Add local inbox")</button>
+        @foreach (var folder in _folders.Where(x => x.OwnerId == _ownerId))
+        {
+            <div class="compact-row"><span><strong>@folder.Path</strong><small>Last scan @(folder.LastScanAt?.ToLocalTime().ToString("g") ?? "never")</small></span><button class="text-button danger-text" @onclick="() => RemoveFolder(folder.Id)">Remove</button></div>
+        }
+    </article>
+</section>
+<details class="panel import-history">
+    <summary>
+        <span>Import history</span>
+        <small>@(_history is null ? "Newest imports" : $"{_history.Total} total")</small>
+    </summary>
+    <div class="import-history-content">
+        <div class="import-history-toolbar">
+            <p class="muted">Newest first. Expand long processing summaries only when you need them.</p>
+            <button class="text-button" disabled="@_historyBusy" @onclick="LoadHistory">@(_historyBusy ? "Refreshing history..." : "Refresh")</button>
+        </div>
+        @if (_historyError is not null) { <StatusMessage Message="@_historyError" IsError="true" /> }
+        else if (_history is null) { <div class="loading" role="status">Loading import history...</div> }
+        else if (_history.Items.Count == 0) { <p class="muted">No imports yet.</p> }
+        @foreach (var import in _history?.Items ?? [])
+        {
+            <article class="import-entry">
+                <div class="import-entry-heading">
+                    <div><strong>@import.DisplayName</strong><small>@import.OwnerName - @ImportKind(import) - @import.CreatedAt.ToLocalTime().ToString("g")</small></div>
+                    <span class="status-badge @StatusClass(import.Status)" aria-label="Import status: @StatusText(import.Status)">@StatusText(import.Status)</span>
+                </div>
+                <dl class="import-stats">
+                    <div><dt>Files</dt><dd>@import.FilesDiscovered</dd></div><div><dt>Created</dt><dd>@import.Created</dd></div><div><dt>Enriched</dt><dd>@import.Updated</dd></div><div><dt>Skipped</dt><dd>@import.Skipped</dd></div>
+                </dl>
+                @if (import.Summary is not null)
+                {
+                    <details class="import-summary"><summary>View processing summary</summary><p>@import.Summary</p></details>
+                }
+            </article>
+        }
+        @if (_history is not null && _history.Items.Count < _history.Total)
+        {
+            <div class="history-more"><span>Showing @_history.Items.Count of @_history.Total</span><button class="button" disabled="@_historyBusy" @onclick="ShowMore">@(_historyBusy ? "Loading more..." : "Show 10 more")</button></div>
+        }
+    </div>
+</details>
+
+@code {
+    private readonly string _garminInputId = $"garmin-upload-{Guid.NewGuid():N}";
+    private readonly string _recentInputId = $"recent-upload-{Guid.NewGuid():N}";
+    private ImportHistoryPage? _history;
+    private IReadOnlyList<WatchedFolderSummary> _folders = [];
+    private Guid _ownerId;
+    private string _folderPath = string.Empty;
+    private bool _uploading;
+    private bool _statusIsError;
+    private string? _status;
+    private CancellationTokenSource? _polling;
+    private Task? _pollingTask;
+    private bool _folderBusy;
+    private bool _historyBusy;
+    private int _historyLimit = 10;
+    private string? _historyError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ProfileState.Changed += ProfilesChanged;
+        await ProfileState.InitializeAsync();
+        SetDefaultOwner();
+        await LoadAsync();
+    }
+
+    private void SetDefaultOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
+    private Task UploadGarmin() => UploadMany(_garminInputId, SourceKind.GarminArchive.ToString());
+    private Task UploadRecent() => UploadMany(_recentInputId, null);
+
+    private async Task UploadMany(string inputId, string? sourceKind)
+    {
+        _uploading = true;
+        _status = null;
+        _statusIsError = false;
+        try
+        {
+            var response = await JS.InvokeAsync<UploadManyResponse>("activityExplorerImports.uploadMany", inputId, _ownerId, sourceKind, 2);
+            _status = $"Queued {response.Ids.Count} file{(response.Ids.Count == 1 ? string.Empty : "s")}. The local import worker is processing them now.";
+            await StopPollingAsync();
+            _polling = new CancellationTokenSource();
+            _pollingTask = PollAsync(response.Ids, _polling.Token);
+        }
+        catch (JSException exception) { _status = exception.Message; _statusIsError = true; }
+        finally { _uploading = false; await LoadAsync(); }
+    }
+
+    private async Task PollAsync(IReadOnlyList<Guid> ids, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(750, token);
+                await InvokeAsync(async () => { await LoadHistory(); StateHasChanged(); });
+                var reports = await Task.WhenAll(ids.Select(id => History.GetReportAsync(id, token)));
+                if (reports.All(report => report?.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or ImportStatus.Interrupted))
+                {
+                    var warnings = reports.Sum(report => report?.Warnings ?? 0);
+                    var failed = reports.Count(report => report?.Status == ImportStatus.Failed);
+                    var interrupted = reports.Count(report => report?.Status == ImportStatus.Interrupted);
+                    _statusIsError = failed > 0 || interrupted > 0;
+                    _status = failed > 0 || interrupted > 0
+                        ? $"Processing stopped with {failed} failed and {interrupted} interrupted import{(failed + interrupted == 1 ? string.Empty : "s")}. Review import history for details."
+                        : warnings == 0
+                            ? "All selected files finished processing successfully."
+                            : $"Processing finished with {warnings} warning{(warnings == 1 ? string.Empty : "s")}.";
+                    await InvokeAsync(StateHasChanged);
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _statusIsError = true;
+            _status = $"Import status polling stopped: {exception.Message}";
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadHistory()
+    {
+        _historyBusy = true;
+        _historyError = null;
+        try
+        {
+            _history = await History.ListAsync(ProfileState.SelectedOwnerId, _historyLimit);
+        }
+        catch (Exception exception)
+        {
+            _historyError = $"Import history could not be loaded: {exception.Message}";
+        }
+        finally
+        {
+            _historyBusy = false;
+        }
+    }
+
+    private async Task ShowMore()
+    {
+        _historyLimit += 10;
+        await LoadHistory();
+    }
+    private async Task LoadFolders() => _folders = await WatchedFolders.ListAsync(null);
+    private async Task LoadAsync() => await Task.WhenAll(LoadHistory(), LoadFolders());
+
+    private async Task AddFolder()
+    {
+        _status = null;
+        _folderBusy = true;
+        _statusIsError = false;
+        try
+        {
+            await WatchedFolders.AddAsync(_ownerId, _folderPath);
+            _folderPath = string.Empty;
+            await LoadFolders();
+            _status = "Local inbox added. Stable supported files will be copied into the import queue.";
+        }
+        catch (Exception exception) when (exception is ArgumentException or DirectoryNotFoundException or InvalidOperationException or NotSupportedException)
+        {
+            _status = exception.Message;
+            _statusIsError = true;
+        }
+        finally { _folderBusy = false; }
+    }
+
+    private async Task RemoveFolder(Guid id)
+    {
+        await WatchedFolders.RemoveAsync(id);
+        await LoadFolders();
+    }
+
+    private static string ImportKind(ImportBatchSummary import) => import.Kind switch
+    {
+        ImportBatchKind.ActivityTransfer => "activity transfer",
+        ImportBatchKind.RouteImport => "route import",
+        _ => import.SourceKind.ToString()
+    };
+
+    private static string StatusText(ImportStatus status) => status switch
+    {
+        ImportStatus.CompletedWithWarnings => "Completed with warnings",
+        _ => status.ToString()
+    };
+
+    private static string StatusClass(ImportStatus status) => status switch
+    {
+        ImportStatus.CompletedWithWarnings => "warning",
+        _ => status.ToString().ToLowerInvariant()
+    };
+
+    private async Task StopPollingAsync()
+    {
+        if (_polling is null) return;
+        _polling.Cancel();
+        if (_pollingTask is not null) await _pollingTask;
+        _polling.Dispose();
+        _polling = null;
+        _pollingTask = null;
+    }
+
+    private void ProfilesChanged() => InvokeAsync(async () => { SetDefaultOwner(); _historyLimit = 10; _history = null; await LoadAsync(); StateHasChanged(); });
+    public async ValueTask DisposeAsync() { ProfileState.Changed -= ProfilesChanged; await StopPollingAsync(); }
+    private sealed record UploadManyResponse(IReadOnlyList<Guid> Ids);
+}

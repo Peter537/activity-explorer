@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/ActivityExplorer.Core/ActivityExplorer.Core.csproj" />
+  <Project Path="src/ActivityExplorer.Infrastructure/ActivityExplorer.Infrastructure.csproj" />
+  <Project Path="src/ActivityExplorer.Web/ActivityExplorer.Web.csproj" />
+  <Project Path="tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj" />
+</Solution>

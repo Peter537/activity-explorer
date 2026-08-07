@@ -1,0 +1,87 @@
+@page "/segments"
+@implements IDisposable
+@inject ISegmentService SegmentService
+@inject ProfileState ProfileState
+@inject NavigationManager Navigation
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>Segments - Activity Explorer</PageTitle>
+<PageHeader Title="Segments" Summary="Directional, sport-specific paths matched against your own history." />
+<div class="notice subtle">Activity Explorer segments are your local definitions. They are not Strava segments and are never uploaded.</div>
+@if (_message is not null) { <div class="notice">@_message</div> }
+@if (ProfileState.Profiles.Count > 0)
+{
+    <section class="panel form-panel">
+        <div class="panel-heading"><h2>Draw a segment</h2><span>@_drawn.Count points</span></div>
+        <div class="form-grid">
+            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label><span>Sport</span><select @bind="_sport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label><span>Name</span><input @bind="_name" /></label>
+            <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
+        </div>
+        <MapCanvas @ref="_drawMap" Editable="true" PointsChanged="DrawingChanged" CssClass="detail-map" Label="Segment drawing map" ShowDisclosure="true" />
+        <div class="button-row"><button class="button" @onclick="Undo">Undo point</button><button class="button" @onclick="Clear">Clear</button><button class="button primary" disabled="@(!CanCreate || _creating)" @onclick="CreateDrawn">@(_creating ? "Creating segment..." : "Create segment")</button></div>
+    </section>
+}
+else
+{
+    <section class="empty-state"><h2>Create a profile first</h2><p>Segments belong to a local profile. Create one before drawing a path.</p><a class="button primary" href="/profiles">Create profile</a></section>
+}
+@if (_segments is null) { <div class="loading">Loading segments...</div> }
+else if (_segments.Count == 0) { <section class="empty-state"><h2>No segments yet</h2><p>Draw one above, create one from a route, or select part of an activity.</p><a class="button" href="/activities">Browse activities</a></section> }
+else
+{
+    <section class="card-grid">
+    @foreach (var segment in _segments)
+    {
+        <a class="entity-card" href="@($"/segments/{segment.Id}")">
+            <span class="eyebrow">@segment.Sport - @segment.OwnerName</span><h2>@segment.Name</h2>
+            <div class="entity-metrics"><span><strong>@Format.Distance(segment.DistanceMeters)</strong><small>distance</small></span><span><strong>@segment.EffortCount</strong><small>efforts</small></span><span><strong>@(segment.BestElapsedSeconds.HasValue ? Format.Duration(segment.BestElapsedSeconds.Value) : "--")</strong><small>best</small></span></div>
+            <small>Match tolerance: @segment.ToleranceMeters.ToString("N0") m</small>
+        </a>
+    }
+    </section>
+}
+@code {
+    private IReadOnlyList<SegmentSummary>? _segments;
+    private IReadOnlyList<TrackPoint> _drawn = [];
+    private MapCanvas? _drawMap;
+    private Guid _ownerId;
+    private string _sport = nameof(SportKind.Cycling);
+    private string _name = "New segment";
+    private double _tolerance = 30;
+    private string? _message;
+
+    private bool _creating;
+    private bool CanCreate => _ownerId != Guid.Empty && _drawn.Count >= 2 && !string.IsNullOrWhiteSpace(_name) && _tolerance is >= 10 and <= 200;
+    protected override async Task OnInitializedAsync()
+    {
+        ProfileState.Changed += Changed;
+        await ProfileState.InitializeAsync();
+        SetOwner();
+        await Load();
+    }
+
+    private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
+    private async Task Load() => _segments = await SegmentService.ListAsync(ProfileState.SelectedOwnerId);
+    private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
+    private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }
+    private async Task Clear() { if (_drawMap is not null) await _drawMap.ClearAsync(); }
+
+    private async Task CreateDrawn()
+    {
+        _creating = true;
+        try
+        {
+            var sport = Enum.Parse<SportKind>(_sport);
+            var id = await SegmentService.CreateAsync(new CreateSegmentPathRequest(_ownerId, _name, sport, _drawn, _tolerance));
+
+            Navigation.NavigateTo($"/segments/{id}");
+        }
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _creating = false; }
+    }
+
+    private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
+    public void Dispose() => ProfileState.Changed -= Changed;
+}

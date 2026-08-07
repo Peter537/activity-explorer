@@ -1,0 +1,19 @@
+services:
+  activity-explorer:
+    image: activity-explorer:0.1.0
+    build:
+      context: .
+      labels:
+        org.opencontainers.image.version: "0.1.0"
+    environment:
+      Urls: "http://0.0.0.0:8342"
+      ACTIVITY_EXPLORER_DATA: "/data"
+    ports:
+      - "127.0.0.1:8342:8342"
+    volumes:
+      - "activity-explorer-data:/data"
+    restart: unless-stopped
+
+volumes:
+  activity-explorer-data:
+    name: activity-explorer-data

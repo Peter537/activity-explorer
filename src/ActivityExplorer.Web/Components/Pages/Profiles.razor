@@ -1,0 +1,83 @@
+@page "/profiles"
+@inject IProfileService ProfilesService
+@inject ProfileState ProfileState
+
+<PageTitle>Profiles - Activity Explorer</PageTitle>
+<PageHeader Title="Profiles" Summary="Keep each person's activities, source files, routes, segments, and records separate." />
+<StatusMessage Message="@_message" />
+<section class="dashboard-grid">
+    <article class="panel form-panel">
+        <h2>Create profile</h2>
+        <label><span>Display name</span><input @bind="_newName" @bind:event="oninput" maxlength="120" placeholder="e.g. Peter" /></label>
+        <button class="button primary" disabled="@_busy" @onclick="Create">@(_busy ? "Creating profile..." : "Create profile")</button>
+    </article>
+    <article class="panel">
+        <h2>Why profiles?</h2>
+        <p class="muted">There is no login system. Profiles keep data from different people separated while allowing an "All profiles" combined view.</p>
+    </article>
+</section>
+<section class="card-grid profile-grid">
+@foreach (var profile in ProfileState.Profiles)
+{
+    <article class="entity-card">
+        <span class="eyebrow">Profile</span><h2>@profile.DisplayName</h2>
+        <div class="entity-metrics"><span><strong>@profile.ActivityCount</strong><small>activities</small></span><span><strong>@($"{profile.DistanceMeters / 1000:N1} km")</strong><small>distance</small></span></div>
+        <div class="card-actions"><a class="button" href="@($"/internal/profiles/{profile.Id}/export")">Export JSON</a><button class="button danger" @onclick="() => BeginDelete(profile)">Delete</button></div>
+        @if (_deleting?.Id == profile.Id)
+        {
+            <div class="danger-zone" role="group" aria-labelledby="@($"delete-profile-{profile.Id}")"><p id="@($"delete-profile-{profile.Id}")">Deletes all database rows and copied originals for this profile. Type <strong>DELETE @profile.DisplayName</strong>.</p><label><span>Delete confirmation</span><input @ref="_confirmationInput" @bind="_confirmation" @bind:event="oninput" autocomplete="off" /></label><button class="button danger" disabled="@(!CanConfirmDelete || _busy)" @onclick="ConfirmDelete">@(_busy ? "Permanently deleting..." : "Permanently delete")</button><button class="text-button" disabled="@_busy" @onclick="CancelDelete">Cancel</button></div>
+        }
+    </article>
+}
+</section>
+@code {
+    private string _newName = "", _confirmation = "";
+    private string? _message;
+    private ProfileSummary? _deleting;
+    private ElementReference _confirmationInput;
+    private bool _focusConfirmation;
+    private bool _busy;
+    private bool CanConfirmDelete => _deleting is not null && _confirmation == $"DELETE {_deleting.DisplayName}";
+
+    protected override async Task OnInitializedAsync() => await ProfileState.InitializeAsync();
+
+    private async Task Create()
+    {
+        _busy = true;
+        try
+        {
+            var id = await ProfilesService.CreateAsync(_newName);
+            _newName = "";
+            await ProfileState.RefreshAsync();
+            ProfileState.Select(id);
+            _message = "Profile created.";
+        }
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private void BeginDelete(ProfileSummary profile) { _deleting = profile; _confirmation = ""; _focusConfirmation = true; }
+    private void CancelDelete() { _deleting = null; _confirmation = ""; }
+
+    private async Task ConfirmDelete()
+    {
+        if (!CanConfirmDelete || _deleting is null) return;
+        _busy = true;
+        try
+        {
+            await ProfilesService.DeleteAsync(_deleting.Id, _confirmation);
+            _deleting = null;
+            await ProfileState.RefreshAsync();
+            _message = "Profile data and copied originals were permanently deleted.";
+        }
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusConfirmation) return;
+        _focusConfirmation = false;
+        await _confirmationInput.FocusAsync();
+    }
+}

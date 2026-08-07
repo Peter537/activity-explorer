@@ -1,0 +1,40 @@
+<div class="chart-panel">
+    <div class="chart-heading"><strong>@Title</strong><span>@Unit</span></div>
+    @if (_geometry.PointCount < 2)
+    {
+        <p class="muted">No usable samples</p>
+    }
+    else
+    {
+        <svg viewBox="0 0 800 180" preserveAspectRatio="none" role="img" aria-label="@AccessibleLabel">
+            <path class="chart-area" d="@_geometry.AreaPath"></path>
+            <polyline class="chart-line" points="@_geometry.Points"></polyline>
+        </svg>
+        @if (HasLabels)
+        {
+            <div class="chart-axis-labels" aria-hidden="true">
+                <span>@Labels[_geometry.FirstIndex]</span>
+                <span>@Labels[_geometry.LastIndex]</span>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string Unit { get; set; } = "";
+    [Parameter] public IReadOnlyList<double?> Values { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> Labels { get; set; } = [];
+    private SparkChartGeometryResult _geometry = SparkChartGeometry.Build([]);
+
+    protected override void OnParametersSet()
+    {
+        _geometry = SparkChartGeometry.Build(Values);
+    }
+
+    private bool HasLabels => Labels.Count == Values.Count && _geometry.PointCount >= 2;
+    private string AccessibleLabel => _geometry.PointCount < 2
+        ? $"{Title}: no usable samples"
+        : $"{Title}: {_geometry.Trend} trend, range {_geometry.Minimum:N1} to {_geometry.Maximum:N1} {Unit}"
+          + (HasLabels ? $", from {Labels[_geometry.FirstIndex]} to {Labels[_geometry.LastIndex]}" : "");
+}

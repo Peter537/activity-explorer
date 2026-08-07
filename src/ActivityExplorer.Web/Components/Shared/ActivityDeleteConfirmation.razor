@@ -1,0 +1,39 @@
+<section class="delete-confirmation" aria-labelledby="@_headingId" aria-busy="@Busy">
+    <div>
+        <span class="eyebrow">Permanent deletion</span>
+        <h2 id="@_headingId">@Heading</h2>
+        <p>@ScopeDescription</p>
+        <p class="muted">This removes activity data, source provenance, and original files that no other activity uses. Saved routes and segments remain, but their source link is cleared. Import history remains.</p>
+    </div>
+    <div class="button-row">
+        <button @ref="_confirmButton" class="button danger solid" type="button" disabled="@Busy" @onclick="OnConfirm">
+            @(Busy ? "Deleting..." : ConfirmLabel)
+        </button>
+        <button class="button" type="button" disabled="@Busy" @onclick="OnCancel">Cancel</button>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public int Count { get; set; }
+    [Parameter] public string? ActivityName { get; set; }
+    [Parameter, EditorRequired] public string ScopeDescription { get; set; } = "";
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private readonly string _headingId = $"delete-heading-{Guid.NewGuid():N}";
+    private ElementReference _confirmButton;
+
+    private string Heading => Count == 1 && !string.IsNullOrWhiteSpace(ActivityName)
+        ? $"Delete {ActivityName}?"
+        : $"Delete {Count:N0} activities?";
+
+    private string ConfirmLabel => Count == 1
+        ? "Permanently delete activity"
+        : $"Permanently delete {Count:N0} activities";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await _confirmButton.FocusAsync();
+    }
+}

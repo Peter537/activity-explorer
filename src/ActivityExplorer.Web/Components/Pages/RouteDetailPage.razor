@@ -1,0 +1,75 @@
+@page "/routes/{Id:guid}"
+@inject IRouteService RouteService
+@inject ISegmentService SegmentService
+@inject NavigationManager Navigation
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>@(_route?.Summary.Name ?? (_loadError is not null ? "Route unavailable" : _loaded ? "Route not found" : "Route")) - Activity Explorer</PageTitle>
+@if (!_loaded) { <div class="loading" role="status">Loading route...</div> }
+else if (_loadError is not null) { <section class="empty-state"><h1>Route unavailable</h1><p>@_loadError</p><button class="button" type="button" @onclick="LoadAsync">Try again</button></section> }
+else if (_route is null) { <section class="empty-state"><h1>Route not found</h1><p>This route may have been deleted or the link is no longer valid.</p><a class="button" href="/routes">Back to routes</a></section> }
+else
+{
+    <PageHeader Title="@_route.Summary.Name" Summary="@_route.Description">
+        <Metadata><span>@_route.Summary.Sport</span><span>@_route.Summary.OwnerName</span></Metadata>
+        <Actions><a class="button primary" href="@($"/internal/routes/{Id}.gpx")" download>Export GPX</a></Actions>
+    </PageHeader>
+    @if (_message is not null) { <div class="notice">@_message</div> }
+    <section class="metric-grid"><MetricCard Label="Distance" Value="@Format.Distance(_route.Summary.DistanceMeters)" /><MetricCard Label="Elevation" Value="@($"{_route.Summary.ElevationMeters:N0} m")" /><MetricCard Label="Track points" Value="@_route.Points.Count.ToString("N0")" /></section>
+    <section class="panel flush map-panel"><MapCanvas InlinePoints="_route.Points" CssClass="detail-map" Label="Route map" /></section>
+    <section class="dashboard-grid">
+        <SparkChart Title="Elevation profile" Unit="m" Values="@_route.Points.Select(x => x.ElevationMeters).ToArray()" />
+        <article class="panel form-panel">
+            <h2>Create segment from this route</h2>
+            <label><span>Name</span><input @bind="_segmentName" /></label>
+            <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
+            <button class="button" disabled="@(!CanCreateSegment || _creating)" @onclick="CreateSegment">@(_creating ? "Creating segment..." : "Create segment")</button>
+        </article>
+    </section>
+}
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private RouteDetail? _route;
+    private string _segmentName = "";
+    private double _tolerance = 30;
+    private string? _message;
+    private bool _loaded;
+    private bool _creating;
+    private string? _loadError;
+    private bool CanCreateSegment => _route is not null && _route.Points.Count >= 2 && !string.IsNullOrWhiteSpace(_segmentName) && _tolerance is >= 10 and <= 200;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loaded = false;
+        _loadError = null;
+        try
+        {
+            _route = await RouteService.GetAsync(Id);
+        }
+        catch
+        {
+            _route = null;
+            _loadError = "The route could not be loaded. Try again.";
+        }
+        finally { _loaded = true; }
+        if (_route is not null) _segmentName = _route.Summary.Name;
+    }
+
+    private async Task CreateSegment()
+    {
+        _creating = true;
+        try
+        {
+            var id = await SegmentService.CreateAsync(new CreateSegmentPathRequest(
+                _route!.Summary.OwnerId, _segmentName, _route.Summary.Sport, _route.Points, _tolerance));
+            Navigation.NavigateTo($"/segments/{id}");
+        }
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _creating = false; }
+    }
+}

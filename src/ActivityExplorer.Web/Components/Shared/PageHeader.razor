@@ -1,0 +1,31 @@
+<header class="page-heading">
+    <div class="page-heading-copy">
+        <h1>@Title</h1>
+        @if (!string.IsNullOrWhiteSpace(Summary))
+        {
+            <p>@Summary</p>
+        }
+        @if (Metadata is not null)
+        {
+            <div class="page-metadata">@Metadata</div>
+        }
+    </div>
+    @if (Actions is not null)
+    {
+        <div class="page-actions">@Actions</div>
+    }
+</header>
+
+@code {
+    [Parameter, EditorRequired]
+    public required string Title { get; set; }
+
+    [Parameter]
+    public string? Summary { get; set; }
+
+    [Parameter]
+    public RenderFragment? Metadata { get; set; }
+
+    [Parameter]
+    public RenderFragment? Actions { get; set; }
+}

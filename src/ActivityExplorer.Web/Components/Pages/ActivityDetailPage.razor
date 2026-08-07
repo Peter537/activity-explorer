@@ -1,0 +1,317 @@
+@page "/activities/{Id:guid}"
+@inject IActivityQueryService Activities
+@inject IRouteService Routes
+@inject ISegmentService Segments
+@inject ProfileState ProfileState
+@inject NavigationManager Navigation
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>@(_activity?.Summary.Title ?? (_loaded ? "Activity not found" : "Activity")) - Activity Explorer</PageTitle>
+@if (!_loaded)
+{
+    <div class="loading" role="status">Loading activity...</div>
+}
+else if (_loadError is not null)
+{
+    <section class="empty-state"><h1>Activity unavailable</h1><p>@_loadError</p><button class="button" type="button" @onclick="LoadAsync">Try again</button></section>
+}
+else if (_activity is null)
+{
+    <section class="empty-state"><h1>Activity not found</h1><p>This activity may have been deleted or the link is no longer valid.</p><a class="button" href="/activities">Back to activities</a></section>
+}
+else
+{
+    <PageHeader Title="@_activity.Summary.Title" Summary="@(_activity.Summary.StartTime.ToLocalTime().ToString("F"))">
+        <Metadata><span>@_activity.Summary.Sport</span><span>@_activity.Summary.OwnerName</span></Metadata>
+        <Actions>
+            <button class="button" disabled="@_deleteBusy" @onclick="() => _editing = !_editing">Edit activity</button>
+            <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming)" @onclick="BeginDelete">Delete activity</button>
+        </Actions>
+    </PageHeader>
+    <nav class="section-jumps" aria-label="Activity sections">
+        @if (HasMap) { <a href="@ActivityUrl("activity-map")">Map</a> }
+        <a href="@ActivityUrl("activity-streams")">Streams</a>
+        <a href="@ActivityUrl("activity-details")">Details</a>
+        <a href="@ActivityUrl("activity-sources")">Sources</a>
+    </nav>
+    @if (_deleteConfirming)
+    {
+        <ActivityDeleteConfirmation Count="1" ActivityName="@_activity.Summary.Title"
+                                    ScopeDescription="@($"You are about to permanently delete the {_activity.Summary.Sport.ToString().ToLowerInvariant()} recorded {_activity.Summary.StartTime.ToLocalTime():g}.")"
+                                    Busy="@_deleteBusy" OnConfirm="ConfirmDelete" OnCancel="CancelDelete" />
+    }
+    <StatusMessage Message="@_deleteMessage" IsError="true" />
+    @if (_message is not null) { <div class="notice">@_message</div> }
+    <section class="metric-grid five">
+        <MetricCard Label="Distance" Value="@Format.Distance(_activity.Summary.DistanceMeters)" />
+        <MetricCard Label="Moving time" Value="@Format.Duration(_activity.Summary.MovingSeconds)" />
+        <MetricCard Label="Elapsed time" Value="@Format.Duration(_activity.ElapsedSeconds)" />
+        <MetricCard Label="Elevation" Value="@($"{_activity.Summary.ElevationMeters:N0} m")" />
+        <MetricCard Label="@(_activity.Summary.Sport == SportKind.Cycling ? "Average speed" : "Average pace")" Value="@Format.Speed(_activity.AverageSpeed, _activity.Summary.Sport)" />
+    </section>
+    @if (_editing)
+    {
+        <section class="panel form-panel">
+            <h2>Edit local metadata</h2>
+            <div class="form-grid">
+                <label><span>Title</span><input @bind="_title" /></label>
+                <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+                <label><span>Gear</span><input @bind="_gear" /></label>
+                <label class="wide"><span>Notes</span><textarea @bind="_description"></textarea></label>
+            </div>
+            <button class="button primary" @onclick="Save">Save changes</button>
+        </section>
+    }
+    @if (HasMap)
+    {
+        <section id="activity-map" class="panel flush map-panel"><MapCanvas InlinePoints="_activity.Points" CssClass="detail-map" Label="Activity track map" /></section>
+    }
+    <div id="activity-streams" class="panel-heading chart-controls">
+        <div><h2>Detailed streams</h2><p class="muted">Move across any chart to compare every recorded stream at the same point.</p></div>
+        <div class="button-row">
+            <button class="@AxisButton(ChartAxisKind.ElapsedTime)" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button>
+            <button class="@AxisButton(ChartAxisKind.Distance)" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button>
+        </div>
+    </div>
+    <section id="@_chartGroupId" class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
+        <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" GroupId="_chartGroupId" />
+        <TimeSeriesChart Title="@(_activity.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")"
+                         Unit="@(_activity.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")"
+                         Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" GroupId="_chartGroupId" />
+        <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" GroupId="_chartGroupId" />
+        <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" GroupId="_chartGroupId" EmptyMessage="Not recorded in the source" />
+        <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" GroupId="_chartGroupId" />
+        <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" GroupId="_chartGroupId" />
+        <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" GroupId="_chartGroupId" />
+    </section>
+    <section id="activity-details" class="detail-groups">
+        <article class="panel"><h2>Timing</h2><dl class="detail-list"><dt>Timer time</dt><dd>@DurationOrDash(_activity.Rich.TimerSeconds)</dd><dt>Moving time</dt><dd>@Format.Duration(_activity.Summary.MovingSeconds) <small>@MovingLabel</small></dd><dt>Elapsed time</dt><dd>@Format.Duration(_activity.ElapsedSeconds)</dd></dl></article>
+        <article class="panel"><h2>Elevation</h2><dl class="detail-list"><dt>Ascent</dt><dd>@Value(_activity.Summary.ElevationMeters, "m", 0)</dd><dt>Descent</dt><dd>@Value(_activity.Rich.ElevationLoss, "m", 0)</dd><dt>Minimum</dt><dd>@Value(_activity.Rich.MinElevation, "m", 0)</dd><dt>Maximum</dt><dd>@Value(_activity.Rich.MaxElevation, "m", 0)</dd></dl></article>
+        <article class="panel"><h2>Heart rate & cadence</h2><dl class="detail-list"><dt>Average heart rate</dt><dd>@Value(_activity.AverageHeartRate, "bpm", 0)</dd><dt>Maximum heart rate</dt><dd>@Value(_activity.MaxHeartRate, "bpm", 0)</dd><dt>Average cadence</dt><dd>@Value(_activity.AverageCadence, "rpm", 0)</dd><dt>Maximum cadence</dt><dd>@Value(_activity.Rich.MaxCadence, "rpm", 0)</dd><dt>Pedal revolutions</dt><dd>@Value(_activity.Rich.PedalRevolutions, "", 0)</dd></dl></article>
+        <article class="panel"><h2>Temperature & respiration</h2><dl class="detail-list"><dt>Average temperature</dt><dd>@Value(_activity.Rich.AverageTemperature, "deg C", 1)</dd><dt>Minimum / maximum</dt><dd>@Range(_activity.Rich.MinTemperature, _activity.Rich.MaxTemperature, "deg C")</dd><dt>Average respiration</dt><dd>@Value(_activity.Rich.AverageRespiration, "brpm", 1)</dd><dt>Minimum / maximum</dt><dd>@Range(_activity.Rich.MinRespiration, _activity.Rich.MaxRespiration, "brpm")</dd></dl></article>
+        <article class="panel"><h2>Training effect</h2><dl class="detail-list"><dt>Aerobic</dt><dd>@Value(_activity.Rich.AerobicTrainingEffect, "", 1)</dd><dt>Anaerobic</dt><dd>@Value(_activity.Rich.AnaerobicTrainingEffect, "", 1)</dd><dt>Training load</dt><dd>@Value(_activity.Rich.TrainingLoad, "", 0)</dd></dl></article>
+        <article class="panel"><h2>Calories</h2><dl class="detail-list"><dt>Total</dt><dd>@Value(_activity.Calories, "kcal", 0)</dd><dt>Resting / metabolic</dt><dd>@Value(_activity.Rich.RestingCalories, "kcal", 0)</dd><dt>Derived active</dt><dd>@Value(_activity.Rich.ActiveCalories, "kcal", 0)</dd></dl><p class="muted compact-note">Active calories are derived only when total and metabolic calories both exist in the FIT source.</p></article>
+    </section>
+    <section class="panel form-panel">
+        <div class="panel-heading"><div><h2>Custom metrics</h2><p class="muted">Local display-only values never affect records, trends, or segment efforts.</p></div></div>
+        @if (_activity.Metrics.Count == 0) { <p class="muted">No imported or custom supplementary metrics.</p> }
+        @foreach (var metric in _activity.Metrics)
+        {
+            <div class="compact-row">
+                <span><strong>@metric.Label</strong><small>@metric.Key | @metric.Origin</small></span>
+                <span>@MetricValue(metric)</span>
+                @if (metric.Origin == ActivityMetricOrigin.Manual)
+                {
+                    <span class="button-row"><button class="text-button" @onclick="() => EditMetric(metric)">Edit</button><button class="text-button danger-text" @onclick="() => DeleteMetric(metric.Id)">Delete</button></span>
+                }
+            </div>
+        }
+        <div class="form-grid metric-editor">
+            <label><span>Label</span><input @bind="_metricLabel" /></label>
+            <label><span>Stable key (optional)</span><input @bind="_metricKey" placeholder="generated from label" /></label>
+            <label><span>Numeric value (optional)</span><input type="number" step="any" @bind="_metricNumeric" /></label>
+            <label><span>Unit (optional)</span><input @bind="_metricUnit" /></label>
+            <label class="wide"><span>Text value (optional)</span><input @bind="_metricText" /></label>
+        </div>
+        <div class="button-row"><button class="button primary" @onclick="SaveMetric">@(_editingMetricId.HasValue ? "Update metric" : "Add metric")</button>@if (_editingMetricId.HasValue) { <button class="button" @onclick="CancelMetricEdit">Cancel</button> }</div>
+    </section>
+    <section class="dashboard-grid">
+        <article class="panel">
+            <div class="panel-heading"><h2>Laps</h2></div>
+            @if (_activity.Laps.Count == 0) { <p class="muted">No lap data in the source.</p> }
+            @foreach (var lap in _activity.Laps)
+            {
+                <div class="compact-row"><strong>Lap @lap.Sequence</strong><span>@Format.Distance(lap.DistanceMeters)</span><span>@Format.Duration(lap.ElapsedSeconds)</span><span>@(lap.AverageHeartRate.HasValue ? $"{lap.AverageHeartRate:N0} bpm" : "--")</span></div>
+            }
+        </article>
+        <article class="panel">
+            <div class="panel-heading"><h2>Segment efforts</h2></div>
+            @if (_activity.SegmentEfforts.Count == 0) { <p class="muted">No local segment matches yet.</p> }
+            @foreach (var effort in _activity.SegmentEfforts)
+            {
+                <a class="compact-row" href="@($"/segments/{effort.SegmentId}?effort={effort.Id}")"><strong>@effort.SegmentName</strong><span>@Format.Duration(effort.ElapsedSeconds)</span><span>#@effort.Rank</span></a>
+            }
+        </article>
+    </section>
+    <section class="dashboard-grid">
+        <article class="panel form-panel">
+            <h2>Save as route</h2>
+            <label><span>Name</span><input @bind="_routeName" /></label>
+            <button class="button" disabled="@(!_activity.Summary.HasGps)" @onclick="CreateRoute">Create route</button>
+        </article>
+        <article class="panel form-panel">
+            <h2>Create local segment</h2>
+            <label><span>Name</span><input @bind="_segmentName" /></label>
+            <div class="inline-fields"><label><span>Start point</span><input type="number" @bind="_segmentStart" /></label><label><span>End point</span><input type="number" @bind="_segmentEnd" /></label><label><span>Tolerance (m)</span><input type="number" @bind="_tolerance" /></label></div>
+            <button class="button" disabled="@(!_activity.Summary.HasGps)" @onclick="CreateSegment">Create and match history</button>
+        </article>
+    </section>
+    <section id="activity-sources" class="panel">
+        <div class="panel-heading"><h2>Source files</h2></div>
+        @foreach (var source in _activity.Sources)
+        {
+            <div class="compact-row"><span><strong>@source.Name</strong><small>@($"{source.Provider} | {source.AcquisitionMethod} | parser v{source.ParserVersion} | {source.Length / 1024d / 1024d:N1} MB")@if (!string.IsNullOrWhiteSpace(source.ExternalActivityId)) { <text> | activity @source.ExternalActivityId</text> }</small></span><span>@source.ImportedAt.ToLocalTime().ToString("g")</span><a href="@($"/internal/originals/{source.Id}")">Download original</a></div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private ActivityDetail? _activity;
+    private bool _editing;
+    private bool _loaded;
+    private string? _loadError;
+    private string _title = "", _routeName = "", _segmentName = "", _gear = "";
+    private string? _description, _message;
+    private Guid _ownerId;
+    private int _segmentStart = 0, _segmentEnd;
+    private double _tolerance = 30;
+    private readonly string _chartGroupId = $"activity-charts-{Guid.NewGuid():N}";
+    private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
+    private Guid? _editingMetricId;
+    private string _metricLabel = "", _metricKey = "", _metricUnit = "", _metricText = "";
+    private double? _metricNumeric;
+    private bool _deleteConfirming;
+    private bool _deleteBusy;
+    private string? _deleteMessage;
+
+
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        _loaded = false;
+        _loadError = null;
+        try
+        {
+            _activity = await Activities.GetAsync(Id);
+        }
+        catch
+        {
+            _activity = null;
+            _loadError = "The activity could not be loaded. Try again.";
+        }
+        finally { _loaded = true; }
+        if (_activity is null) return;
+        _title = _activity.Summary.Title; _description = _activity.Description; _gear = _activity.GearName ?? "";
+        _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title; _segmentEnd = Math.Max(0, _activity.Points.Count - 1);
+    }
+
+    private double? SpeedOrPace(TrackPoint point) =>
+        point.SpeedMetersPerSecond is not > 0
+            ? null
+            : _activity!.Summary.Sport == SportKind.Cycling
+                ? point.SpeedMetersPerSecond * 3.6
+                : 1000d / point.SpeedMetersPerSecond / 60d;
+    private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
+    private bool HasMap => _activity?.Points.Any(point => point.Latitude.HasValue && point.Longitude.HasValue) == true;
+    private string ActivityUrl(string fragment) => $"/activities/{Id}#{fragment}";
+    private string DurationOrDash(double? seconds) => seconds.HasValue ? Format.Duration(seconds.Value) : "--";
+    private static string Value(double? value, string unit, int decimals) =>
+        value.HasValue ? $"{value.Value.ToString($"N{decimals}")}{(string.IsNullOrWhiteSpace(unit) ? "" : $" {unit}")}" : "--";
+    private static string Range(double? minimum, double? maximum, string unit) =>
+        minimum.HasValue && maximum.HasValue ? $"{minimum.Value:N1}-{maximum.Value:N1} {unit}" : "--";
+    private string MovingLabel => _activity!.Rich.MovingTimeSource switch
+    {
+        MovingTimeSource.FitSession => "Recorded by FIT",
+        MovingTimeSource.EstimatedFromRecords => "Estimated from recorded speed and timestamps",
+        MovingTimeSource.SourceSummary => "Reported by the source",
+        _ => "Unavailable"
+    };
+    private static string MetricValue(ActivityMetricSummary metric) =>
+        metric.NumericValue.HasValue
+            ? $"{metric.NumericValue.Value:N2}{(string.IsNullOrWhiteSpace(metric.Unit) ? "" : $" {metric.Unit}")}"
+            : metric.TextValue ?? "--";
+
+    private async Task SaveMetric()
+    {
+        try
+        {
+            var request = new ActivityMetricRequest(_metricKey, _metricLabel, _metricNumeric, _metricText, _metricUnit);
+            if (_editingMetricId.HasValue) await Activities.UpdateMetricAsync(Id, _editingMetricId.Value, request);
+            else await Activities.AddMetricAsync(Id, request);
+            _message = _editingMetricId.HasValue ? "Custom metric updated." : "Custom metric added.";
+            CancelMetricEdit();
+            await LoadAsync();
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            _message = exception.Message;
+        }
+    }
+
+    private void EditMetric(ActivityMetricSummary metric)
+    {
+        _editingMetricId = metric.Id;
+        _metricLabel = metric.Label;
+        _metricKey = metric.Key.StartsWith("custom.", StringComparison.Ordinal) ? metric.Key[7..] : metric.Key;
+        _metricNumeric = metric.NumericValue;
+        _metricText = metric.TextValue ?? "";
+        _metricUnit = metric.Unit ?? "";
+    }
+
+    private void CancelMetricEdit()
+    {
+        _editingMetricId = null;
+        _metricLabel = _metricKey = _metricUnit = _metricText = "";
+        _metricNumeric = null;
+    }
+
+    private async Task DeleteMetric(Guid metricId)
+    {
+        await Activities.DeleteMetricAsync(Id, metricId);
+        _message = "Custom metric deleted.";
+        if (_editingMetricId == metricId) CancelMetricEdit();
+        await LoadAsync();
+    }
+
+
+    private async Task Save()
+    {
+        await Activities.UpdateAsync(Id, new UpdateActivityRequest(_title, _description, _gear, _ownerId));
+        _message = "Activity metadata saved locally."; _editing = false; await LoadAsync();
+    }
+
+    private void BeginDelete()
+    {
+        _deleteMessage = null;
+        _deleteConfirming = true;
+    }
+
+    private void CancelDelete()
+    {
+        if (_deleteBusy) return;
+        _deleteConfirming = false;
+        _deleteMessage = null;
+    }
+
+    private async Task ConfirmDelete()
+    {
+        if (_deleteBusy) return;
+        _deleteBusy = true;
+        _deleteMessage = null;
+        try
+        {
+            var result = await Activities.DeleteAsync([Id]);
+            var query = new List<string> { $"deleted={result.DeletedCount}" };
+            if (result.FileCleanupPending) query.Add("cleanupPending=true");
+            if (result.StatisticsRefreshPending) query.Add("statisticsPending=true");
+            Navigation.NavigateTo($"/activities?{string.Join('&', query)}");
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException)
+        {
+            _deleteMessage = exception.Message;
+            _deleteBusy = false;
+        }
+    }
+    private async Task CreateRoute()
+    {
+        var id = await Routes.CreateFromActivityAsync(new CreateRouteRequest(_activity!.Summary.OwnerId, Id, _routeName, null));
+        Navigation.NavigateTo($"/routes/{id}");
+    }
+    private async Task CreateSegment()
+    {
+        var id = await Segments.CreateFromActivityAsync(new CreateSegmentRequest(_activity!.Summary.OwnerId, Id, _segmentName, _segmentStart, _segmentEnd, _tolerance));
+        Navigation.NavigateTo($"/segments/{id}");
+    }
+}

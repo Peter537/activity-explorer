@@ -1,0 +1,53 @@
+@page "/settings"
+@inject IWatchedFolderService WatchedFolders
+@inject IAppDataPaths Paths
+@inject ProfileState ProfileState
+@inject IMapSettingsService MapSettings
+@inject NavigationManager Navigation
+
+<PageTitle>Settings - Activity Explorer</PageTitle>
+<PageHeader Title="Settings" Summary="Data paths, watched folders, map privacy, and product information." />
+@if (_message is not null) { <div class="notice">@_message</div> }
+<section class="panel form-panel">
+    <div class="panel-heading"><h2>Watched folders</h2></div>
+    <p class="muted">Activity Explorer copies stable supported files and never moves or deletes anything from watched folders. A periodic reconciliation catches missed filesystem events.</p>
+    @if (ProfileState.Profiles.Count > 0)
+    {
+        <div class="inline-fields"><label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label><label class="grow"><span>Absolute folder path</span><input @bind="_folderPath" placeholder="C:\Activities or /path/to/activities" /></label><button class="button" @onclick="AddFolder">Add folder</button></div>
+    }
+    else
+    {
+        <div class="notice subtle">Create a profile before adding a watched folder. <a href="/profiles">Create profile</a></div>
+    }
+    @foreach (var folder in _folders)
+    {
+        <div class="compact-row"><span><strong>@folder.Path</strong><small>@folder.OwnerName - last scan @(folder.LastScanAt?.ToLocalTime().ToString("g") ?? "never")</small></span><span>@(folder.Enabled ? "Enabled" : "Disabled")</span><button class="text-button danger-text" @onclick="() => RemoveFolder(folder.Id)">Remove</button></div>
+    }
+</section>
+<section class="dashboard-grid">
+    <article class="panel"><span class="eyebrow">Private storage</span><h2>Application data</h2><dl class="settings-list"><dt>Root</dt><dd>@Paths.Root</dd><dt>Database</dt><dd>@Paths.DatabasePath</dd><dt>Originals</dt><dd>@Paths.OriginalsPath</dd><dt>Logs</dt><dd>@Paths.LogsPath</dd></dl></article>
+    <article class="panel">
+        <span class="eyebrow">Map privacy</span><h2>Online basemap</h2>
+        <p class="muted">Maps are blank by default and make no requests to external map hosts. Enabling OpenFreeMap applies globally; the provider receives the map area you view.</p>
+        <label class="toggle"><input type="checkbox" checked="@(_mapMode == MapPrivacyMode.OpenFreeMap)" @onchange="ChangeMapMode" /><span>Enable OpenFreeMap on every map</span></label>
+        @if (_mapMode == MapPrivacyMode.OpenFreeMap) { <p>&copy; OpenStreetMap contributors</p> }
+    </article>
+</section>
+<section class="panel"><span class="eyebrow">About</span><h2>Activity Explorer 0.1.0</h2><p class="muted">An open-source, unofficial personal-data explorer. Not affiliated with, endorsed by, or sponsored by Garmin, Strava, or OpenStreetMap. No Garmin or Strava credentials are used.</p></section>
+@code {
+    private IReadOnlyList<WatchedFolderSummary> _folders = [];
+    private Guid _ownerId;
+    private string _folderPath = "";
+    private string? _message;
+    private MapPrivacyMode _mapMode = MapPrivacyMode.Blank;
+    protected override async Task OnInitializedAsync() { await ProfileState.InitializeAsync(); _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty; _mapMode = await MapSettings.GetModeAsync(); await Load(); }
+    private async Task Load() => _folders = await WatchedFolders.ListAsync(ProfileState.SelectedOwnerId);
+    private async Task AddFolder() { try { await WatchedFolders.AddAsync(_ownerId, _folderPath); _folderPath = ""; await Load(); _message = "Watched folder added."; } catch (Exception exception) { _message = exception.Message; } }
+    private async Task RemoveFolder(Guid id) { await WatchedFolders.RemoveAsync(id); await Load(); }
+    private async Task ChangeMapMode(ChangeEventArgs args)
+    {
+        _mapMode = args.Value is true ? MapPrivacyMode.OpenFreeMap : MapPrivacyMode.Blank;
+        await MapSettings.SetModeAsync(_mapMode);
+        Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+    }
+}

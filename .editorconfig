@@ -1,0 +1,38 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,razor}]
+indent_style = space
+indent_size = 4
+
+[src/**/*.cs]
+# These names are domain/public-interface terms; collection abstractions are
+# retained where they keep parser and service contracts implementation-neutral.
+dotnet_diagnostic.CA1711.severity = none
+dotnet_diagnostic.CA1859.severity = none
+
+[src/ActivityExplorer.Web/Components/Shared/Format.cs]
+dotnet_diagnostic.CA1716.severity = none
+
+[src/ActivityExplorer.Infrastructure/**/*.cs]
+# Logging is low-frequency local lifecycle reporting. Structured templates are
+# retained without per-call source-generated delegates.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+
+[src/ActivityExplorer.Infrastructure/Import/GpxRouteReader.cs]
+# Kept as an injectable service to preserve the parser abstraction.
+dotnet_diagnostic.CA1822.severity = none
+
+[tests/**/*.cs]
+# Existing test names intentionally use behavior-focused snake_case, and direct
+# cancellation coverage is concentrated in the lifecycle tests rather than
+# mechanically threading TestContext through every short local operation.
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1859.severity = none
+dotnet_diagnostic.xUnit1051.severity = none

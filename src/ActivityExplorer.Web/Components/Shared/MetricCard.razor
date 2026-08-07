@@ -1,0 +1,11 @@
+<article class="metric-card">
+    <span class="metric-label">@Label</span>
+    <strong>@Value</strong>
+    @if (!string.IsNullOrWhiteSpace(Hint)) { <small>@Hint</small> }
+</article>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string Value { get; set; } = "";
+    [Parameter] public string? Hint { get; set; }
+}

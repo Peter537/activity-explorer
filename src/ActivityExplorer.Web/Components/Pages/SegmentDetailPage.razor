@@ -1,0 +1,162 @@
+@page "/segments/{Id:guid}"
+@inject ISegmentService SegmentService
+
+<PageTitle>@(_segment?.Summary.Name ?? (_loadError is not null ? "Segment unavailable" : _loaded ? "Segment not found" : "Segment")) - Activity Explorer</PageTitle>
+@if (!_loaded)
+{
+    <div class="loading" role="status">Loading segment...</div>
+}
+else if (_loadError is not null)
+{
+    <section class="empty-state"><h1>Segment unavailable</h1><p>@_loadError</p><button class="button" type="button" @onclick="LoadAsync">Try again</button></section>
+}
+else if (_segment is null)
+{
+    <section class="empty-state"><h1>Segment not found</h1><p>This segment may have been deleted or the link is no longer valid.</p><a class="button" href="/segments">Back to segments</a></section>
+}
+else
+{
+    <PageHeader Title="@_segment.Summary.Name" Summary="@($"Directional: start to finish - {_segment.Summary.ToleranceMeters:N0} m matching tolerance")">
+        <Metadata><span>@_segment.Summary.Sport</span><span>@_segment.Summary.OwnerName</span></Metadata>
+        <Actions><button class="button" disabled="@_recomputing" @onclick="Recompute">@(_recomputing ? "Recomputing efforts..." : "Recompute efforts")</button></Actions>
+    </PageHeader>
+
+    <section class="metric-grid five">
+        <MetricCard Label="Distance" Value="@Format.Distance(_segment.Summary.DistanceMeters)" />
+        <MetricCard Label="Ascent" Value="@Value(_segment.Summary.ElevationGain, "m")" />
+        <MetricCard Label="Descent" Value="@Value(_segment.Summary.ElevationLoss, "m")" />
+        <MetricCard Label="Average grade" Value="@Value(_segment.Summary.AverageGrade, "%", 1)" />
+        <MetricCard Label="Personal best" Value="@(_segment.Summary.BestElapsedSeconds.HasValue ? Format.Duration(_segment.Summary.BestElapsedSeconds.Value) : "--")" />
+    </section>
+
+    <section id="@_profileChartId" class="chart-grid single-chart synchronized-charts" data-axis-kind="distance">
+        <TimeSeriesChart Title="Segment elevation profile" Unit="m" Points="_segment.Points"
+                         Selector="@(point => point.ElevationMeters)" Axis="ChartAxisKind.Distance" GroupId="_profileChartId" />
+    </section>
+
+    <section class="panel flush map-panel">
+        <MapCanvas @key="_segment.SelectedEffortId" InlinePoints="_segment.Points"
+                   HighlightPoints="_segment.SelectedEffortPoints" CssClass="detail-map" Label="Segment and selected effort map" />
+    </section>
+
+    <section class="panel">
+        <div class="panel-heading">
+            <div><h2>Effort comparison</h2><p class="muted">Repeated passes remain separate. Select a row to inspect its exact stream slice.</p></div>
+            <label class="compact-select"><span>Sort by</span><select @bind="_sort"><option value="rank">Rank</option><option value="date">Newest</option><option value="elapsed">Elapsed time</option><option value="speed">Speed / pace</option><option value="heart-rate">Heart rate</option><option value="power">Power</option></select></label>
+        </div>
+        @if (_segment.Efforts.Count == 0)
+        {
+            <p class="muted">No matching passes found. Increase the advanced segment tolerance only when the recorded GPS is noisy.</p>
+        }
+        else
+        {
+            <div class="effort-table-wrap">
+                <table class="effort-table">
+                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>Speed / pace</th><th>Ascent</th><th>Grade</th><th>Heart rate</th><th>Cadence</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
+                    <tbody>
+                    @foreach (var effort in SortedEfforts)
+                    {
+                        <tr class="@(effort.Id == _segment.SelectedEffortId ? "selected" : null)">
+                            <td>#@effort.Rank</td>
+                            <td><a href="@($"/segments/{Id}?effort={effort.Id}")">@effort.StartTime.ToLocalTime().ToString("g")</a></td>
+                            <td>@Format.Duration(effort.ElapsedSeconds)</td>
+                            <td>@Format.Duration(effort.MovingSeconds)</td>
+                            <td>@Format.Speed(effort.AverageSpeed, _segment.Summary.Sport)</td>
+                            <td>@Value(effort.ElevationGain, "m")</td>
+                            <td>@Value(effort.AverageGrade, "%", 1)</td>
+                            <td>@Value(effort.AverageHeartRate, "bpm")</td>
+                            <td>@Value(effort.AverageCadence, "rpm")</td>
+                            <td>@Value(effort.AveragePower, "W")</td>
+                            <td>@Value(effort.AverageTemperature, "deg C", 1)</td>
+                            <td>@Value(effort.AverageRespiration, "brpm", 1)</td>
+                            <td>@($"{effort.CoveragePercent:N0}%")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    var selected = _segment.Efforts.FirstOrDefault(x => x.Id == _segment.SelectedEffortId);
+    @if (selected is not null && _segment.SelectedEffortPoints.Count > 1)
+    {
+        <section class="panel-heading chart-controls">
+            <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@selected.StartTime.ToLocalTime().ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
+            <div class="button-row"><button class="@AxisButton(ChartAxisKind.ElapsedTime)" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button><button class="@AxisButton(ChartAxisKind.Distance)" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button></div>
+        </section>
+        <section id="@_effortChartId" class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
+            <TimeSeriesChart Title="Elevation" Unit="m" Points="_segment.SelectedEffortPoints" Selector="@(point => point.ElevationMeters)" Axis="_axis" GroupId="_effortChartId" />
+            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" GroupId="_effortChartId" />
+            <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" GroupId="_effortChartId" />
+            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" GroupId="_effortChartId" />
+            <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" GroupId="_effortChartId" EmptyMessage="Not recorded in the source" />
+            <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" GroupId="_effortChartId" />
+            <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" GroupId="_effortChartId" />
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "effort")] public Guid? EffortId { get; set; }
+
+    private SegmentDetail? _segment;
+    private string _sort = "rank";
+    private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
+    private bool _loaded;
+    private bool _recomputing;
+    private string? _loadError;
+    private readonly string _profileChartId = $"segment-profile-{Guid.NewGuid():N}";
+    private readonly string _effortChartId = $"segment-effort-{Guid.NewGuid():N}";
+
+    private IEnumerable<SegmentEffortSummary> SortedEfforts => (_segment?.Efforts ?? []).OrderBy(x => _sort switch
+    {
+        "date" => -x.StartTime.UtcTicks,
+        "elapsed" => (long)(x.ElapsedSeconds * 1000),
+        "speed" => -(long)((x.AverageSpeed ?? 0) * 1000000),
+        "heart-rate" => -(long)((x.AverageHeartRate ?? 0) * 1000),
+        "power" => -(long)((x.AveragePower ?? 0) * 1000),
+        _ => x.Rank
+    });
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadAsync();
+    }
+
+
+    private async Task LoadAsync()
+    {
+        _loaded = false;
+        _loadError = null;
+        try { _segment = await SegmentService.GetAsync(Id, EffortId); }
+        catch
+        {
+            _segment = null;
+            _loadError = "The segment could not be loaded. Try again.";
+        }
+        finally { _loaded = true; }
+    }
+    private async Task Recompute()
+    {
+        _recomputing = true;
+        try
+        {
+            await SegmentService.RecomputeAsync(Id);
+            _segment = await SegmentService.GetAsync(Id, EffortId);
+        }
+        finally { _recomputing = false; }
+    }
+    private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
+    private static string Value(double? value, string unit, int decimals = 0) =>
+        value.HasValue ? $"{value.Value.ToString($"N{decimals}")} {unit}".TrimEnd() : "--";
+
+    private double? SpeedOrPace(TrackPoint point)
+    {
+        if (point.SpeedMetersPerSecond is not > 0) return null;
+        return _segment?.Summary.Sport == SportKind.Cycling
+            ? point.SpeedMetersPerSecond * 3.6
+            : 1000d / point.SpeedMetersPerSecond / 60d;
+    }
+}

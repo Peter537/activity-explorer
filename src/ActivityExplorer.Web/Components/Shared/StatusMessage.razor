@@ -1,0 +1,19 @@
+@if (!string.IsNullOrWhiteSpace(Message))
+{
+    <div class="@CssClass" role="@(IsError ? "alert" : "status")" aria-live="@(IsError ? "assertive" : "polite")">
+        @Message
+    </div>
+}
+
+@code {
+    [Parameter]
+    public string? Message { get; set; }
+
+    [Parameter]
+    public bool IsError { get; set; }
+
+    [Parameter]
+    public bool IsWarning { get; set; }
+
+    private string CssClass => IsError ? "notice error" : IsWarning ? "notice warning" : "notice";
+}
