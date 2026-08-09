@@ -73,7 +73,7 @@ MapLibre is served locally. If the map canvas itself does not load, confirm the 
 
 ## Database schema is incompatible
 
-Activity Explorer creates the current schema for a fresh data root and reopens databases that already match it. Pre-release schema upgrades are intentionally unsupported. If startup reports a missing table or column, stop every Activity Explorer process, copy the entire data root, choose a fresh `ACTIVITY_EXPLORER_DATA` directory, and reimport from your preserved originals or provider export.
+Activity Explorer creates the current schema for a fresh data root and reopens databases that already match it. Startup idempotently adds `SourceKind`, `SourceName`, and `SourceFormat` to the immediately preceding segment schema. Other pre-release schema upgrades remain unsupported. If startup reports a different missing table or column, stop every Activity Explorer process, copy the entire data root, choose a fresh `ACTIVITY_EXPLORER_DATA` directory, and reimport from your preserved originals or provider export.
 
 Do not delete the old root if its originals are your only copy. Preserve the database, WAL/SHM files if present, `originals/`, `quarantine/`, and `keys/` together. A complete backup requires stopping Activity Explorer.
 

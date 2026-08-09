@@ -17,9 +17,13 @@ else if (_segment is null)
 else
 {
     <PageHeader Title="@_segment.Summary.Name" Summary="@($"Directional: start to finish - {_segment.Summary.ToleranceMeters:N0} m matching tolerance")">
-        <Metadata><span>@_segment.Summary.Sport</span><span>@_segment.Summary.OwnerName</span></Metadata>
+        <Metadata><span>@_segment.Summary.Sport</span><span>@_segment.Summary.OwnerName</span><span>@SourceLabel</span></Metadata>
         <Actions><button class="button" disabled="@_recomputing" @onclick="Recompute">@(_recomputing ? "Recomputing efforts..." : "Recompute efforts")</button></Actions>
     </PageHeader>
+    @if (_segment.Summary.SourceKind == SegmentSourceKind.ImportedFile)
+    {
+        <div class="notice subtle">Imported provenance: @(_segment.Summary.SourceName ?? "user-supplied file")@if (!string.IsNullOrWhiteSpace(_segment.Summary.SourceFormat)) { <text> · @_segment.Summary.SourceFormat</text> }. Only local path geometry and this provenance label were retained.</div>
+    }
 
     <section class="metric-grid five">
         <MetricCard Label="Distance" Value="@Format.Distance(_segment.Summary.DistanceMeters)" />
@@ -29,14 +33,13 @@ else
         <MetricCard Label="Personal best" Value="@(_segment.Summary.BestElapsedSeconds.HasValue ? Format.Duration(_segment.Summary.BestElapsedSeconds.Value) : "--")" />
     </section>
 
-    <section id="@_profileChartId" class="chart-grid single-chart synchronized-charts" data-axis-kind="distance">
-        <TimeSeriesChart Title="Segment elevation profile" Unit="m" Points="_segment.Points"
-                         Selector="@(point => point.ElevationMeters)" Axis="ChartAxisKind.Distance" GroupId="_profileChartId" />
-    </section>
-
-    <section class="panel flush map-panel">
-        <MapCanvas @key="_segment.SelectedEffortId" InlinePoints="_segment.Points"
-                   HighlightPoints="_segment.SelectedEffortPoints" CssClass="detail-map" Label="Segment and selected effort map" />
+    <section id="@_definitionExplorerId" class="segment-definition-explorer">
+        <SegmentDefinitionProfile Points="_segment.Points" InspectionGroupId="@_definitionExplorerId" />
+        <section class="panel flush map-panel">
+            <MapCanvas @key="_segment.SelectedEffortId" InlinePoints="_segment.Points"
+                       HighlightPoints="_segment.SelectedEffortPoints" InspectionGroupId="@_definitionExplorerId"
+                       CssClass="detail-map" Label="Segment and selected effort map" />
+        </section>
     </section>
 
     <section class="panel">
@@ -107,8 +110,16 @@ else
     private bool _loaded;
     private bool _recomputing;
     private string? _loadError;
-    private readonly string _profileChartId = $"segment-profile-{Guid.NewGuid():N}";
+    private readonly string _definitionExplorerId = $"segment-definition-{Guid.NewGuid():N}";
     private readonly string _effortChartId = $"segment-effort-{Guid.NewGuid():N}";
+    private string SourceLabel => _segment?.Summary.SourceKind switch
+    {
+        SegmentSourceKind.ImportedFile => "Imported file",
+        SegmentSourceKind.Activity => "Activity selection",
+        SegmentSourceKind.Route => "Route selection",
+        SegmentSourceKind.Drawn => "Drawn locally",
+        _ => "Local definition"
+    };
 
     private IEnumerable<SegmentEffortSummary> SortedEfforts => (_segment?.Efforts ?? []).OrderBy(x => _sort switch
     {

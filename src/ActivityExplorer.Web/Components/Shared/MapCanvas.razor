@@ -8,7 +8,7 @@
 {
     <p id="@($"{_id}-instructions")" class="map-keyboard-help">Pan or zoom the map with its keyboard controls, then use Add point at map center. Undo and Clear are also keyboard-operable.</p>
 }
-<div id="@_id" class="@CssClass"></div>
+<div id="@_id" class="@CssClass" data-inspection-map="@(string.IsNullOrWhiteSpace(InspectionGroupId) ? null : "true")"></div>
 @if (Editable)
 {
     <div class="map-keyboard-controls"><button class="button" type="button" @onclick="AddCenterPointAsync">Add point at map center</button><span role="status" aria-live="polite">@_pointStatus</span></div>
@@ -26,12 +26,20 @@
     [Parameter] public string? SegmentUrl { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? InlinePoints { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? HighlightPoints { get; set; }
+    [Parameter] public int? SelectionStartIndex { get; set; }
+    [Parameter] public int? SelectionEndIndex { get; set; }
+    [Parameter] public bool SelectionReversed { get; set; }
+    [Parameter] public bool ShowSelectionEndpoints { get; set; }
+    [Parameter] public string? InspectionGroupId { get; set; }
     [Parameter] public bool ShowDisclosure { get; set; }
     [Parameter] public bool Editable { get; set; }
     [Parameter] public EventCallback<IReadOnlyList<TrackPoint>> PointsChanged { get; set; }
     private readonly string _id = $"map-{Guid.NewGuid():N}";
     private DotNetObjectReference<MapCanvas>? _reference;
     private bool _initialized;
+    private int? _renderedSelectionStart;
+    private int? _renderedSelectionEnd;
+    private bool _renderedSelectionReversed;
     private string _pointStatus = "No points added.";
     private MapPrivacyMode _mode = MapPrivacyMode.Blank;
 
@@ -39,7 +47,22 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
+        if (!firstRender)
+        {
+            if (_initialized && (_renderedSelectionStart != SelectionStartIndex ||
+                                 _renderedSelectionEnd != SelectionEndIndex ||
+                                 _renderedSelectionReversed != SelectionReversed))
+            {
+                await JS.InvokeVoidAsync(
+                    "activityExplorerMap.updateSelection",
+                    _id,
+                    SelectionStartIndex,
+                    SelectionEndIndex,
+                    SelectionReversed);
+                RememberSelection();
+            }
+            return;
+        }
         var coordinates = InlinePoints?
             .Where(x => x.Longitude.HasValue && x.Latitude.HasValue)
             .Select(x => new[] { x.Longitude!.Value, x.Latitude!.Value })
@@ -56,6 +79,11 @@
             segmentUrl = SegmentUrl,
             inlineCoordinates = coordinates,
             highlightCoordinates,
+            selectionStartIndex = SelectionStartIndex,
+            selectionEndIndex = SelectionEndIndex,
+            selectionReversed = SelectionReversed,
+            showSelectionEndpoints = ShowSelectionEndpoints,
+            inspectionGroupId = InspectionGroupId,
             blankBaseMap = _mode != MapPrivacyMode.OpenFreeMap,
             styleUrl = _mode == MapPrivacyMode.OpenFreeMap
                 ? Configuration["Maps:StyleUrl"] ?? "https://tiles.openfreemap.org/styles/liberty"
@@ -65,6 +93,7 @@
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
         _initialized = true;
+        RememberSelection();
     }
 
     [JSInvokable]
@@ -84,6 +113,13 @@
 
     public ValueTask UndoAsync() => JS.InvokeVoidAsync("activityExplorerMap.undo", _id);
     public ValueTask ClearAsync() => JS.InvokeVoidAsync("activityExplorerMap.clear", _id);
+
+    private void RememberSelection()
+    {
+        _renderedSelectionStart = SelectionStartIndex;
+        _renderedSelectionEnd = SelectionEndIndex;
+        _renderedSelectionReversed = SelectionReversed;
+    }
 
     public async ValueTask DisposeAsync()
     {

@@ -171,6 +171,103 @@ internalApi.MapGet("/originals/{id:guid}", async (
         return Results.NotFound();
     }
 });
+internalApi.MapPost("/segments/import", async (
+    HttpContext context,
+    IAntiforgery antiforgery,
+    ISegmentPathReader reader,
+    ISegmentService segments,
+    MultipartUploadReader uploads,
+    CancellationToken token) =>
+{
+    var request = context.Request;
+    if (request.Headers["X-Activity-Explorer"] != "1")
+        return Results.BadRequest(new { error = "The required same-origin request header is missing." });
+    try
+    {
+        await antiforgery.ValidateRequestAsync(context);
+    }
+    catch (AntiforgeryValidationException)
+    {
+        return Results.BadRequest(new { error = "A valid same-origin antiforgery token is required." });
+    }
+
+    if (!Guid.TryParse(request.Query["ownerId"], out var ownerId))
+        return Results.BadRequest(new { error = "Select a profile before importing a segment path." });
+    if (!Enum.TryParse<SportKind>(request.Query["sport"], true, out var sport) || !Enum.IsDefined(sport))
+        return Results.BadRequest(new { error = "Choose Cycling, Running, or Walking." });
+    var name = request.Query["name"].ToString().Trim();
+    if (name.Length is < 1 or > 240)
+        return Results.BadRequest(new { error = "Segment name must contain 1 to 240 characters." });
+    if (!double.TryParse(request.Query["toleranceMeters"], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var tolerance) ||
+        !double.IsFinite(tolerance) || tolerance is < 10 or > 200)
+        return Results.BadRequest(new { error = "Tolerance must be between 10 and 200 metres." });
+
+    static bool TryIndex(HttpRequest httpRequest, string key, out int? value)
+    {
+        var text = httpRequest.Query[key].ToString();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            value = null;
+            return true;
+        }
+        if (int.TryParse(text, out var parsed) && parsed >= 0)
+        {
+            value = parsed;
+            return true;
+        }
+        value = null;
+        return false;
+    }
+
+    if (!TryIndex(request, "startIndex", out var startIndex) || !TryIndex(request, "endIndex", out var endIndex))
+        return Results.BadRequest(new { error = "Trim points must be zero-based whole numbers." });
+    var reverseText = request.Query["reverseDirection"].ToString();
+    if (!string.IsNullOrWhiteSpace(reverseText) && !bool.TryParse(reverseText, out _))
+        return Results.BadRequest(new { error = "Choose a valid direction." });
+    var reverse = bool.TryParse(reverseText, out var reverseValue) && reverseValue;
+
+    StagedUpload? upload = null;
+    try
+    {
+        upload = await uploads.ReadSingleFileAsync(request, uploads.SegmentLimit, token);
+        var extension = Path.GetExtension(upload.FileName).ToLowerInvariant();
+        if (extension is not (".gpx" or ".fit" or ".tcx" or ".kml" or ".geojson" or ".json"))
+            return Results.BadRequest(new { error = "Supported segment path files are GPX, FIT segment/course, TCX, KML, and GeoJSON." });
+
+        var parsed = await reader.ReadAsync(upload.FilePath, token);
+        var start = startIndex ?? 0;
+        var end = endIndex ?? parsed.Points.Count - 1;
+        if (start < 0 || end >= parsed.Points.Count || end - start < 1)
+            return Results.BadRequest(new { error = $"Choose at least two valid points between 0 and {parsed.Points.Count - 1}." });
+        IEnumerable<TrackPoint> selected = parsed.Points.Skip(start).Take(end - start + 1);
+        if (reverse) selected = selected.Reverse();
+
+        var id = await segments.CreateAsync(new CreateSegmentPathRequest(
+            ownerId,
+            name,
+            sport,
+            selected.ToArray(),
+            tolerance,
+            SourceKind: SegmentSourceKind.ImportedFile,
+            SourceName: Path.GetFileName(upload.FileName),
+            SourceFormat: parsed.Format), token);
+        return Results.Ok(new { id });
+    }
+    catch (UploadTooLargeException exception)
+    {
+        return Results.Json(new { error = exception.Message }, statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+    catch (Exception exception) when (exception is InvalidDataException or System.Xml.XmlException or
+        System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+    finally
+    {
+        if (upload is not null) uploads.Cleanup(upload);
+    }
+});
 internalApi.MapPost("/routes/import", async (
     HttpContext context,
     IAntiforgery antiforgery,

@@ -79,15 +79,19 @@ public sealed record MapFeatureCollection(string Type, IReadOnlyList<MapFeature>
 public sealed record MapFeature(string Type, MapGeometry Geometry, IReadOnlyDictionary<string, object?> Properties);
 public sealed record MapGeometry(string Type, IReadOnlyList<double[]> Coordinates);
 public sealed record SegmentMatch(int StartIndex, int EndIndex, double CoveragePercent, double MeanDistanceMeters);
-public sealed record CreateSegmentRequest(Guid OwnerId, Guid ActivityId, string Name, int StartPointIndex, int EndPointIndex, double ToleranceMeters = 30);
+public sealed record CreateSegmentRequest(
+    Guid OwnerId, Guid ActivityId, string Name, int StartPointIndex, int EndPointIndex,
+    double ToleranceMeters = 30, bool ReverseDirection = false);
 public sealed record CreateSegmentPathRequest(
     Guid OwnerId, string Name, SportKind Sport, IReadOnlyList<TrackPoint> Points, double ToleranceMeters = 30,
-    Guid? SourceActivityId = null);
+    Guid? SourceActivityId = null, SegmentSourceKind SourceKind = SegmentSourceKind.Drawn,
+    string? SourceName = null, string? SourceFormat = null);
 
 public sealed record SegmentSummary(
     Guid Id, Guid OwnerId, string OwnerName, string Name, SportKind Sport,
     double DistanceMeters, double ToleranceMeters, int EffortCount, double? BestElapsedSeconds,
-    double? AverageGrade, double? ElevationGain, double? ElevationLoss);
+    double? AverageGrade, double? ElevationGain, double? ElevationLoss,
+    SegmentSourceKind SourceKind = SegmentSourceKind.Unknown, string? SourceName = null, string? SourceFormat = null);
 
 public sealed record SegmentDetail(
     SegmentSummary Summary, IReadOnlyList<TrackPoint> Points, IReadOnlyList<SegmentEffortSummary> Efforts,

@@ -79,6 +79,20 @@ public sealed class ChartSeriesTests
     }
 
     [Fact]
+    public void Distance_axis_preserves_a_truthful_empty_series_when_elevation_is_missing()
+    {
+        var points = TestSupport.Track(8)
+            .Select(point => point with { ElevationMeters = null })
+            .ToArray();
+
+        var series = ChartSeriesBuilder.Build(points, point => point.ElevationMeters, ChartAxisKind.Distance);
+
+        Assert.Empty(series.Samples);
+        Assert.Null(series.Average);
+        Assert.Equal(points[^1].DistanceMeters!.Value, series.AxisMaximum);
+    }
+
+    [Fact]
     public void Stream_without_optional_respiration_decodes_as_null()
     {
         var legacy = new[]

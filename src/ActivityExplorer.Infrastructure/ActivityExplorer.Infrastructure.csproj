@@ -8,4 +8,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ActivityExplorer.Tests" />
+  </ItemGroup>
 </Project>

@@ -27,6 +27,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<XmlActivityImporter>();
         services.AddSingleton<ArchiveActivityImporter>();
         services.AddSingleton<GpxRouteReader>();
+        services.AddSingleton<ISegmentPathReader, SegmentPathReader>();
         services.AddSingleton<IActivityImporter>(provider => provider.GetRequiredService<ArchiveActivityImporter>());
         services.AddSingleton<IActivityImporter>(provider => provider.GetRequiredService<FitActivityImporter>());
         services.AddSingleton<IActivityImporter>(provider => provider.GetRequiredService<XmlActivityImporter>());

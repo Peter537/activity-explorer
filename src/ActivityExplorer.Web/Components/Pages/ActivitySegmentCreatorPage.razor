@@ -1,0 +1,92 @@
+@page "/activities/{Id:guid}/segments/new"
+@inject IActivityQueryService Activities
+@inject ISegmentService Segments
+@inject NavigationManager Navigation
+@using ActivityExplorer.Web.Components.Shared
+
+<PageTitle>@(_activity is null ? "Create segment" : $"Create segment from {_activity.Summary.Title}") - Activity Explorer</PageTitle>
+@if (!_loaded)
+{
+    <div class="loading" role="status">Loading segment creator...</div>
+}
+else if (_loadError is not null)
+{
+    <section class="empty-state"><h1>Segment creator unavailable</h1><p>@_loadError</p><button class="button" type="button" @onclick="LoadAsync">Try again</button><a class="text-button" href="@ActivityUrl">Back to activity</a></section>
+}
+else if (_activity is null)
+{
+    <section class="empty-state"><h1>Activity not found</h1><p>This activity may have been deleted or the link is no longer valid.</p><a class="button" href="/activities">Back to activities</a></section>
+}
+else
+{
+    <PageHeader Title="Create a segment" Summary="@($"From {_activity.Summary.Title}")">
+        <Metadata><span>@_activity.Summary.Sport</span><span>@_activity.Summary.OwnerName</span></Metadata>
+        <Actions><a class="button" href="@ActivityUrl">Back to activity</a></Actions>
+    </PageHeader>
+    @if (_path is null || _path.Count < 2)
+    {
+        <section class="empty-state"><h2>Segment unavailable</h2><p>This activity does not contain at least two GPS points. Its recorded details remain available.</p><a class="button" href="@ActivityUrl">Back to activity</a></section>
+    }
+    else
+    {
+        <SegmentCreatorWorkspace SourceId="Id" SourceLabel="activity" Points="_path.Points"
+                                 InitialName="" Busy="_creating" ErrorMessage="@_message"
+                                 OnCreate="CreateSegment" />
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private ActivityDetail? _activity;
+    private SegmentCreatorPath? _path;
+    private bool _loaded;
+    private bool _creating;
+    private string? _loadError;
+    private string? _message;
+    private string ActivityUrl => $"/activities/{Id}";
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loaded = false;
+        _loadError = null;
+        _message = null;
+        try
+        {
+            _activity = await Activities.GetAsync(Id);
+            _path = _activity is null ? null : SegmentCreatorPath.FromActivity(_activity.Points);
+        }
+        catch
+        {
+            _activity = null;
+            _path = null;
+            _loadError = "The activity could not be loaded. Try again.";
+        }
+        finally { _loaded = true; }
+    }
+
+    private async Task CreateSegment(SegmentCreatorSubmission submission)
+    {
+        _creating = true;
+        _message = null;
+        try
+        {
+            var id = await Segments.CreateFromActivityAsync(new CreateSegmentRequest(
+                _activity!.Summary.OwnerId,
+                Id,
+                submission.Name,
+                _path!.SourceIndexAt(submission.StartIndex),
+                _path.SourceIndexAt(submission.EndIndex),
+                submission.ToleranceMeters,
+                submission.ReverseDirection));
+            Navigation.NavigateTo($"/segments/{id}");
+        }
+        catch (Exception exception)
+        {
+            _message = exception.Message;
+        }
+        finally { _creating = false; }
+    }
+}

@@ -7,140 +7,316 @@ namespace ActivityExplorer.Infrastructure.Services;
 
 public sealed class SegmentMatcher : ISegmentMatcher
 {
+    private const double SampleIntervalMeters = 10;
+    private const double RequiredCoverage = 0.95;
+    internal const int MaximumAlignmentSamples = 50_001;
+
     public Task<IReadOnlyList<SegmentMatch>> MatchAsync(
         IReadOnlyList<TrackPoint> activity,
         IReadOnlyList<TrackPoint> segment,
         double toleranceMeters,
         CancellationToken cancellationToken = default)
     {
-        var activityGps = activity.Select((point, index) => (point, index))
-            .Where(x => x.point.Latitude.HasValue && x.point.Longitude.HasValue)
+        cancellationToken.ThrowIfCancellationRequested();
+        var activityGps = activity.Select((point, index) => new IndexedPoint(point, index))
+            .Where(value => HasPosition(value.Point))
             .ToArray();
-        var segmentSamples = Resample(segment, 10);
-        if (activityGps.Length < 2 || segmentSamples.Count < 2)
-        {
+        var segmentGps = segment.Where(HasPosition).ToArray();
+        if (activityGps.Length < 2 || segmentGps.Length < 2)
             return Task.FromResult<IReadOnlyList<SegmentMatch>>([]);
-        }
+
+        var startRuns = FindProximityRuns(activityGps, segmentGps[0], toleranceMeters, cancellationToken);
+        var endRuns = FindProximityRuns(activityGps, segmentGps[^1], toleranceMeters, cancellationToken);
+        if (startRuns.Count == 0 || endRuns.Count == 0)
+            return Task.FromResult<IReadOnlyList<SegmentMatch>>([]);
+
+        var segmentPath = MeasuredPath.Create(segmentGps, cancellationToken);
+        if (segmentPath.TotalDistanceMeters <= 0)
+            return Task.FromResult<IReadOnlyList<SegmentMatch>>([]);
+
+        var segmentSamples = segmentPath.SampleNormalized(
+            AlignmentSampleCount(segmentPath.TotalDistanceMeters),
+            cancellationToken);
 
         var matches = new List<SegmentMatch>();
         var searchFrom = 0;
-        while (searchFrom < activityGps.Length - 1)
+        for (var startRunIndex = 0; startRunIndex < startRuns.Count; startRunIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var start = FindStart(activityGps, segmentSamples[0], searchFrom, toleranceMeters);
-            if (start < 0) break;
+            var startRun = startRuns[startRunIndex];
+            if (startRun.LastIndex < searchFrom) continue;
 
-            var current = start;
-            var matched = 0;
-            var sumDistance = 0d;
-            foreach (var sample in segmentSamples)
+            var nextStart = startRunIndex + 1 < startRuns.Count
+                ? startRuns[startRunIndex + 1].FirstIndex
+                : int.MaxValue;
+            var candidates = new List<AlignmentCandidate>();
+            foreach (var endRun in endRuns)
             {
-                var bestIndex = -1;
-                var bestDistance = double.MaxValue;
-                var upper = Math.Min(activityGps.Length, current + 500);
-                for (var index = current; index < upper; index++)
-                {
-                    var distance = Distance(activityGps[index].point, sample);
-                    if (distance < bestDistance)
-                    {
-                        bestDistance = distance;
-                        bestIndex = index;
-                    }
-                }
+                if (endRun.LastIndex <= Math.Max(startRun.FirstIndex, searchFrom)) continue;
+                if (endRun.FirstIndex >= nextStart) break;
+                var endpoints = SelectClosestOrderedEndpoints(
+                    activityGps,
+                    startRun,
+                    endRun,
+                    searchFrom,
+                    segmentGps[0],
+                    segmentGps[^1],
+                    cancellationToken);
+                if (endpoints is null) continue;
 
-                if (bestIndex >= 0 && bestDistance <= toleranceMeters)
-                {
-                    matched++;
-                    sumDistance += bestDistance;
-                    current = bestIndex;
-                }
+                var candidate = EvaluateCandidate(
+                    activityGps,
+                    endpoints.Value,
+                    segmentSamples,
+                    toleranceMeters,
+                    cancellationToken);
+                if (candidate.CoveragePercent + 1e-9 < RequiredCoverage * 100) continue;
+                if (candidate.EndGpsIndex < nextStart) candidates.Add(candidate);
             }
 
-            var coverage = matched / (double)segmentSamples.Count;
-            var endDistance = Distance(activityGps[current].point, segmentSamples[^1]);
-            var directionOk = SameDirection(activityGps[start].point, activityGps[current].point, segmentSamples[0], segmentSamples[^1]);
-            if (coverage >= 0.95 && endDistance <= toleranceMeters && directionOk && current > start)
-            {
-                matches.Add(new SegmentMatch(
-                    activityGps[start].index,
-                    activityGps[current].index,
-                    coverage * 100,
-                    matched == 0 ? 0 : sumDistance / matched));
-                searchFrom = current + 1;
-            }
-            else
-            {
-                searchFrom = start + 1;
-            }
+            if (candidates.Count == 0) continue;
+            candidates.Sort(CompareCandidates);
+            var accepted = candidates[0];
+            matches.Add(new SegmentMatch(
+                activityGps[accepted.StartGpsIndex].SourceIndex,
+                activityGps[accepted.EndGpsIndex].SourceIndex,
+                accepted.CoveragePercent,
+                accepted.MeanDistanceMeters));
+            searchFrom = accepted.EndGpsIndex + 1;
         }
 
         return Task.FromResult<IReadOnlyList<SegmentMatch>>(matches);
     }
 
-    private static int FindStart(
-        IReadOnlyList<(TrackPoint point, int index)> activity,
-        TrackPoint start,
-        int from,
-        double tolerance)
+    private static IReadOnlyList<ProximityRun> FindProximityRuns(
+        IReadOnlyList<IndexedPoint> activity,
+        TrackPoint endpoint,
+        double toleranceMeters,
+        CancellationToken cancellationToken)
     {
-        for (var index = from; index < activity.Count; index++)
+        var runs = new List<ProximityRun>();
+        var first = -1;
+        for (var index = 0; index < activity.Count; index++)
         {
-            if (Distance(activity[index].point, start) <= tolerance)
+            if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+            if (Distance(activity[index].Point, endpoint) <= toleranceMeters)
             {
-                return index;
+                if (first < 0) first = index;
+            }
+            else if (first >= 0)
+            {
+                runs.Add(new ProximityRun(first, index - 1));
+                first = -1;
             }
         }
 
-        return -1;
+        if (first >= 0) runs.Add(new ProximityRun(first, activity.Count - 1));
+        return runs;
     }
 
-    private static IReadOnlyList<TrackPoint> Resample(IReadOnlyList<TrackPoint> input, double intervalMeters)
+    private static EndpointPair? SelectClosestOrderedEndpoints(
+        IReadOnlyList<IndexedPoint> activity,
+        ProximityRun startRun,
+        ProximityRun endRun,
+        int searchFrom,
+        TrackPoint segmentStart,
+        TrackPoint segmentEnd,
+        CancellationToken cancellationToken)
     {
-        var gps = input.Where(x => x.Latitude.HasValue && x.Longitude.HasValue).ToArray();
-        if (gps.Length < 2) return gps;
+        var firstStart = Math.Max(startRun.FirstIndex, searchFrom);
+        var lastStart = startRun.LastIndex;
+        if (firstStart > lastStart || endRun.LastIndex <= firstStart) return null;
 
-        var result = new List<TrackPoint> { gps[0] };
-        var carry = 0d;
-        for (var index = 1; index < gps.Length; index++)
+        var startCursor = firstStart;
+        var closestStartIndex = -1;
+        var closestStartDistance = double.MaxValue;
+        EndpointPair? best = null;
+        for (var endIndex = endRun.FirstIndex; endIndex <= endRun.LastIndex; endIndex++)
         {
-            var a = gps[index - 1];
-            var b = gps[index];
-            var distance = Distance(a, b);
-            if (distance <= 0) continue;
-            var walked = intervalMeters - carry;
-            while (walked < distance)
+            if ((endIndex & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+            while (startCursor <= lastStart && startCursor < endIndex)
             {
-                var ratio = walked / distance;
-                result.Add(new TrackPoint(
-                    null,
-                    a.Latitude + (b.Latitude - a.Latitude) * ratio,
-                    a.Longitude + (b.Longitude - a.Longitude) * ratio,
-                    null,
-                    a.ElevationMeters.HasValue && b.ElevationMeters.HasValue ? a.ElevationMeters + (b.ElevationMeters - a.ElevationMeters) * ratio : null,
-                    null, null, null, null, null));
-                walked += intervalMeters;
+                var distance = Distance(activity[startCursor].Point, segmentStart);
+                if (distance < closestStartDistance - 1e-9 ||
+                    Math.Abs(distance - closestStartDistance) <= 1e-9 && startCursor < closestStartIndex)
+                {
+                    closestStartDistance = distance;
+                    closestStartIndex = startCursor;
+                }
+
+                startCursor++;
             }
 
-            carry = distance - (walked - intervalMeters);
+            if (closestStartIndex < 0) continue;
+            var endDistance = Distance(activity[endIndex].Point, segmentEnd);
+            var candidate = new EndpointPair(closestStartIndex, endIndex, closestStartDistance, endDistance);
+            if (best is null || CompareEndpoints(candidate, best.Value) < 0) best = candidate;
         }
 
-        if (Distance(result[^1], gps[^1]) > 1)
-        {
-            result.Add(gps[^1]);
-        }
-
-        return result;
+        return best;
     }
 
-    private static bool SameDirection(TrackPoint activityStart, TrackPoint activityEnd, TrackPoint segmentStart, TrackPoint segmentEnd)
+    private static int CompareEndpoints(EndpointPair left, EndpointPair right)
     {
-        var ax = activityEnd.Longitude!.Value - activityStart.Longitude!.Value;
-        var ay = activityEnd.Latitude!.Value - activityStart.Latitude!.Value;
-        var sx = segmentEnd.Longitude!.Value - segmentStart.Longitude!.Value;
-        var sy = segmentEnd.Latitude!.Value - segmentStart.Latitude!.Value;
-        return ax * sx + ay * sy > 0;
+        var comparison = (left.StartDistanceMeters + left.EndDistanceMeters)
+            .CompareTo(right.StartDistanceMeters + right.EndDistanceMeters);
+        if (comparison != 0) return comparison;
+        comparison = left.StartDistanceMeters.CompareTo(right.StartDistanceMeters);
+        if (comparison != 0) return comparison;
+        comparison = left.EndDistanceMeters.CompareTo(right.EndDistanceMeters);
+        if (comparison != 0) return comparison;
+        comparison = left.StartGpsIndex.CompareTo(right.StartGpsIndex);
+        return comparison != 0 ? comparison : left.EndGpsIndex.CompareTo(right.EndGpsIndex);
     }
+
+    private static AlignmentCandidate EvaluateCandidate(
+        IReadOnlyList<IndexedPoint> activity,
+        EndpointPair endpoints,
+        IReadOnlyList<PathCoordinate> segmentSamples,
+        double toleranceMeters,
+        CancellationToken cancellationToken)
+    {
+        var candidatePoints = new PathCoordinate[endpoints.EndGpsIndex - endpoints.StartGpsIndex + 1];
+        for (var index = 0; index < candidatePoints.Length; index++)
+            candidatePoints[index] = PathCoordinate.From(activity[endpoints.StartGpsIndex + index].Point);
+
+        var candidatePath = MeasuredPath.Create(candidatePoints, cancellationToken);
+        if (candidatePath.TotalDistanceMeters <= 0)
+            return new AlignmentCandidate(
+                endpoints.StartGpsIndex,
+                endpoints.EndGpsIndex,
+                0,
+                double.MaxValue,
+                endpoints.StartDistanceMeters + endpoints.EndDistanceMeters);
+
+        var candidateSamples = candidatePath.SampleNormalized(segmentSamples.Count, cancellationToken);
+        var matched = 0;
+        var distanceSum = 0d;
+        for (var index = 0; index < segmentSamples.Count; index++)
+        {
+            if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+            var distance = Distance(segmentSamples[index], candidateSamples[index]);
+            distanceSum += distance;
+            if (distance <= toleranceMeters) matched++;
+        }
+
+        return new AlignmentCandidate(
+            endpoints.StartGpsIndex,
+            endpoints.EndGpsIndex,
+            matched * 100d / segmentSamples.Count,
+            distanceSum / segmentSamples.Count,
+            endpoints.StartDistanceMeters + endpoints.EndDistanceMeters);
+    }
+
+    private static int CompareCandidates(AlignmentCandidate left, AlignmentCandidate right)
+    {
+        var comparison = right.CoveragePercent.CompareTo(left.CoveragePercent);
+        if (comparison != 0) return comparison;
+        comparison = left.MeanDistanceMeters.CompareTo(right.MeanDistanceMeters);
+        if (comparison != 0) return comparison;
+        comparison = left.EndpointDistanceMeters.CompareTo(right.EndpointDistanceMeters);
+        if (comparison != 0) return comparison;
+        comparison = left.StartGpsIndex.CompareTo(right.StartGpsIndex);
+        return comparison != 0 ? comparison : left.EndGpsIndex.CompareTo(right.EndGpsIndex);
+    }
+
+    internal static int AlignmentSampleCount(double totalDistanceMeters)
+    {
+        if (!double.IsFinite(totalDistanceMeters) || totalDistanceMeters <= 0) return 2;
+        var requested = Math.Ceiling(totalDistanceMeters / SampleIntervalMeters) + 1;
+        return (int)Math.Clamp(requested, 2, MaximumAlignmentSamples);
+    }
+
+    private static bool HasPosition(TrackPoint point) =>
+        point.Latitude.HasValue && point.Longitude.HasValue &&
+        double.IsFinite(point.Latitude.Value) && double.IsFinite(point.Longitude.Value);
 
     private static double Distance(TrackPoint a, TrackPoint b) =>
         GeometryCodec.HaversineMeters(a.Latitude!.Value, a.Longitude!.Value, b.Latitude!.Value, b.Longitude!.Value);
+
+    private static double Distance(PathCoordinate a, PathCoordinate b) =>
+        GeometryCodec.HaversineMeters(a.Latitude, a.Longitude, b.Latitude, b.Longitude);
+
+    private static double InterpolateLongitude(double from, double to, double ratio)
+    {
+        var delta = (to - from + 540) % 360 - 180;
+        var result = from + delta * ratio;
+        return (result + 540) % 360 - 180;
+    }
+
+    private readonly record struct IndexedPoint(TrackPoint Point, int SourceIndex);
+    private readonly record struct PathCoordinate(double Latitude, double Longitude)
+    {
+        public static PathCoordinate From(TrackPoint point) =>
+            new(point.Latitude!.Value, point.Longitude!.Value);
+    }
+    private readonly record struct ProximityRun(int FirstIndex, int LastIndex);
+    private readonly record struct EndpointPair(
+        int StartGpsIndex,
+        int EndGpsIndex,
+        double StartDistanceMeters,
+        double EndDistanceMeters);
+    private sealed record AlignmentCandidate(
+        int StartGpsIndex,
+        int EndGpsIndex,
+        double CoveragePercent,
+        double MeanDistanceMeters,
+        double EndpointDistanceMeters);
+
+    private sealed class MeasuredPath
+    {
+        private MeasuredPath(IReadOnlyList<PathCoordinate> points, IReadOnlyList<double> cumulativeDistanceMeters)
+        {
+            Points = points;
+            CumulativeDistanceMeters = cumulativeDistanceMeters;
+        }
+
+        private IReadOnlyList<PathCoordinate> Points { get; }
+        private IReadOnlyList<double> CumulativeDistanceMeters { get; }
+        public double TotalDistanceMeters => CumulativeDistanceMeters[^1];
+
+        public static MeasuredPath Create(IReadOnlyList<TrackPoint> points, CancellationToken cancellationToken)
+        {
+            var coordinates = new PathCoordinate[points.Count];
+            for (var index = 0; index < points.Count; index++)
+                coordinates[index] = PathCoordinate.From(points[index]);
+            return Create(coordinates, cancellationToken);
+        }
+
+        public static MeasuredPath Create(IReadOnlyList<PathCoordinate> points, CancellationToken cancellationToken)
+        {
+            var cumulative = new double[points.Count];
+            for (var index = 1; index < points.Count; index++)
+            {
+                if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+                cumulative[index] = cumulative[index - 1] + Distance(points[index - 1], points[index]);
+            }
+
+            return new MeasuredPath(points, cumulative);
+        }
+
+        public IReadOnlyList<PathCoordinate> SampleNormalized(int count, CancellationToken cancellationToken)
+        {
+            var result = new PathCoordinate[count];
+            var cursor = 1;
+            for (var sampleIndex = 0; sampleIndex < count; sampleIndex++)
+            {
+                if ((sampleIndex & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+                var target = TotalDistanceMeters * sampleIndex / (count - 1d);
+                while (cursor < CumulativeDistanceMeters.Count - 1 && CumulativeDistanceMeters[cursor] < target)
+                    cursor++;
+
+                var left = Math.Max(0, cursor - 1);
+                var span = CumulativeDistanceMeters[cursor] - CumulativeDistanceMeters[left];
+                var ratio = span <= 0 ? 0 : (target - CumulativeDistanceMeters[left]) / span;
+                var from = Points[left];
+                var to = Points[cursor];
+                result[sampleIndex] = new PathCoordinate(
+                    from.Latitude + (to.Latitude - from.Latitude) * ratio,
+                    InterpolateLongitude(from.Longitude, to.Longitude, ratio));
+            }
+
+            return result;
+        }
+    }
 }

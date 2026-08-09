@@ -3,20 +3,39 @@
 @inject ISegmentService SegmentService
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
 @using ActivityExplorer.Web.Components.Shared
 
 <PageTitle>Segments - Activity Explorer</PageTitle>
 <PageHeader Title="Segments" Summary="Directional, sport-specific paths matched against your own history." />
-<div class="notice subtle">Activity Explorer segments are your local definitions. They are not Strava segments and are never uploaded.</div>
-@if (_message is not null) { <div class="notice">@_message</div> }
+<div class="notice subtle">Every segment is a local definition. Activity Explorer does not contact provider catalogs or upload your paths.</div>
+@if (_message is not null) { <div class="notice @(_messageIsError ? "error" : null)" role="status">@_message</div> }
 @if (ProfileState.Profiles.Count > 0)
 {
+    <section class="panel form-panel segment-import-panel">
+        <div class="panel-heading"><div><h2>Create from a file</h2><p class="muted">Import one directional path from GPX, FIT segment/course, TCX, KML, or GeoJSON.</p></div><span>Local only</span></div>
+        <div class="form-grid">
+            <label><span>Segment path file</span><input id="@ImportInputId" class="segment-file-input" type="file" accept=".gpx,.fit,.tcx,.kml,.geojson,.json" /></label>
+            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label><span>Sport</span><select @bind="_importSport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label><span>Name</span><input maxlength="240" @bind="_importName" @bind:event="oninput" /></label>
+            <label><span>Start point (optional)</span><input type="number" min="0" placeholder="0" @bind="_importStart" @bind:event="oninput" /></label>
+            <label><span>End point (optional)</span><input type="number" min="1" placeholder="Last point" @bind="_importEnd" @bind:event="oninput" /></label>
+            <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_importTolerance" @bind:event="oninput" /></label>
+            <label class="checkbox-field"><input type="checkbox" @bind="_importReverse" /><span>Reverse direction</span></label>
+        </div>
+        <div class="import-guidance">
+            <p><strong>Review direction:</strong> file order is start to finish. Reverse it when the path should match in the opposite direction. Leave trim fields blank to use the complete path.</p>
+            <p>Only geometry, the safe file name, and its format are retained as provenance. Provider IDs, leaderboards, popularity, and other-athlete data are discarded. Import only files you control or have permission to reuse.</p>
+        </div>
+        <div class="button-row"><button class="button primary" disabled="@(!CanImport || _importing)" @onclick="ImportFile">@(_importing ? "Creating local segment..." : "Import as local segment")</button></div>
+    </section>
     <section class="panel form-panel">
         <div class="panel-heading"><h2>Draw a segment</h2><span>@_drawn.Count points</span></div>
         <div class="form-grid">
             <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
             <label><span>Sport</span><select @bind="_sport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
-            <label><span>Name</span><input @bind="_name" /></label>
+            <label><span>Name</span><input maxlength="240" @bind="_name" /></label>
             <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
         </div>
         <MapCanvas @ref="_drawMap" Editable="true" PointsChanged="DrawingChanged" CssClass="detail-map" Label="Segment drawing map" ShowDisclosure="true" />
@@ -28,7 +47,7 @@ else
     <section class="empty-state"><h2>Create a profile first</h2><p>Segments belong to a local profile. Create one before drawing a path.</p><a class="button primary" href="/profiles">Create profile</a></section>
 }
 @if (_segments is null) { <div class="loading">Loading segments...</div> }
-else if (_segments.Count == 0) { <section class="empty-state"><h2>No segments yet</h2><p>Draw one above, create one from a route, or select part of an activity.</p><a class="button" href="/activities">Browse activities</a></section> }
+else if (_segments.Count == 0) { <section class="empty-state"><h2>No segments yet</h2><p>Import or draw one above, create one from a route, or select part of an activity.</p><a class="button" href="/activities">Browse activities</a></section> }
 else
 {
     <section class="card-grid">
@@ -37,7 +56,7 @@ else
         <a class="entity-card" href="@($"/segments/{segment.Id}")">
             <span class="eyebrow">@segment.Sport - @segment.OwnerName</span><h2>@segment.Name</h2>
             <div class="entity-metrics"><span><strong>@Format.Distance(segment.DistanceMeters)</strong><small>distance</small></span><span><strong>@segment.EffortCount</strong><small>efforts</small></span><span><strong>@(segment.BestElapsedSeconds.HasValue ? Format.Duration(segment.BestElapsedSeconds.Value) : "--")</strong><small>best</small></span></div>
-            <small>Match tolerance: @segment.ToleranceMeters.ToString("N0") m</small>
+            <small>@SourceLabel(segment) · Match tolerance: @segment.ToleranceMeters.ToString("N0") m</small>
         </a>
     }
     </section>
@@ -45,15 +64,27 @@ else
 @code {
     private IReadOnlyList<SegmentSummary>? _segments;
     private IReadOnlyList<TrackPoint> _drawn = [];
+    private const string ImportInputId = "segment-path-file";
     private MapCanvas? _drawMap;
     private Guid _ownerId;
     private string _sport = nameof(SportKind.Cycling);
     private string _name = "New segment";
     private double _tolerance = 30;
+    private string _importSport = nameof(SportKind.Cycling);
+    private string _importName = "Imported segment";
+    private double _importTolerance = 30;
+    private int? _importStart;
+    private int? _importEnd;
+    private bool _importReverse;
     private string? _message;
+    private bool _messageIsError;
 
     private bool _creating;
+    private bool _importing;
     private bool CanCreate => _ownerId != Guid.Empty && _drawn.Count >= 2 && !string.IsNullOrWhiteSpace(_name) && _tolerance is >= 10 and <= 200;
+    private bool CanImport => _ownerId != Guid.Empty && !string.IsNullOrWhiteSpace(_importName) && _importName.Trim().Length <= 240 &&
+                              _importTolerance is >= 10 and <= 200 && (!_importStart.HasValue || _importStart >= 0) &&
+                              (!_importEnd.HasValue || _importEnd >= 1);
     protected override async Task OnInitializedAsync()
     {
         ProfileState.Changed += Changed;
@@ -73,14 +104,55 @@ else
         _creating = true;
         try
         {
+            _message = null;
+            _messageIsError = false;
             var sport = Enum.Parse<SportKind>(_sport);
-            var id = await SegmentService.CreateAsync(new CreateSegmentPathRequest(_ownerId, _name, sport, _drawn, _tolerance));
+            var id = await SegmentService.CreateAsync(new CreateSegmentPathRequest(
+                _ownerId, _name, sport, _drawn, _tolerance, SourceKind: SegmentSourceKind.Drawn));
 
             Navigation.NavigateTo($"/segments/{id}");
         }
-        catch (Exception exception) { _message = exception.Message; }
+        catch (Exception exception) { _message = exception.Message; _messageIsError = true; }
         finally { _creating = false; }
     }
+
+    private async Task ImportFile()
+    {
+        _importing = true;
+        _message = null;
+        _messageIsError = false;
+        try
+        {
+            var id = await JS.InvokeAsync<string>(
+                "activityExplorerImports.uploadSegment",
+                ImportInputId,
+                _ownerId,
+                _importSport,
+                _importName.Trim(),
+                _importTolerance,
+                _importStart,
+                _importEnd,
+                _importReverse);
+            Navigation.NavigateTo($"/segments/{id}");
+        }
+        catch (Exception exception)
+        {
+            _message = exception.Message;
+            _messageIsError = true;
+        }
+        finally { _importing = false; }
+    }
+
+    private static string SourceLabel(SegmentSummary segment) => segment.SourceKind switch
+    {
+        SegmentSourceKind.ImportedFile => string.IsNullOrWhiteSpace(segment.SourceFormat)
+            ? "Imported file"
+            : $"Imported {segment.SourceFormat}",
+        SegmentSourceKind.Activity => "Created from activity",
+        SegmentSourceKind.Route => "Created from route",
+        SegmentSourceKind.Drawn => "Drawn locally",
+        _ => "Local definition"
+    };
 
     private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
     public void Dispose() => ProfileState.Changed -= Changed;

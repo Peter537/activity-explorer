@@ -16,6 +16,7 @@ public sealed class MultipartUploadReader(AppDataPaths paths, IConfiguration con
 {
     public long ImportLimit => configuration.GetValue("Imports:MaxUploadBytes", 10L * 1024 * 1024 * 1024);
     public long RouteLimit => configuration.GetValue("Routes:MaxGpxUploadBytes", 50L * 1024 * 1024);
+    public long SegmentLimit => configuration.GetValue("Segments:MaxPathUploadBytes", 50L * 1024 * 1024);
 
     public async Task<StagedUpload> ReadSingleFileAsync(
         HttpRequest request,

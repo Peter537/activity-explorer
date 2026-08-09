@@ -85,6 +85,20 @@ Activity Explorer imports only Cycling, Running, and Walking recordings and repo
 
 Activity Explorer does not import Strava's proprietary segment catalog and never contacts Strava while importing or testing.
 
+## Local segment path files
+
+Segment path files use a separate synchronous workflow under **Segments**. They do not enter the activity import queue and do not become activity originals.
+
+1. Select one GPX, FIT segment/course, TCX, KML, GeoJSON, or JSON-encoded GeoJSON file containing one directional path.
+2. Review the destination profile, local sport, name, and matching tolerance.
+3. Optionally provide inclusive zero-based start/end indices. Blank values use the first and last point.
+4. Confirm the file order as start-to-finish or choose **Reverse direction**.
+5. Create the independent local segment and inspect its provenance label and map before relying on matched efforts.
+
+The reader accepts only path geometry needed for matching. FIT activity files use the activity importer; files containing multiple independent paths are rejected. The upload is removed after the request, including on validation failure. SQLite retains only the local geometry plus the safe base file name and normalized format. Provider identifiers, UUIDs, leader times, leaderboard entries, popularity, and other-athlete data are discarded.
+
+This is a generic file workflow, not a provider-catalog import. Import only material you control or are authorized to reuse. See [Local segment methodology](segments.md) and [Legal and source-export guides](legal-and-exports.md#local-segments).
+
 ## Individual files
 
 Choose several files in one selection. Browser uploads are streamed separately with at most two uploads active at once; the durable background parser remains single-consumer.
@@ -138,7 +152,7 @@ Version 0.1.0 rejects:
 - a single declared ZIP entry over 4 GiB;
 - more than 20 GiB total expanded content.
 
-The browser upload limit defaults to 10 GiB and route GPX uploads default to 50 MiB. Uploads stream to CreateNew staging files, reject excess bytes with HTTP 413, and remove partial staging after failure. These are safety ceilings rather than hardware recommendations; large archives require corresponding free space for upload, expansion, originals, and database.
+The browser activity/archive upload limit defaults to 10 GiB. Route GPX and local segment-path uploads each default to 50 MiB. Uploads stream to `CreateNew` staging files, reject excess bytes with HTTP 413, and remove partial staging after failure. These are safety ceilings rather than hardware recommendations; large archives require corresponding free space for upload, expansion, originals, and database.
 
 ## Failure and recovery
 

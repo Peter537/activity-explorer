@@ -1,0 +1,165 @@
+<section id="@_chartId" class="chart-panel segment-grade-profile"
+         data-grade-window="@SegmentGradeProfileGeometry.GradeWindowMeters" data-inspection-group="@InspectionGroupId">
+    <div class="chart-heading segment-grade-heading">
+        <div><strong>Segment elevation profile</strong><small>@Summary</small></div>
+        <span>m / %</span>
+    </div>
+    @if (!_geometry.HasData)
+    {
+        <p class="muted chart-empty">Not recorded in the source</p>
+    }
+    else
+    {
+        <div class="segment-grade-plot">
+            <div class="segment-grade-y-axis" aria-hidden="true">
+                @foreach (var tick in _geometry.ElevationTicks.Reverse())
+                {
+                    <span>@tick.Label</span>
+                }
+            </div>
+            <div class="segment-grade-canvas">
+                <svg class="segment-grade-chart" viewBox="@ViewBox" preserveAspectRatio="none"
+                     role="img" aria-label="@AccessibleLabel">
+                    @foreach (var tick in _geometry.ElevationTicks)
+                    {
+                        <line class="segment-chart-grid" x1="@Invariant(_geometry.PlotLeft)" x2="@Invariant(_geometry.PlotLeft + _geometry.PlotWidth)"
+                              y1="@Invariant(tick.Position)" y2="@Invariant(tick.Position)"></line>
+                    }
+                    @foreach (var path in _geometry.AreaPaths)
+                    {
+                        <path class="segment-definition-area" d="@path"></path>
+                    }
+                    @foreach (var span in _geometry.GradeSpans)
+                    {
+                        <path class="@($"segment-grade-area {BucketClass(span.Bucket)}")" d="@span.AreaPath"></path>
+                        <path class="@($"segment-grade-line {BucketClass(span.Bucket)}")" d="@span.LinePath"
+                              data-grade="@Invariant(span.GradePercent)"></path>
+                    }
+                    <line class="segment-grade-cursor" x1="@Invariant(_geometry.PlotLeft)" x2="@Invariant(_geometry.PlotLeft)"
+                          y1="@Invariant(_geometry.PlotTop)" y2="@Invariant(_geometry.PlotTop + _geometry.PlotHeight)"></line>
+                    @foreach (var sample in _geometry.Samples)
+                    {
+                        <circle class="segment-grade-sample" cx="@Invariant(sample.X)" cy="@Invariant(sample.Y)" r="0"
+                                data-profile-sample data-source-index="@sample.SourceIndex"
+                                data-distance="@Invariant(sample.DistanceMeters)" data-elevation="@Invariant(sample.ElevationMeters)"
+                                data-grade="@(sample.GradePercent.HasValue ? Invariant(sample.GradePercent.Value) : null)"></circle>
+                    }
+                </svg>
+                <output class="chart-tooltip segment-grade-tooltip"></output>
+            </div>
+        </div>
+        <div class="segment-grade-x-axis" aria-hidden="true">
+            @foreach (var tick in _geometry.DistanceTicks)
+            {
+                <span>@tick.Label</span>
+            }
+        </div>
+        @if (_geometry.MinimumGradePercent.HasValue)
+        {
+            <ul class="segment-grade-legend" aria-label="Local grade color scale">
+                <li><span class="downhill"></span>Downhill &lt; -1%</li>
+                <li><span class="flat"></span>Flat -1-2%</li>
+                <li><span class="gentle"></span>Gentle 2-5%</li>
+                <li><span class="moderate"></span>Moderate 5-8%</li>
+                <li><span class="steep"></span>Steep 8-12%</li>
+                <li><span class="very-steep"></span>Very steep 12%+</li>
+            </ul>
+        }
+        <details class="chart-accessible-values">
+            <summary>Inspect exact elevation and grade</summary>
+            <p id="@_inspectorHelpId">Move the slider to follow the segment on the profile and map. Local grade uses a 50 m smoothed distance window.</p>
+            <label>
+                <span>Segment elevation profile sample</span>
+                <input class="segment-grade-inspector" type="range" min="0" max="@(_geometry.Samples.Count - 1)" step="1"
+                       aria-describedby="@_inspectorHelpId" aria-valuetext="@SelectedValueText"
+                       @bind="_selectedIndex" @bind:event="oninput" />
+            </label>
+            <output class="chart-exact-output" aria-live="polite">
+                <span>Sample @(_selectedIndex + 1) of @_geometry.Samples.Count</span>
+                <strong>@SelectedValueText</strong>
+            </output>
+            <details>
+                <summary>View segment elevation and grade data table</summary>
+                <div class="chart-data-table"><table><caption>Segment elevation and local grade values</caption><thead><tr><th scope="col">Distance</th><th scope="col">Elevation</th><th scope="col">Local grade</th></tr></thead><tbody>
+                    @foreach (var sample in _geometry.Samples)
+                    {
+                        <tr><td>@FormatDistance(sample.DistanceMeters)</td><td>@($"{sample.ElevationMeters:N1} m")</td><td>@FormatGrade(sample.GradePercent)</td></tr>
+                    }
+                </tbody></table></div>
+            </details>
+        </details>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter, EditorRequired] public string InspectionGroupId { get; set; } = string.Empty;
+
+    private readonly string _chartId = $"segment-grade-{Guid.NewGuid():N}";
+    private readonly string _inspectorHelpId = $"segment-grade-help-{Guid.NewGuid():N}";
+    private IReadOnlyList<TrackPoint>? _geometryPoints;
+    private SegmentGradeProfileGeometryResult _geometry = SegmentGradeProfileGeometry.Build([]);
+    private int _selectedIndex;
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_geometryPoints, Points))
+        {
+            _geometry = SegmentGradeProfileGeometry.Build(Points);
+            _geometryPoints = Points;
+            _selectedIndex = 0;
+        }
+        _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(0, _geometry.Samples.Count - 1));
+    }
+
+    private string Summary
+    {
+        get
+        {
+            if (!_geometry.HasData) return "No samples";
+            var elevation = $"Elevation {_geometry.MinimumElevationMeters:N1}-{_geometry.MaximumElevationMeters:N1} m";
+            var grade = _geometry.MinimumGradePercent.HasValue
+                ? $"Local grade {_geometry.MinimumGradePercent:N1}-{_geometry.MaximumGradePercent:N1}% (50 m)"
+                : "Local grade unavailable";
+            var coverage = Math.Abs(_geometry.ElevationCoveragePercent - _geometry.GradeCoveragePercent) < 0.05
+                ? $"{_geometry.ElevationCoveragePercent:N0}% coverage"
+                : $"{_geometry.ElevationCoveragePercent:N0}% elevation / {_geometry.GradeCoveragePercent:N0}% grade coverage";
+            return $"{elevation} | {grade} | {coverage}";
+        }
+    }
+
+    private string AccessibleLabel =>
+        $"Segment elevation profile. {Summary}. Colors identify downhill, flat, gentle, moderate, steep, and very steep sections. Exact values are available below.";
+
+    private string SelectedValueText
+    {
+        get
+        {
+            if (_geometry.Samples.Count == 0) return "No samples";
+            var sample = _geometry.Samples[_selectedIndex];
+            return $"Distance {FormatDistance(sample.DistanceMeters)}; elevation {sample.ElevationMeters:N1} m; local grade {FormatGrade(sample.GradePercent)}";
+        }
+    }
+
+    private string ViewBox => $"{Invariant(_geometry.PlotLeft)} {Invariant(_geometry.PlotTop)} {Invariant(_geometry.PlotWidth)} {Invariant(_geometry.PlotHeight)}";
+
+    private static string BucketClass(SegmentGradeBucket bucket) => bucket switch
+    {
+        SegmentGradeBucket.Downhill => "downhill",
+        SegmentGradeBucket.Flat => "flat",
+        SegmentGradeBucket.Gentle => "gentle",
+        SegmentGradeBucket.Moderate => "moderate",
+        SegmentGradeBucket.Steep => "steep",
+        SegmentGradeBucket.VerySteep => "very-steep",
+        _ => "flat"
+    };
+
+    private static string FormatDistance(double meters) => meters >= 1000
+        ? $"{meters / 1000:N2} km"
+        : $"{meters:N0} m";
+
+    private static string FormatGrade(double? value) => value.HasValue ? $"{value.Value:N1}%" : "Not available";
+
+    private static string Invariant(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+
+}

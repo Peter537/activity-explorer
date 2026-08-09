@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ActivityExplorer.Core.Contracts;
+using ActivityExplorer.Core.Domain;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -133,6 +134,60 @@ public sealed class SecurityIntegrationTests
         }, configuration: new Dictionary<string, string?> { ["Routes:MaxGpxUploadBytes"] = "32" });
     }
 
+    [Fact]
+    public async Task Segment_path_upload_requires_antiforgery_and_persists_only_reviewed_geometry_and_provenance()
+    {
+        await WithApplicationAsync(async (factory, client) =>
+        {
+            var ownerId = await factory.Services.GetRequiredService<IProfileService>().CreateAsync("Segment importer");
+            using (var missingToken = SegmentRequest(ownerId))
+            using (var missingResponse = await client.SendAsync(missingToken))
+                Assert.Equal(HttpStatusCode.BadRequest, missingResponse.StatusCode);
+
+            var token = await GetTokenAsync(client);
+            using var request = SegmentRequest(ownerId);
+            request.Headers.Add("X-CSRF-TOKEN", token);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var segmentId = document.RootElement.GetProperty("id").GetGuid();
+
+            var detail = await factory.Services.GetRequiredService<ISegmentService>().GetAsync(segmentId);
+            Assert.NotNull(detail);
+            Assert.Equal(SegmentSourceKind.ImportedFile, detail.Summary.SourceKind);
+            Assert.Equal("reviewed.gpx", detail.Summary.SourceName);
+            Assert.Equal("GPX", detail.Summary.SourceFormat);
+            Assert.Equal(2, detail.Points.Count);
+            Assert.Equal(1.001, detail.Points[0].Latitude!.Value, 6);
+            Assert.Equal(1, detail.Points[1].Latitude!.Value, 6);
+
+            var root = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA")!;
+            Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "staging")));
+            Assert.Empty(Directory.EnumerateFiles(Path.Combine(root, "originals"), "*", SearchOption.AllDirectories));
+        });
+    }
+
+    [Fact]
+    public async Task Streamed_segment_path_upload_returns_413_and_cleans_partial_staging()
+    {
+        await WithApplicationAsync(async (factory, client) =>
+        {
+            var ownerId = await factory.Services.GetRequiredService<IProfileService>().CreateAsync("Segment limit");
+            var token = await GetTokenAsync(client);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/internal/segments/import?ownerId={ownerId}&sport=Running&name=Large&toleranceMeters=30");
+            request.Headers.Add("X-Activity-Explorer", "1");
+            request.Headers.Add("X-CSRF-TOKEN", token);
+            request.Content = FileContent("large.gpx", new byte[256]);
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+            var root = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA")!;
+            Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "staging")));
+        }, configuration: new Dictionary<string, string?> { ["Segments:MaxPathUploadBytes"] = "32" });
+    }
+
     private static HttpRequestMessage ImportRequest(string payload, Guid? ownerId = null)
     {
         var request = new HttpRequestMessage(
@@ -140,6 +195,16 @@ public sealed class SecurityIntegrationTests
             $"/internal/imports?ownerId={ownerId ?? Guid.NewGuid()}");
         request.Headers.Add("X-Activity-Explorer", "1");
         request.Content = FileContent("activity.gpx", Encoding.UTF8.GetBytes(TestSupport.Gpx()));
+        return request;
+    }
+
+    private static HttpRequestMessage SegmentRequest(Guid ownerId)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/internal/segments/import?ownerId={ownerId}&sport=Running&name=Reviewed&toleranceMeters=30&startIndex=0&endIndex=1&reverseDirection=true");
+        request.Headers.Add("X-Activity-Explorer", "1");
+        request.Content = FileContent("reviewed.gpx", Encoding.UTF8.GetBytes(TestSupport.Gpx()));
         return request;
     }
 
@@ -181,7 +246,8 @@ public sealed class SecurityIntegrationTests
                 .WithWebHostBuilder(builder =>
                 {
                     builder.UseEnvironment("Production");
-                    if (configuration is not null) builder.UseSetting("Routes:MaxGpxUploadBytes", configuration["Routes:MaxGpxUploadBytes"]);
+                    if (configuration is not null)
+                        foreach (var setting in configuration) builder.UseSetting(setting.Key, setting.Value);
                     configureBuilder?.Invoke(builder);
                 });
             using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });

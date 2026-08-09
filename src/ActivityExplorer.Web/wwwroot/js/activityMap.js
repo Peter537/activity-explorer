@@ -59,12 +59,80 @@ window.activityExplorerMap = (() => {
         }
     }
 
-    async function refresh(entry) {
-        await Promise.all([
-            setLayer(entry.map, "activities", entry.options.activityUrl, "#246b59", 2.5),
-            setLayer(entry.map, "routes", entry.options.routeUrl, "#3366cc", 4),
-            setLayer(entry.map, "segments", entry.options.segmentUrl, "#d06a35", 5)
-        ]);
+    function selectedCoordinates(entry) {
+        const coordinates = entry.options.inlineCoordinates || [];
+        const start = entry.options.selectionStartIndex;
+        const end = entry.options.selectionEndIndex;
+        if (Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end >= start && end < coordinates.length)
+            return coordinates.slice(start, end + 1);
+        return entry.options.highlightCoordinates || [];
+    }
+
+    function selectionEndpoints(entry) {
+        if (!entry.options.showSelectionEndpoints) return [];
+        const coordinates = entry.options.inlineCoordinates || [];
+        const start = entry.options.selectionStartIndex;
+        const end = entry.options.selectionEndIndex;
+        if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= coordinates.length) return [];
+        const reversed = !!entry.options.selectionReversed;
+        return [
+            { type: "Feature", geometry: { type: "Point", coordinates: coordinates[reversed ? end : start] }, properties: { kind: "start" } },
+            { type: "Feature", geometry: { type: "Point", coordinates: coordinates[reversed ? start : end] }, properties: { kind: "end" } }
+        ];
+    }
+
+    function inspectionFeature(entry) {
+        const coordinates = entry.options.inlineCoordinates || [];
+        const index = entry.options.inspectionIndex;
+        if (!Number.isInteger(index) || index < 0 || index >= coordinates.length)
+            return { type: "FeatureCollection", features: [] };
+        return {
+            type: "FeatureCollection",
+            features: [{
+                type: "Feature",
+                geometry: { type: "Point", coordinates: coordinates[index] },
+                properties: {}
+            }]
+        };
+    }
+
+    function refreshInspectionLayer(entry) {
+        if (!entry.map.isStyleLoaded() || !entry.options.inspectionGroupId) return;
+        const data = inspectionFeature(entry);
+        if (entry.map.getSource("inspection-point")) entry.map.getSource("inspection-point").setData(data);
+        else {
+            entry.map.addSource("inspection-point", { type: "geojson", data });
+            entry.map.addLayer({
+                id: "inspection-point",
+                type: "circle",
+                source: "inspection-point",
+                paint: {
+                    "circle-radius": 7,
+                    "circle-color": "#17211d",
+                    "circle-stroke-width": 3,
+                    "circle-stroke-color": "#ffffff"
+                }
+            });
+        }
+    }
+
+    function setInspection(entry, sourceIndex) {
+        const index = typeof sourceIndex === "number" ? sourceIndex : Number.NaN;
+        const nextIndex = Number.isInteger(index) ? index : null;
+        if (entry.options.inspectionIndex === nextIndex) return;
+        entry.options.inspectionIndex = nextIndex;
+        const container = entry.map.getContainer();
+        entry.inspectionRevision = (entry.inspectionRevision || 0) + 1;
+        container.dataset.inspectionRevision = String(entry.inspectionRevision);
+        if (Number.isInteger(entry.options.inspectionIndex))
+            container.dataset.inspectionIndex = String(entry.options.inspectionIndex);
+        else
+            delete container.dataset.inspectionIndex;
+        refreshInspectionLayer(entry);
+    }
+
+    function refreshTrackLayers(entry) {
+        if (!entry.map.isStyleLoaded()) return;
         const coordinates = entry.options.inlineCoordinates || [];
         const lineData = coordinates.length > 1
             ? { type: "Feature", geometry: { type: "LineString", coordinates }, properties: {} }
@@ -72,7 +140,10 @@ window.activityExplorerMap = (() => {
         if (entry.map.getSource("inline")) entry.map.getSource("inline").setData(lineData);
         else {
             entry.map.addSource("inline", { type: "geojson", data: lineData });
-            entry.map.addLayer({ id: "inline", type: "line", source: "inline", paint: { "line-color": "#246b59", "line-width": 4 } });
+            entry.map.addLayer({
+                id: "inline", type: "line", source: "inline",
+                paint: { "line-color": "#246b59", "line-width": 4, "line-opacity": Number.isInteger(entry.options.selectionStartIndex) ? 0.38 : 0.95 }
+            });
         }
         if (entry.options.editable) {
             const pointData = { type: "Feature", geometry: { type: "MultiPoint", coordinates }, properties: {} };
@@ -82,7 +153,7 @@ window.activityExplorerMap = (() => {
                 entry.map.addLayer({ id: "draw-points", type: "circle", source: "draw-points", paint: { "circle-radius": 5, "circle-color": "#d06a35", "circle-stroke-width": 2, "circle-stroke-color": "#ffffff" } });
             }
         }
-        const highlight = entry.options.highlightCoordinates || [];
+        const highlight = selectedCoordinates(entry);
         const highlightData = highlight.length > 1
             ? { type: "Feature", geometry: { type: "LineString", coordinates: highlight }, properties: {} }
             : { type: "FeatureCollection", features: [] };
@@ -92,6 +163,29 @@ window.activityExplorerMap = (() => {
             entry.map.addLayer({ id: "selected-effort", type: "line", source: "selected-effort", paint: { "line-color": "#ed7d31", "line-width": 6, "line-opacity": 0.95 } });
         }
 
+        const endpointData = { type: "FeatureCollection", features: selectionEndpoints(entry) };
+        if (entry.map.getSource("selection-endpoints")) entry.map.getSource("selection-endpoints").setData(endpointData);
+        else {
+            entry.map.addSource("selection-endpoints", { type: "geojson", data: endpointData });
+            entry.map.addLayer({
+                id: "selection-start", type: "circle", source: "selection-endpoints", filter: ["==", ["get", "kind"], "start"],
+                paint: { "circle-radius": 7, "circle-color": "#2f8f58", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" }
+            });
+            entry.map.addLayer({
+                id: "selection-end", type: "circle", source: "selection-endpoints", filter: ["==", ["get", "kind"], "end"],
+                paint: { "circle-radius": 7, "circle-color": "#c74632", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" }
+            });
+        }
+        refreshInspectionLayer(entry);
+    }
+
+    async function refresh(entry) {
+        await Promise.all([
+            setLayer(entry.map, "activities", entry.options.activityUrl, "#246b59", 2.5),
+            setLayer(entry.map, "routes", entry.options.routeUrl, "#3366cc", 4),
+            setLayer(entry.map, "segments", entry.options.segmentUrl, "#d06a35", 5)
+        ]);
+        refreshTrackLayers(entry);
     }
 
     function popup(entry, layer) {
@@ -123,6 +217,14 @@ window.activityExplorerMap = (() => {
 
         const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap };
         maps.set(id, entry);
+        if (options.inspectionGroupId) {
+            const group = document.getElementById(options.inspectionGroupId);
+            if (group) {
+                entry.inspectionGroup = group;
+                entry.inspectionHandler = event => setInspection(entry, event.detail?.sourceIndex);
+                group.addEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
+            }
+        }
         map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
         map.addControl(new maplibregl.AttributionControl({
             compact: true,
@@ -179,10 +281,24 @@ window.activityExplorerMap = (() => {
         entry.dotnet?.invokeMethodAsync("UpdateDrawing", entry.options.inlineCoordinates);
     }
 
-    function destroy(id) {
+    function updateSelection(id, startIndex, endIndex, reversed) {
         const entry = maps.get(id);
-        if (entry) { entry.map.remove(); maps.delete(id); }
+        if (!entry) return;
+        entry.options.selectionStartIndex = startIndex;
+        entry.options.selectionEndIndex = endIndex;
+        entry.options.selectionReversed = !!reversed;
+        refreshTrackLayers(entry);
     }
 
-    return { create, addCenterPoint, undo, clear, destroy };
+    function destroy(id) {
+        const entry = maps.get(id);
+        if (entry) {
+            if (entry.inspectionGroup && entry.inspectionHandler)
+                entry.inspectionGroup.removeEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
+            entry.map.remove();
+            maps.delete(id);
+        }
+    }
+
+    return { create, addCenterPoint, undo, clear, updateSelection, destroy };
 })();

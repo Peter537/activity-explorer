@@ -1,7 +1,6 @@
 @page "/activities/{Id:guid}"
 @inject IActivityQueryService Activities
 @inject IRouteService Routes
-@inject ISegmentService Segments
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @using ActivityExplorer.Web.Components.Shared
@@ -24,6 +23,14 @@ else
     <PageHeader Title="@_activity.Summary.Title" Summary="@(_activity.Summary.StartTime.ToLocalTime().ToString("F"))">
         <Metadata><span>@_activity.Summary.Sport</span><span>@_activity.Summary.OwnerName</span></Metadata>
         <Actions>
+            @if (CanCreateSegment)
+            {
+                <a class="button primary" href="@($"/activities/{Id}/segments/new")">Create segment</a>
+            }
+            else
+            {
+                <button class="button" type="button" disabled title="Requires at least two GPS points">Create segment</button>
+            }
             <button class="button" disabled="@_deleteBusy" @onclick="() => _editing = !_editing">Edit activity</button>
             <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming)" @onclick="BeginDelete">Delete activity</button>
         </Actions>
@@ -139,12 +146,6 @@ else
             <label><span>Name</span><input @bind="_routeName" /></label>
             <button class="button" disabled="@(!_activity.Summary.HasGps)" @onclick="CreateRoute">Create route</button>
         </article>
-        <article class="panel form-panel">
-            <h2>Create local segment</h2>
-            <label><span>Name</span><input @bind="_segmentName" /></label>
-            <div class="inline-fields"><label><span>Start point</span><input type="number" @bind="_segmentStart" /></label><label><span>End point</span><input type="number" @bind="_segmentEnd" /></label><label><span>Tolerance (m)</span><input type="number" @bind="_tolerance" /></label></div>
-            <button class="button" disabled="@(!_activity.Summary.HasGps)" @onclick="CreateSegment">Create and match history</button>
-        </article>
     </section>
     <section id="activity-sources" class="panel">
         <div class="panel-heading"><h2>Source files</h2></div>
@@ -161,11 +162,9 @@ else
     private bool _editing;
     private bool _loaded;
     private string? _loadError;
-    private string _title = "", _routeName = "", _segmentName = "", _gear = "";
+    private string _title = "", _routeName = "", _gear = "";
     private string? _description, _message;
     private Guid _ownerId;
-    private int _segmentStart = 0, _segmentEnd;
-    private double _tolerance = 30;
     private readonly string _chartGroupId = $"activity-charts-{Guid.NewGuid():N}";
     private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
     private Guid? _editingMetricId;
@@ -194,7 +193,7 @@ else
         finally { _loaded = true; }
         if (_activity is null) return;
         _title = _activity.Summary.Title; _description = _activity.Description; _gear = _activity.GearName ?? "";
-        _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title; _segmentEnd = Math.Max(0, _activity.Points.Count - 1);
+        _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title;
     }
 
     private double? SpeedOrPace(TrackPoint point) =>
@@ -205,6 +204,7 @@ else
                 : 1000d / point.SpeedMetersPerSecond / 60d;
     private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
     private bool HasMap => _activity?.Points.Any(point => point.Latitude.HasValue && point.Longitude.HasValue) == true;
+    private bool CanCreateSegment => _activity?.Points.Count(point => point.Latitude.HasValue && point.Longitude.HasValue) >= 2;
     private string ActivityUrl(string fragment) => $"/activities/{Id}#{fragment}";
     private string DurationOrDash(double? seconds) => seconds.HasValue ? Format.Duration(seconds.Value) : "--";
     private static string Value(double? value, string unit, int decimals) =>
@@ -308,10 +308,5 @@ else
     {
         var id = await Routes.CreateFromActivityAsync(new CreateRouteRequest(_activity!.Summary.OwnerId, Id, _routeName, null));
         Navigation.NavigateTo($"/routes/{id}");
-    }
-    private async Task CreateSegment()
-    {
-        var id = await Segments.CreateFromActivityAsync(new CreateSegmentRequest(_activity!.Summary.OwnerId, Id, _segmentName, _segmentStart, _segmentEnd, _tolerance));
-        Navigation.NavigateTo($"/segments/{id}");
     }
 }

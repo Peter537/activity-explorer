@@ -443,6 +443,137 @@ public sealed class DatabaseIntegrationTests
         Assert.Contains("Park loop", gpx);
         Assert.Contains("<rtept", gpx);
     }
+
+    [Fact]
+    public async Task Activity_segment_creation_matches_the_exact_continuous_source_pass_idempotently()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Continuous segment athlete");
+        var start = new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero);
+        var segmentPoints = Enumerable.Range(0, 51)
+            .Select(index => new TrackPoint(
+                start.AddSeconds(index + 2),
+                55 + index * 0.00004 + Math.Sin(index / 5d) * 0.00001,
+                12 + index * 0.00008,
+                null, 20 + index, 5, 130, 85, 200, 15))
+            .ToArray();
+        var activityPoints = new[]
+            {
+                segmentPoints[0] with
+                {
+                    Latitude = segmentPoints[0].Latitude - 0.00015,
+                    Longitude = segmentPoints[0].Longitude - 0.00005
+                },
+                segmentPoints[0] with
+                {
+                    Latitude = segmentPoints[0].Latitude - 0.00007,
+                    Longitude = segmentPoints[0].Longitude - 0.00002
+                }
+            }
+            .Concat(segmentPoints)
+            .Concat(segmentPoints.Reverse())
+            .Select((point, index) => point with { Timestamp = start.AddSeconds(index) })
+            .ToArray();
+        var activity = await setup.SeedActivityAsync(owner, "Continuous source", SportKind.Cycling, activityPoints);
+        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+
+        var segmentId = await service.CreateFromActivityAsync(
+            new CreateSegmentRequest(owner, activity, "Continuous climb", 2, 52, 30));
+        var created = await service.GetAsync(segmentId);
+        var firstEffort = Assert.Single(created!.Efforts);
+        var definitionDistances = created.Points.Select(point => Assert.IsType<double>(point.DistanceMeters)).ToArray();
+        var definitionSeries = ChartSeriesBuilder.Build(
+            created.Points,
+            point => point.ElevationMeters,
+            ChartAxisKind.Distance);
+        Assert.Equal(segmentPoints.Length, created.Points.Count);
+        Assert.Equal(segmentPoints[0].ElevationMeters, created.Points[0].ElevationMeters);
+        Assert.Equal(segmentPoints[^1].ElevationMeters, created.Points[^1].ElevationMeters);
+        Assert.Equal(0, definitionDistances[0]);
+        Assert.True(definitionDistances.SequenceEqual(definitionDistances.Order()));
+        Assert.Equal(created.Summary.DistanceMeters, definitionDistances[^1], 8);
+        Assert.Equal(segmentPoints.Length, definitionSeries.Samples.Count);
+        Assert.Equal(100, definitionSeries.CoveragePercent, 8);
+        Assert.Equal(created.Summary.DistanceMeters, definitionSeries.AxisMaximum, 8);
+        Assert.Equal(2, firstEffort.StartPointIndex);
+        Assert.Equal(52, firstEffort.EndPointIndex);
+        Assert.Equal(50, firstEffort.ElapsedSeconds, 8);
+        Assert.Equal(1, firstEffort.Rank);
+        Assert.Equal(100, firstEffort.CoveragePercent, 8);
+        Assert.Equal(firstEffort.ElapsedSeconds, created.Summary.BestElapsedSeconds);
+
+        await service.RecomputeAsync(segmentId);
+
+        var recomputed = await service.GetAsync(segmentId);
+        var recomputedEffort = Assert.Single(recomputed!.Efforts);
+        Assert.Equal(2, recomputedEffort.StartPointIndex);
+        Assert.Equal(52, recomputedEffort.EndPointIndex);
+        Assert.Equal(50, recomputedEffort.ElapsedSeconds, 8);
+        Assert.Equal(1, recomputedEffort.Rank);
+        Assert.Equal(100, recomputedEffort.CoveragePercent, 8);
+    }
+
+    [Fact]
+    public async Task Activity_segment_effort_metrics_bridge_intermittent_missing_coordinates()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Gap tolerant segment athlete");
+        var start = new DateTimeOffset(2026, 6, 8, 8, 0, 0, TimeSpan.Zero);
+        var points = new[]
+        {
+            new TrackPoint(start, 55, 12, null, 10, 5, 130, 85, 200, 15),
+            new TrackPoint(start.AddSeconds(1), null, null, null, 20, 5, 130, 85, 200, 15),
+            new TrackPoint(start.AddSeconds(2), 55, 12.001, null, 30, 5, 130, 85, 200, 15),
+            new TrackPoint(start.AddSeconds(3), 55, 12.002, null, 40, 5, 130, 85, 200, 15)
+        };
+        var activity = await setup.SeedActivityAsync(owner, "Intermittent GPS", SportKind.Cycling, points);
+        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+
+        var segmentId = await service.CreateFromActivityAsync(
+            new CreateSegmentRequest(owner, activity, "Gap tolerant climb", 0, 3, 30));
+        var created = await service.GetAsync(segmentId);
+        var effort = Assert.Single(created!.Efforts);
+
+        Assert.Equal(0, effort.StartPointIndex);
+        Assert.Equal(3, effort.EndPointIndex);
+        Assert.Equal(30, effort.ElevationGain);
+        Assert.Equal(0, effort.ElevationLoss);
+        Assert.NotNull(created.Summary.AverageGrade);
+        Assert.NotNull(effort.AverageGrade);
+        Assert.Equal(created.Summary.AverageGrade.Value, effort.AverageGrade.Value, 8);
+        Assert.InRange(created.Summary.DistanceMeters, 127, 129);
+    }
+
+    [Fact]
+    public async Task Segment_creation_does_not_persist_when_initial_effort_generation_fails()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Atomic segment athlete");
+        var activity = await setup.SeedActivityAsync(owner, "Atomic source", SportKind.Cycling, TestSupport.Track(60));
+        var service = new SegmentService(setup.Factory, new ThrowingSegmentMatcher());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateFromActivityAsync(
+            new CreateSegmentRequest(owner, activity, "Must not persist", 5, 30, 30)));
+
+        await using var db = await setup.Factory.CreateDbContextAsync();
+        Assert.False(await db.Segments.AnyAsync(segment => segment.OwnerId == owner));
+        Assert.False(await db.SegmentEfforts.AnyAsync(effort => effort.OwnerId == owner));
+    }
+
+    [Fact]
+    public async Task Reversed_activity_segment_does_not_manufacture_a_source_effort()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Directional segment athlete");
+        var activity = await setup.SeedActivityAsync(owner, "Forward only", SportKind.Cycling, TestSupport.Track(60));
+        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+
+        var segmentId = await service.CreateFromActivityAsync(
+            new CreateSegmentRequest(owner, activity, "Reverse direction", 10, 35, 30, ReverseDirection: true));
+
+        Assert.Empty((await service.GetAsync(segmentId))!.Efforts);
+    }
+
     [Fact]
     public async Task Route_gpx_import_records_atomic_local_provenance()
     {
@@ -835,6 +966,16 @@ public sealed class DatabaseIntegrationTests
             return [new ImportCandidate(path, "same.fit", sourceKind, hash, new FileInfo(path).Length, parsed,
                 parsed.ExternalId, provider, AcquisitionMethod.AccountExport, FitActivityImporter.CurrentParserVersion)];
         }
+    }
+
+    private sealed class ThrowingSegmentMatcher : ISegmentMatcher
+    {
+        public Task<IReadOnlyList<SegmentMatch>> MatchAsync(
+            IReadOnlyList<TrackPoint> activity,
+            IReadOnlyList<TrackPoint> segment,
+            double toleranceMeters,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Synthetic matcher failure.");
     }
 
     private sealed class DatabaseSetup

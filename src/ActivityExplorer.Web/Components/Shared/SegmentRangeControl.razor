@@ -1,0 +1,89 @@
+<section class="segment-range-control" aria-labelledby="@_headingId">
+    <div class="segment-control-heading">
+        <div>
+            <h3 id="@_headingId">Choose the segment</h3>
+            <p>Move the start and end along the @PathLabel. The closest recorded GPS point is used.</p>
+        </div>
+        <output class="segment-range-summary" aria-live="polite">@Format.Distance(SelectedDistance)</output>
+    </div>
+    <div class="segment-range-slider">
+        <svg class="segment-range-track" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true">
+            <line class="full" x1="0" x2="100" y1="3" y2="3"></line>
+            <line class="selected" x1="@Invariant(StartPercent)" x2="@Invariant(EndPercent)" y1="3" y2="3"></line>
+        </svg>
+        <input class="segment-range-input start" type="range" min="0" max="@Invariant(SliderMaximum)" step="@Invariant(SliderStep)"
+               @bind="_startSliderDistance" @bind:event="oninput" @bind:after="StartChanged" @bind:culture="CultureInfo.InvariantCulture"
+               aria-label="Segment start position" aria-valuetext="@PositionText(StartIndex)" />
+        <input class="segment-range-input end" type="range" min="0" max="@Invariant(SliderMaximum)" step="@Invariant(SliderStep)"
+               @bind="_endSliderDistance" @bind:event="oninput" @bind:after="EndChanged" @bind:culture="CultureInfo.InvariantCulture"
+               aria-label="Segment end position" aria-valuetext="@PositionText(EndIndex)" />
+    </div>
+    <div class="segment-endpoint-controls">
+        <div class="segment-endpoint-card start">
+            <div><span>Start</span><strong>@PositionText(StartIndex)</strong></div>
+            <div class="segment-nudges">
+                <button class="button" type="button" disabled="@(StartIndex <= 0)" aria-label="Move segment start backward" @onclick="() => ChangeStart(StartIndex - 1)">Back</button>
+                <button class="button" type="button" disabled="@(StartIndex >= EndIndex - 1)" aria-label="Move segment start forward" @onclick="() => ChangeStart(StartIndex + 1)">Forward</button>
+            </div>
+        </div>
+        <div class="segment-endpoint-card end">
+            <div><span>End</span><strong>@PositionText(EndIndex)</strong></div>
+            <div class="segment-nudges">
+                <button class="button" type="button" disabled="@(EndIndex <= StartIndex + 1)" aria-label="Move segment end backward" @onclick="() => ChangeEnd(EndIndex - 1)">Back</button>
+                <button class="button" type="button" disabled="@(EndIndex >= Analysis.PointCount - 1)" aria-label="Move segment end forward" @onclick="() => ChangeEnd(EndIndex + 1)">Forward</button>
+            </div>
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter, EditorRequired] public TrackPathAnalysis Analysis { get; set; } = default!;
+    [Parameter] public string PathLabel { get; set; } = "route";
+    [Parameter] public int StartIndex { get; set; }
+    [Parameter] public EventCallback<int> StartIndexChanged { get; set; }
+    [Parameter] public int EndIndex { get; set; }
+    [Parameter] public EventCallback<int> EndIndexChanged { get; set; }
+
+    private readonly string _headingId = $"segment-range-{Guid.NewGuid():N}";
+    private double StartDistance => Analysis.DistanceAt(StartIndex);
+    private double EndDistance => Analysis.DistanceAt(EndIndex);
+    private double SelectedDistance => Math.Max(0, EndDistance - StartDistance);
+    private double SliderMaximum => Math.Max(Analysis.TotalDistanceMeters, 1);
+    private double SliderStep => Math.Max(Analysis.TotalDistanceMeters / Math.Max(Analysis.PointCount - 1, 1), 0.01);
+    private double StartPercent => Analysis.TotalDistanceMeters > 0 ? StartDistance / Analysis.TotalDistanceMeters * 100 : StartIndex * 100d / Math.Max(Analysis.PointCount - 1, 1);
+    private double EndPercent => Analysis.TotalDistanceMeters > 0 ? EndDistance / Analysis.TotalDistanceMeters * 100 : EndIndex * 100d / Math.Max(Analysis.PointCount - 1, 1);
+    private double _startSliderDistance;
+    private double _endSliderDistance;
+
+    protected override void OnParametersSet()
+    {
+        _startSliderDistance = StartDistance;
+        _endSliderDistance = EndDistance;
+    }
+
+    private async Task StartChanged()
+    {
+        var index = Math.Clamp(Analysis.FindNearestPointIndex(_startSliderDistance), 0, Math.Max(0, EndIndex - 1));
+        await ChangeStart(index);
+    }
+
+    private async Task EndChanged()
+    {
+        var index = Math.Clamp(Analysis.FindNearestPointIndex(_endSliderDistance), Math.Min(StartIndex + 1, Analysis.PointCount - 1), Analysis.PointCount - 1);
+        await ChangeEnd(index);
+    }
+
+    private Task ChangeStart(int index) => StartIndexChanged.InvokeAsync(Math.Clamp(index, 0, EndIndex - 1));
+    private Task ChangeEnd(int index) => EndIndexChanged.InvokeAsync(Math.Clamp(index, StartIndex + 1, Analysis.PointCount - 1));
+
+    private string PositionText(int index)
+    {
+        var elevation = Points[index].ElevationMeters;
+        return elevation.HasValue
+            ? $"{Format.Distance(Analysis.DistanceAt(index))} · {elevation.Value:N0} m"
+            : $"{Format.Distance(Analysis.DistanceAt(index))} · elevation not recorded";
+    }
+
+    private static string Invariant(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+}

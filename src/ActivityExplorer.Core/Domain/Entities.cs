@@ -201,6 +201,9 @@ public sealed class Segment
     public Guid OwnerId { get; set; }
     public OwnerProfile? Owner { get; set; }
     public Guid? SourceActivityId { get; set; }
+    public SegmentSourceKind SourceKind { get; set; }
+    [MaxLength(260)] public string? SourceName { get; set; }
+    [MaxLength(32)] public string? SourceFormat { get; set; }
     public SportKind Sport { get; set; }
     [MaxLength(240)] public string Name { get; set; } = string.Empty;
     public double DistanceMeters { get; set; }

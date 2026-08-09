@@ -1,0 +1,83 @@
+<section class="panel segment-creator">
+    <aside class="segment-creator-guide">
+        <span class="eyebrow">Local segment creator</span>
+        <h2>Create a segment from this @SourceLabel</h2>
+        <p>Choose the exact portion you want to match against your local activity history. The map, elevation profile, and measurements update together.</p>
+        <ol>
+            <li>Set the start and end by distance.</li>
+            <li>Check the highlighted path and elevation.</li>
+            <li>Confirm its direction, name, and GPS tolerance.</li>
+        </ol>
+        <details class="segment-creator-tips">
+            <summary>Tips for accurate matching</summary>
+            <ul>
+                <li>Use clear landmarks or junctions for recognizable endpoints.</li>
+                <li>Very short segments are more sensitive to GPS sampling and noise.</li>
+                <li>Keep the @SourceLabel direction unless you intend to match travel the other way.</li>
+                <li>Use the smallest tolerance that covers normal GPS variation.</li>
+            </ul>
+        </details>
+        <p class="muted compact-note">This creates an independent local segment. It is not connected to a proprietary segment catalog.</p>
+    </aside>
+    <div class="segment-creator-workspace">
+        <StatusMessage Message="@ErrorMessage" IsError="true" />
+        <SegmentRangeControl Points="Points" Analysis="_analysis" PathLabel="@SourceLabel"
+                             @bind-StartIndex="_startIndex" @bind-EndIndex="_endIndex" />
+        <div class="segment-creator-map-panel">
+            <MapCanvas InlinePoints="Points" SelectionStartIndex="_startIndex" SelectionEndIndex="_endIndex"
+                       SelectionReversed="_reverseDirection" ShowSelectionEndpoints="true"
+                       CssClass="segment-creator-map" Label="@MapLabel" />
+        </div>
+        <div class="segment-creator-legend" aria-hidden="true"><span class="route"></span>Full @SourceLabel <span class="selection"></span>Selected segment <span class="start"></span>Start <span class="end"></span>End</div>
+        <SegmentElevationProfile Points="Points" Analysis="_analysis" StartIndex="_startIndex"
+                                 EndIndex="_endIndex" ReverseDirection="_reverseDirection" />
+        <div class="segment-creator-form">
+            <label class="segment-name"><span>Name</span><input maxlength="240" required @bind="_name" @bind:event="oninput" /></label>
+            <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
+            <label class="checkbox-field"><input type="checkbox" @bind="_reverseDirection" /><span>Reverse direction after trimming</span></label>
+            <button class="button primary" disabled="@(!CanCreate || Busy)" @onclick="SubmitAsync">@(Busy ? "Creating segment..." : "Create segment")</button>
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid SourceId { get; set; }
+    [Parameter, EditorRequired] public string SourceLabel { get; set; } = "path";
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter] public string InitialName { get; set; } = string.Empty;
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public EventCallback<SegmentCreatorSubmission> OnCreate { get; set; }
+
+    private Guid _initializedSourceId;
+    private IReadOnlyList<TrackPoint>? _initializedPoints;
+    private TrackPathAnalysis _analysis = new([]);
+    private string _name = string.Empty;
+    private double _tolerance = 30;
+    private int _startIndex;
+    private int _endIndex;
+    private bool _reverseDirection;
+    private bool CanCreate => Points.Count >= 2 && !string.IsNullOrWhiteSpace(_name) &&
+                              _tolerance is >= 10 and <= 200 && _startIndex >= 0 &&
+                              _endIndex < Points.Count && _endIndex - _startIndex >= 1;
+    private string MapLabel => string.IsNullOrWhiteSpace(SourceLabel)
+        ? "Path map with selected segment"
+        : $"{char.ToUpperInvariant(SourceLabel[0])}{SourceLabel[1..]} map with selected segment";
+
+    protected override void OnParametersSet()
+    {
+        if (_initializedSourceId == SourceId && ReferenceEquals(_initializedPoints, Points)) return;
+        _initializedSourceId = SourceId;
+        _initializedPoints = Points;
+        _analysis = new TrackPathAnalysis(Points);
+        _name = InitialName;
+        _tolerance = 30;
+        _startIndex = 0;
+        _endIndex = Math.Max(0, Points.Count - 1);
+        _reverseDirection = false;
+    }
+
+    private Task SubmitAsync() => CanCreate && !Busy
+        ? OnCreate.InvokeAsync(new SegmentCreatorSubmission(_name, _tolerance, _startIndex, _endIndex, _reverseDirection))
+        : Task.CompletedTask;
+}

@@ -37,9 +37,11 @@ The staging tree follows the durable import state:
 
 Route GPX imports create a completed import batch and a linked `SourceFile`; their staged upload is removed only after the verified original and database provenance are committed.
 
+Local segment-path uploads are intentionally different. The endpoint parses one bounded path, applies the reviewed trim and direction, persists only local geometry plus source kind, safe base file name, and normalized format, and then deletes staging. It does not create a `SourceFile` or managed original. FIT segment UUIDs, leader times, leaderboard fields, provider IDs, and other non-geometry metadata are not retained.
+
 ## What the database contains
 
-SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Treat the root as private health and location data even when profile names are fictional.
+SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Segment provenance records source kind and may include a user-supplied base file name and normalized format. Treat the root as private health and location data even when profile names are fictional.
 
 ## Network behavior
 
@@ -61,7 +63,7 @@ Activity Explorer does not create automatic database backups. For a complete bac
 2. Copy the entire application-data directory, including WAL/SHM files, originals, keys, and quarantine, to encrypted storage.
 3. Restart the app.
 
-The profile JSON export contains summarized records only; it is not a backup of source files or the database. A database that already matches the current model remains usable, but older pre-release schemas are unsupported and require a fresh data root and reimport.
+The profile JSON export contains summarized records only; it is not a backup of source files or the database. Startup adds the three segment-provenance columns to databases created by the immediately preceding schema. Other older pre-release schema changes remain unsupported and may require a fresh data root and reimport.
 
 ## Activity transfer and deletion
 

@@ -79,5 +79,26 @@ window.activityExplorerImports = {
         if (!response.ok) throw new Error(result.error || "The GPX route could not be imported.");
         input.value = "";
         return result.id;
+    },
+
+    async uploadSegment(inputId, ownerId, sport, name, toleranceMeters, startIndex, endIndex, reverseDirection) {
+        const input = document.getElementById(inputId);
+        if (!input?.files?.length) throw new Error("Choose a segment path file first.");
+        if (!ownerId || ownerId === "00000000-0000-0000-0000-000000000000") throw new Error("Select a profile before importing.");
+        const form = new FormData();
+        form.append("file", input.files[0], input.files[0].name);
+        const query = new URLSearchParams({ ownerId, sport, name, toleranceMeters, reverseDirection });
+        if (startIndex !== null && startIndex !== undefined && startIndex !== "") query.set("startIndex", startIndex);
+        if (endIndex !== null && endIndex !== undefined && endIndex !== "") query.set("endIndex", endIndex);
+        const response = await fetch("/internal/segments/import?" + query, {
+            method: "POST",
+            headers: await activityExplorerUploadHeaders(),
+            body: form,
+            credentials: "same-origin"
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "The segment path could not be imported.");
+        input.value = "";
+        return result.id;
     }
 };

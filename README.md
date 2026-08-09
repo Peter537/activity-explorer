@@ -19,10 +19,11 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
 - Calculates an ordered catalog of cycling, running, and walking distance bests, 5-second through 2-hour power bests, and directional local segment efforts.
+- Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Uses locally vendored MapLibre with a blank basemap by default; OpenFreeMap is a persistent, explicit global opt-in.
 - Watches optional local folders without moving or deleting the files in them.
 
-Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credentials, provider passwords, automated Connect access, or proprietary Strava segments. Automatic phone-to-app synchronization is not available in 0.1.0.
+Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credentials, provider passwords, automated Connect access, or a proprietary segment catalog. Generic user-supplied path files create independent local definitions; they do not establish provider identity or synchronization. Automatic phone-to-app synchronization is not available in 0.1.0.
 
 ## Quick start
 
@@ -87,8 +88,9 @@ Back up the whole application-data directory while Activity Explorer is stopped.
 | FIT | Official SDK parsing for timing, laps, track, sensors, respiration, temperature, calories, and training fields when recorded |
 | GPX / TCX | Hardened streaming XML readers |
 | GZ / ZIP | Safely expanded with traversal, symlink, nesting, count, and size limits |
+| Local segment path | One GPX, FIT segment/course, TCX, KML, or GeoJSON path; reviewed sport, trim, direction, and tolerance |
 
-Only cycling, running, and walking activities are imported. Indoor and virtual variants map to their base sport. Other sport files are reported and skipped.
+Only cycling, running, and walking activities are imported. Indoor and virtual variants map to their base sport. Other sport files are reported and skipped. Segment path uploads are parsed into local geometry and then discarded; only the safe file name and normalized format remain as provenance.
 
 See [Importing data](docs/imports.md) and [Legal and export guides](docs/legal-and-exports.md).
 

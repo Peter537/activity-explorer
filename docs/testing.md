@@ -36,6 +36,9 @@ The browser matrix also verifies:
 - Import history starts collapsed, opens with 10 entries, reveals 10 more cumulatively, and remains readable with warning states and long expandable summaries;
 - missing detail IDs show a recovery state instead of permanent loading;
 - activity section jumps stay on the current detail route, exact-value sliders work from the keyboard, and detail-card spacing remains 20 pixels at 375, 768, 1280, and 1920 pixels;
+- the route segment creator links distance-snapped keyboard controls, endpoint nudges, map selection, elevation highlighting, live directional metrics, exact trimmed/reversed persistence, missing-elevation fallback, and responsive reflow at 375, 768, 1121, 1280, and 1920 pixels;
+- the activity segment entry opens a focused creator with a blank required name, hides source indices, maps visual GPS endpoints back to the exact activity stream, preserves reversal and provenance, and recovers from missing elevation, insufficient GPS, and missing activities at the same responsive widths;
+- segment detail renders the persisted definition elevation against derived path distance at 375, 768, 1121, 1280, and 1920 pixels, colors it by gap-aware 50 metre local grade, exposes exact distance/elevation/grade values to pointer and keyboard users, links each inspection change to one non-refitting map-marker update, and retains the truthful missing-elevation fallback;
 - individual confirmation/cancel/success, stale-selection errors, selected-row deletion, and exact all-filtered snapshots run against synthetic data only, including proof that a later matching import is not swept into an existing confirmation;
 - profile deletion remains disabled until the exact confirmation phrase matches;
 - `prefers-reduced-motion: reduce` removes nonessential transitions;
@@ -50,10 +53,12 @@ Coverage includes:
 - Cycling target order through 200 km, pause-continuous recorded-distance and geometry-fallback windows, exact interpolation, retained reset/timestamp/GPS/speed boundaries, achieved-only storage, independent all-training/outdoor winners, and missing-snapshot repair;
 - cancellation/interrupted staging semantics, startup requeue/missing staging, watched-folder queue-failure cleanup, copy/activity-file/profile quarantine recovery, and profile deletion;
 - invariant dashboard sparkline geometry under a synthetic comma-decimal culture, filtered-ID resolution, atomic stale-ID rejection, cross-profile activity deletion, shared-file preservation, route/segment unlinking, segment-rank repair, and record refresh;
-- fresh SQLite schema creation, repeat startup against a current-schema database, abandoned-running-import recovery, and absence of migration history;
+- fresh SQLite schema creation, repeat startup against a current-schema database, the idempotent immediately-prior segment-provenance compatibility upgrade, abandoned-running-import recovery, and absence of migration history;
 - route GPX provenance, coordinate validation, viewport pruning, full-world/repeated-world normalization, antimeridian bounds, and segment direction/repeated passes;
+- continuous segment alignment across uneven sampling, intermittent missing coordinates, overlapping endpoint zones, short paths, antimeridian crossings, and later spatially overlapping returns without losing original stream indices; very long definitions use bounded alignment, and failed initial matching cannot persist a partial segment;
+- strict global rendering budgets for alternating grade transitions and many short elevation runs, with representative gaps retained and no interpolation across missing elevation;
 - antiforgery missing/invalid/valid flows, framework-managed no-cache headers, streamed oversize cleanup, loopback host filtering, CSP, and security headers;
-- MapLibre blank-mode privacy, wide-world normalization, responsive Records and Imports layouts, record-scope and filter query-state recovery, successful bounded GeoJSON requests, reduced motion, and keyboard navigation in Playwright;
+- MapLibre blank-mode privacy, wide-world normalization, responsive Records, Imports, and route-creator layouts, record-scope and filter query-state recovery, successful bounded GeoJSON requests, reduced motion, and keyboard navigation in Playwright;
 - deterministic route and segment map limits with EF row-limiting-without-order warnings promoted to test failures;
 - deterministic formatting, zero-warning Recommended analyzer builds, locked dependencies, exact version pins, and local container smoke testing.
 

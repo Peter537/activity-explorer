@@ -15,6 +15,7 @@ public sealed class DatabaseInitializer(
         paths.EnsureCreated();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await db.Database.EnsureCreatedAsync(cancellationToken);
+        await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -29,6 +30,35 @@ public sealed class DatabaseInitializer(
         if (interrupted.Count > 0) await db.SaveChangesAsync(cancellationToken);
 
         await fileOperations.RecoverAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureSegmentProvenanceColumnsAsync(
+        ExplorerDbContext db,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = "PRAGMA table_info('Segments')";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) existing.Add(reader.GetString(1));
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+
+        if (!existing.Contains("SourceKind"))
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"Segments\" ADD COLUMN \"SourceKind\" INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        if (!existing.Contains("SourceName"))
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"Segments\" ADD COLUMN \"SourceName\" TEXT NULL", cancellationToken);
+        if (!existing.Contains("SourceFormat"))
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"Segments\" ADD COLUMN \"SourceFormat\" TEXT NULL", cancellationToken);
     }
 
     private async Task ReportUntrackedOriginalsAsync(ExplorerDbContext db, CancellationToken cancellationToken)

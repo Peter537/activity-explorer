@@ -8,6 +8,9 @@ flowchart LR
     Folder["Optional watched folder"] --> Stage
     Stage --> Queue["Durable import queue"]
     Queue --> Parser["FIT / GPX / TCX / archive parsers"]
+    Stage --> SegmentReader["Bounded segment-path reader"]
+    SegmentReader --> LocalSegment["Reviewed trim + direction"]
+    LocalSegment --> SQLite
     Parser --> Journal["File-operation journal"]
     Journal --> Originals["Verified managed originals"]
     Parser --> SQLite["SQLite metadata and streams"]
@@ -63,7 +66,9 @@ erDiagram
 
 `ApplicationSetting` persists the single global map mode. `FileOperationJournal` records prepared, database-committed, completed, rolled-back, and failed copy/quarantine operations with root-relative paths. Owner-scoped mutation locks serialize imports, transfers, and deletion for affected profiles.
 
-The initializer creates the current schema when the database does not yet exist. A database already matching the current model opens unchanged. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. There is no pre-release schema upgrade path: older development databases require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
+Segment-path uploads bypass the activity queue. `SegmentPathReader` accepts one GPX, FIT segment/course, TCX, KML, or GeoJSON line, exposes only geometry and normalized format, and rejects FIT activities or multiple independent paths. The endpoint applies the requested inclusive trim and optional reversal before calling `ISegmentService`. Only the local WKB path and minimal source kind/name/format provenance are stored; staged and original path files are not retained.
+
+The initializer creates the current schema when the database does not yet exist. A database already matching the current model opens unchanged, and the segment-provenance compatibility step idempotently adds `SourceKind`, `SourceName`, and `SourceFormat` to the immediately preceding schema. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. Other older development schemas still require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
 
 ## Activity transfer and deletion
 
@@ -75,7 +80,7 @@ Profile deletion blocks active/recoverable imports, journals a move of the owner
 
 ## Web and privacy boundary
 
-The host allows only `localhost`, `127.0.0.1`, and `[::1]`. Upload URLs remain internal implementation endpoints but require a valid antiforgery header before body reads plus the custom same-origin header. Oversized streams return 413 and partial staging is removed.
+The host allows only `localhost`, `127.0.0.1`, and `[::1]`. Upload URLs remain internal implementation endpoints but require a valid antiforgery header before body reads plus the custom same-origin header. Oversized streams return 413 and partial staging is removed. Route and segment-path endpoints default to 50 MiB, validate file extensions before parsing, and always clean their request staging.
 
 Security middleware sends a Blazor/MapLibre-compatible CSP, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, no-referrer, and a restrictive permissions policy. OpenFreeMap origins enter CSP only after the global online setting is enabled. Blank mode is the default and makes no third-party map request.
 

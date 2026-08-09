@@ -26,7 +26,8 @@ public sealed class SegmentService(
         {
             efforts.TryGetValue(x.Id, out var effort);
             return new SegmentSummary(x.Id, x.OwnerId, x.Owner?.DisplayName ?? "Unknown profile", x.Name, x.Sport,
-                x.DistanceMeters, x.ToleranceMeters, effort?.Count ?? 0, effort?.Best, x.AverageGradePercent, x.ElevationGainMeters, x.ElevationLossMeters);
+                x.DistanceMeters, x.ToleranceMeters, effort?.Count ?? 0, effort?.Best, x.AverageGradePercent,
+                x.ElevationGainMeters, x.ElevationLossMeters, x.SourceKind, x.SourceName, x.SourceFormat);
         }).ToArray();
     }
 
@@ -57,10 +58,17 @@ public sealed class SegmentService(
                     selectedPoints = all.Skip(selected.StartPointIndex).Take(selected.EndPointIndex - selected.StartPointIndex + 1).ToArray();
             }
         }
+        var definitionPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
+        var definitionAnalysis = new TrackPathAnalysis(definitionPoints);
+        var positionedDefinitionPoints = definitionPoints
+            .Select((point, index) => point with { DistanceMeters = definitionAnalysis.DistanceAt(index) })
+            .ToArray();
         return new SegmentDetail(
             new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner?.DisplayName ?? "Unknown profile", segment.Name,
-                segment.Sport, segment.DistanceMeters, segment.ToleranceMeters, efforts.Count, efforts.Count == 0 ? null : efforts.Min(x => x.ElapsedSeconds), segment.AverageGradePercent, segment.ElevationGainMeters, segment.ElevationLossMeters),
-            GeometryCodec.FromWkb(segment.GeometryWkb),
+                segment.Sport, segment.DistanceMeters, segment.ToleranceMeters, efforts.Count,
+                efforts.Count == 0 ? null : efforts.Min(x => x.ElapsedSeconds), segment.AverageGradePercent,
+                segment.ElevationGainMeters, segment.ElevationLossMeters, segment.SourceKind, segment.SourceName, segment.SourceFormat),
+            positionedDefinitionPoints,
             efforts, selected?.Id, selectedPoints);
     }
 
@@ -75,23 +83,26 @@ public sealed class SegmentService(
         var allPoints = TrackCodec.Decode(activity.Stream.CompressedPayload);
         if (request.StartPointIndex < 0 || request.EndPointIndex >= allPoints.Count || request.EndPointIndex - request.StartPointIndex < 1)
             throw new ArgumentOutOfRangeException(nameof(request), "Select at least two valid track points.");
-        var points = allPoints.Skip(request.StartPointIndex).Take(request.EndPointIndex - request.StartPointIndex + 1)
+        IEnumerable<TrackPoint> selected = allPoints.Skip(request.StartPointIndex).Take(request.EndPointIndex - request.StartPointIndex + 1);
+        if (request.ReverseDirection) selected = selected.Reverse();
+        var points = selected
             .Where(x => x.Latitude.HasValue && x.Longitude.HasValue).ToArray();
         if (points.Length < 2) throw new InvalidOperationException("The selected portion has insufficient GPS data.");
 
         var bounds = GeometryCodec.Bounds(points);
-        var distance = GeometryCodec.DistanceMeters(points);
-        var elevation = Elevation(points, distance);
+        var metrics = new TrackPathAnalysis(points).Slice(0, points.Length - 1);
         var segment = new Segment
         {
             OwnerId = request.OwnerId,
             SourceActivityId = activity.Id,
+            SourceKind = SegmentSourceKind.Activity,
+            SourceName = TrimProvenance(activity.Title, 260),
             Sport = activity.Sport,
             Name = request.Name.Trim(),
-            DistanceMeters = distance,
-            ElevationGainMeters = elevation.Gain,
-            ElevationLossMeters = elevation.Loss,
-            AverageGradePercent = elevation.Grade,
+            DistanceMeters = metrics.DistanceMeters,
+            ElevationGainMeters = metrics.ElevationGainMeters,
+            ElevationLossMeters = metrics.ElevationLossMeters,
+            AverageGradePercent = metrics.AverageGradePercent,
             ToleranceMeters = request.ToleranceMeters,
             GeometryWkb = GeometryCodec.ToWkb(points)!,
             MinLatitude = bounds.MinLat!.Value,
@@ -100,14 +111,15 @@ public sealed class SegmentService(
             MaxLongitude = bounds.MaxLon!.Value
         };
         db.Segments.Add(segment);
+        db.SegmentEfforts.AddRange(await GenerateEffortsAsync(db, segment, points, cancellationToken));
         await db.SaveChangesAsync(cancellationToken);
-        await RecomputeAsync(segment.Id, cancellationToken);
         return segment.Id;
     }
 
     public async Task<Guid> CreateAsync(CreateSegmentPathRequest request, CancellationToken cancellationToken = default)
     {
         ValidateNameAndTolerance(request.Name, request.ToleranceMeters, nameof(request));
+        ValidateProvenance(request.SourceKind, request.SourceName, request.SourceFormat, nameof(request));
         var points = ValidatePoints(request.Points, nameof(request));
 
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
@@ -117,18 +129,20 @@ public sealed class SegmentService(
                 .AnyAsync(x => x.Id == request.SourceActivityId && x.OwnerId == request.OwnerId, cancellationToken))
             throw new InvalidOperationException("The source activity was not found for this profile.");
         var bounds = GeometryCodec.Bounds(points);
-        var distance = GeometryCodec.DistanceMeters(points);
-        var elevation = Elevation(points, distance);
+        var metrics = new TrackPathAnalysis(points).Slice(0, points.Length - 1);
         var segment = new Segment
         {
             OwnerId = request.OwnerId,
             SourceActivityId = request.SourceActivityId,
+            SourceKind = request.SourceKind,
+            SourceName = TrimProvenance(request.SourceName, 260),
+            SourceFormat = TrimProvenance(request.SourceFormat, 32)?.ToUpperInvariant(),
             Sport = request.Sport,
             Name = request.Name.Trim(),
-            DistanceMeters = distance,
-            ElevationGainMeters = elevation.Gain,
-            ElevationLossMeters = elevation.Loss,
-            AverageGradePercent = elevation.Grade,
+            DistanceMeters = metrics.DistanceMeters,
+            ElevationGainMeters = metrics.ElevationGainMeters,
+            ElevationLossMeters = metrics.ElevationLossMeters,
+            AverageGradePercent = metrics.AverageGradePercent,
             ToleranceMeters = request.ToleranceMeters,
             GeometryWkb = GeometryCodec.ToWkb(points)!,
             MinLatitude = bounds.MinLat!.Value,
@@ -137,8 +151,8 @@ public sealed class SegmentService(
             MaxLongitude = bounds.MaxLon!.Value
         };
         db.Segments.Add(segment);
+        db.SegmentEfforts.AddRange(await GenerateEffortsAsync(db, segment, points, cancellationToken));
         await db.SaveChangesAsync(cancellationToken);
-        await RecomputeAsync(segment.Id, cancellationToken);
         return segment.Id;
     }
 
@@ -148,6 +162,19 @@ public sealed class SegmentService(
         var segment = await db.Segments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == segmentId, cancellationToken);
         if (segment is null) return;
         var segmentPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
+        var generated = await GenerateEffortsAsync(db, segment, segmentPoints, cancellationToken);
+        var existing = await db.SegmentEfforts.Where(x => x.SegmentId == segmentId).ToListAsync(cancellationToken);
+        db.SegmentEfforts.RemoveRange(existing);
+        db.SegmentEfforts.AddRange(generated);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<SegmentEffort>> GenerateEffortsAsync(
+        ExplorerDbContext db,
+        Segment segment,
+        IReadOnlyList<TrackPoint> segmentPoints,
+        CancellationToken cancellationToken)
+    {
         var latitudePadding = Math.Max(segment.ToleranceMeters, 30) / 111_000d;
         var centreLatitude = (segment.MinLatitude + segment.MaxLatitude) / 2d;
         var longitudeScale = Math.Max(Math.Abs(Math.Cos(centreLatitude * Math.PI / 180d)), 0.01d);
@@ -177,8 +204,7 @@ public sealed class SegmentService(
                     ? (lastTime.Value - firstTime.Value).TotalSeconds
                     : activity.ElapsedTimeSeconds * (match.EndIndex - match.StartIndex) / Math.Max(points.Count - 1d, 1d);
                 if (elapsed <= 0) continue;
-                var effortDistance = GeometryCodec.DistanceMeters(slice);
-                var elevation = Elevation(slice, effortDistance);
+                var effortMetrics = new TrackPathAnalysis(slice).Slice(0, slice.Length - 1);
                 generated.Add(new SegmentEffort
                 {
                     OwnerId = segment.OwnerId,
@@ -192,9 +218,9 @@ public sealed class SegmentService(
                     AverageHeartRate = Average(slice, x => x.HeartRate),
                     AverageCadence = Average(slice, x => x.Cadence),
                     AveragePowerWatts = Average(slice, x => x.PowerWatts),
-                    ElevationGainMeters = elevation.Gain,
-                    ElevationLossMeters = elevation.Loss,
-                    AverageGradePercent = elevation.Grade,
+                    ElevationGainMeters = effortMetrics.ElevationGainMeters,
+                    ElevationLossMeters = effortMetrics.ElevationLossMeters,
+                    AverageGradePercent = effortMetrics.AverageGradePercent,
                     AverageSpeedMetersPerSecond = Average(slice, x => x.SpeedMetersPerSecond),
                     MaxSpeedMetersPerSecond = Max(slice, x => x.SpeedMetersPerSecond),
                     MaxHeartRate = Max(slice, x => x.HeartRate),
@@ -207,12 +233,9 @@ public sealed class SegmentService(
             }
         }
 
-        var existing = await db.SegmentEfforts.Where(x => x.SegmentId == segmentId).ToListAsync(cancellationToken);
-        db.SegmentEfforts.RemoveRange(existing);
         var ranked = generated.OrderBy(x => x.ElapsedSeconds).ToArray();
         for (var index = 0; index < ranked.Length; index++) ranked[index].Rank = index + 1;
-        db.SegmentEfforts.AddRange(ranked);
-        await db.SaveChangesAsync(cancellationToken);
+        return ranked;
     }
 
     private static void ValidateNameAndTolerance(string name, double toleranceMeters, string parameterName)
@@ -221,6 +244,27 @@ public sealed class SegmentService(
         if (name.Trim().Length > 240) throw new ArgumentException("Name cannot exceed 240 characters.", parameterName);
         if (!double.IsFinite(toleranceMeters) || toleranceMeters is < 10 or > 200)
             throw new ArgumentOutOfRangeException(parameterName, "Tolerance must be between 10 and 200 metres.");
+    }
+
+    private static void ValidateProvenance(
+        SegmentSourceKind sourceKind,
+        string? sourceName,
+        string? sourceFormat,
+        string parameterName)
+    {
+        if (!Enum.IsDefined(sourceKind))
+            throw new ArgumentException("Choose a supported segment source.", parameterName);
+        if (sourceName?.Trim().Length > 260)
+            throw new ArgumentException("The segment source name cannot exceed 260 characters.", parameterName);
+        if (sourceFormat?.Trim().Length > 32)
+            throw new ArgumentException("The segment source format cannot exceed 32 characters.", parameterName);
+    }
+
+    private static string? TrimProvenance(string? value, int maximumLength)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed)) return null;
+        return trimmed.Length <= maximumLength ? trimmed : trimmed[..maximumLength];
     }
 
     private static TrackPoint[] ValidatePoints(IReadOnlyList<TrackPoint> input, string parameterName)
@@ -270,22 +314,5 @@ public sealed class SegmentService(
         var values = points.Select(selector).Where(x => x.HasValue).Select(x => x!.Value).ToArray();
         return values.Length == 0 ? null : values.Max();
     }
-
-    private static (double? Gain, double? Loss, double? Grade) Elevation(IReadOnlyList<TrackPoint> points, double distance)
-    {
-        var values = points.Where(x => x.ElevationMeters.HasValue).Select(x => x.ElevationMeters!.Value).ToArray();
-        if (values.Length < 2) return (null, null, null);
-        var gain = 0d;
-        var loss = 0d;
-        for (var index = 1; index < values.Length; index++)
-        {
-            var change = values[index] - values[index - 1];
-            if (change > 0) gain += change;
-            else loss -= change;
-        }
-        double? grade = distance > 0 ? (values[^1] - values[0]) / distance * 100d : null;
-        return (gain, loss, grade);
-    }
-
 
 }

@@ -1,0 +1,78 @@
+<section class="segment-elevation-profile" aria-labelledby="@_headingId">
+    <div class="segment-profile-heading">
+        <div><h3 id="@_headingId">Elevation profile</h3><p>Selected terrain is highlighted by path distance.</p></div>
+        <span>metres</span>
+    </div>
+    @if (!_geometry.HasData)
+    {
+        <div class="segment-elevation-empty" role="status"><strong>Elevation not recorded</strong><span>You can still select and create this segment.</span></div>
+    }
+    else
+    {
+        <svg class="segment-profile-chart" viewBox="0 0 800 230" role="img" aria-label="@AccessibleLabel">
+            <defs><clipPath id="@_clipId"><rect x="@Invariant(SelectionX)" y="0" width="@Invariant(SelectionWidth)" height="230"></rect></clipPath></defs>
+            @foreach (var tick in _geometry.ElevationTicks)
+            {
+                <g>
+                    <line class="segment-chart-grid" x1="@Invariant(_geometry.PlotLeft)" x2="@Invariant(_geometry.PlotLeft + _geometry.PlotWidth)" y1="@Invariant(tick.Position)" y2="@Invariant(tick.Position)"></line>
+                    <text class="segment-chart-label y" x="@Invariant(_geometry.PlotLeft - 8)" y="@Invariant(tick.Position + 4)">@tick.Label</text>
+                </g>
+            }
+            @foreach (var tick in _geometry.DistanceTicks)
+            {
+                <g>
+                    <line class="segment-chart-tick" x1="@Invariant(tick.Position)" x2="@Invariant(tick.Position)" y1="@Invariant(_geometry.PlotTop + _geometry.PlotHeight)" y2="@Invariant(_geometry.PlotTop + _geometry.PlotHeight + 5)"></line>
+                    <text class="segment-chart-label x" x="@Invariant(tick.Position)" y="@Invariant(_geometry.PlotTop + _geometry.PlotHeight + 22)">@tick.Label</text>
+                </g>
+            }
+            @foreach (var path in _geometry.AreaPaths) { <path class="segment-profile-area full" d="@path"></path> }
+            @foreach (var path in _geometry.LinePaths) { <path class="segment-profile-line full" d="@path"></path> }
+            <g clip-path="@($"url(#{_clipId})")">
+                @foreach (var path in _geometry.AreaPaths) { <path class="segment-profile-area selected" d="@path"></path> }
+                @foreach (var path in _geometry.LinePaths) { <path class="segment-profile-line selected" d="@path"></path> }
+            </g>
+        </svg>
+    }
+    <dl class="segment-selection-stats" aria-live="polite">
+        <div><dt>Distance</dt><dd>@Format.Distance(_selection.DistanceMeters)</dd></div>
+        <div><dt>Ascent</dt><dd>@Elevation(_selection.ElevationGainMeters)</dd></div>
+        <div><dt>Descent</dt><dd>@Elevation(_selection.ElevationLossMeters)</dd></div>
+        <div><dt>Average grade</dt><dd>@Grade(_selection.AverageGradePercent)</dd></div>
+        <div><dt>Start elevation</dt><dd>@Elevation(_selection.StartElevationMeters)</dd></div>
+        <div><dt>End elevation</dt><dd>@Elevation(_selection.EndElevationMeters)</dd></div>
+    </dl>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter, EditorRequired] public TrackPathAnalysis Analysis { get; set; } = default!;
+    [Parameter] public int StartIndex { get; set; }
+    [Parameter] public int EndIndex { get; set; }
+    [Parameter] public bool ReverseDirection { get; set; }
+
+    private readonly string _headingId = $"segment-elevation-{Guid.NewGuid():N}";
+    private readonly string _clipId = $"segment-clip-{Guid.NewGuid():N}";
+    private IReadOnlyList<TrackPoint>? _geometryPoints;
+    private SegmentElevationGeometryResult _geometry = SegmentElevationGeometry.Build([], new TrackPathAnalysis([]));
+    private TrackPathSliceMetrics _selection = new(0, null, null, null, null, null, 0);
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_geometryPoints, Points))
+        {
+            _geometry = SegmentElevationGeometry.Build(Points, Analysis);
+            _geometryPoints = Points;
+        }
+        _selection = Analysis.Slice(StartIndex, EndIndex, ReverseDirection);
+    }
+
+    private double SelectionX => _geometry.PlotLeft + _geometry.PlotWidth * Analysis.DistanceAt(StartIndex) / Math.Max(Analysis.TotalDistanceMeters, 1e-9);
+    private double SelectionWidth => Math.Max(0, _geometry.PlotWidth * _selection.DistanceMeters / Math.Max(Analysis.TotalDistanceMeters, 1e-9));
+    private string AccessibleLabel => $"Elevation profile. Selected distance {Format.Distance(_selection.DistanceMeters)}, " +
+                                      $"ascent {Elevation(_selection.ElevationGainMeters)}, descent {Elevation(_selection.ElevationLossMeters)}, " +
+                                      $"average grade {Grade(_selection.AverageGradePercent)}.";
+
+    private static string Elevation(double? value) => value.HasValue ? $"{value.Value:N0} m" : "Not recorded";
+    private static string Grade(double? value) => value.HasValue ? $"{value.Value:N1}%" : "Not recorded";
+    private static string Invariant(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+}
