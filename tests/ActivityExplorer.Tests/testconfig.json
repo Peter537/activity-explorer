@@ -1,0 +1,17 @@
+{
+  "platformOptions": {
+    "Coverlet": {
+      "exclude": "[coverlet.*]*,[xunit.*]*,[Microsoft.Testing.*]*,[Microsoft.TestPlatform.*]*,[testhost*]*",
+      "excludeByFile": "**/*.razor,**/*.razor.cs,**/obj/**",
+      "excludeByAttribute": "CompilerGeneratedAttribute,GeneratedCodeAttribute,ExcludeFromCodeCoverageAttribute",
+      "format": "cobertura",
+      "includeTestAssembly": false,
+      "skipAutoProps": true,
+      "deterministicReport": true,
+      "excludeAssembliesWithoutSources": "MissingAll"
+    }
+  },
+  "environmentVariables": {
+    "TESTINGPLATFORM_TELEMETRY_OPTOUT": "1"
+  }
+}

@@ -4,7 +4,7 @@ param(
     [double]$MinimumBranchRate = 0.60
 )
 
-$report = Get-ChildItem -LiteralPath $ResultsDirectory -Filter coverage.cobertura.xml -Recurse |
+$report = Get-ChildItem -LiteralPath $ResultsDirectory -Filter "coverage*.cobertura*.xml" -Recurse |
     Sort-Object LastWriteTimeUtc -Descending |
     Select-Object -First 1
 if ($null -eq $report) { throw "No Cobertura coverage report was found under $ResultsDirectory." }

@@ -1,6 +1,6 @@
 # Maps
 
-Activity Explorer serves MapLibre GL JS 6.1.0 as local ESM assets. One persisted global setting controls every world, activity, route, segment, and drawing map.
+Activity Explorer serves MapLibre GL JS 6.2.0 as local ESM assets. One persisted global setting controls every world, activity, route, segment, and drawing map.
 
 ## Blank by default
 

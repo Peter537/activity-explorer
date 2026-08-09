@@ -8,12 +8,12 @@ The default test suite is deterministic and uses synthetic, fictional data. It m
 dotnet restore ActivityExplorer.slnx --locked-mode
 dotnet format ActivityExplorer.slnx --verify-no-changes --no-restore
 dotnet build ActivityExplorer.slnx --configuration Release --no-restore -m:1 -p:BuildInParallel=false
-dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore -m:1 -p:BuildInParallel=false --settings tests/coverage.runsettings --collect "XPlat Code Coverage" --results-directory tests/ActivityExplorer.Tests/TestResults
+dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --coverlet --results-directory tests/ActivityExplorer.Tests/TestResults
 ./scripts/verify-coverage.ps1
 ./scripts/verify-package-health.ps1
 ~~~
 
-The release gate is at least 80% line and 60% branch coverage after exclusions for Razor-generated code, build output, and compiler-generated members. The package check fails for known vulnerable transitive packages and deprecated direct packages.
+The test project uses Microsoft Testing Platform v2 and opts out of test-platform telemetry through `testconfig.json`. The release gate is at least 80% line and 60% branch coverage after exclusions for Razor-generated code, build output, and compiler-generated members. The package check fails for known vulnerable or deprecated direct and transitive packages and for mismatched or unlisted vendored MapLibre assets.
 
 ## Browser regressions
 
@@ -22,7 +22,7 @@ Build Release, install the browser pinned by Microsoft.Playwright 1.61.0, then o
 ~~~powershell
 pwsh tests/ActivityExplorer.Tests/bin/Release/net10.0/playwright.ps1 install chromium
 $env:ACTIVITY_EXPLORER_BROWSER_TESTS = "1"
-dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --filter "FullyQualifiedName~BrowserRegressionTests"
+dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --filter-class ActivityExplorer.Tests.BrowserRegressionTests
 ~~~
 
 The browser harness launches a real loopback Kestrel process with an isolated data root. Install the pinned Chromium build before running it. Responsive coverage checks primary pages and representative detail routes at 320, 360, 375, 768, 1121, 1280, and 1920 CSS pixels for page-level horizontal overflow.
