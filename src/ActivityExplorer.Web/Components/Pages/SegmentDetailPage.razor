@@ -86,16 +86,16 @@ else
     {
         <section class="panel-heading chart-controls">
             <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@selected.StartTime.ToLocalTime().ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
-            <div class="button-row"><button class="@AxisButton(ChartAxisKind.ElapsedTime)" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button><button class="@AxisButton(ChartAxisKind.Distance)" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button></div>
+            <div class="button-row"><button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button><button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button></div>
         </section>
-        <section id="@_effortChartId" class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
-            <TimeSeriesChart Title="Elevation" Unit="m" Points="_segment.SelectedEffortPoints" Selector="@(point => point.ElevationMeters)" Axis="_axis" GroupId="_effortChartId" />
-            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" GroupId="_effortChartId" />
-            <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" GroupId="_effortChartId" />
-            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" GroupId="_effortChartId" />
-            <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" GroupId="_effortChartId" EmptyMessage="Not recorded in the source" />
-            <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" GroupId="_effortChartId" />
-            <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" GroupId="_effortChartId" />
+        <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
+            <TimeSeriesChart Title="Elevation" Unit="m" Points="_segment.SelectedEffortPoints" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
+            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" />
+            <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" />
+            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" />
+            <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" />
+            <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" />
+            <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" />
         </section>
     }
 }
@@ -111,7 +111,6 @@ else
     private bool _recomputing;
     private string? _loadError;
     private readonly string _definitionExplorerId = $"segment-definition-{Guid.NewGuid():N}";
-    private readonly string _effortChartId = $"segment-effort-{Guid.NewGuid():N}";
     private string SourceLabel => _segment?.Summary.SourceKind switch
     {
         SegmentSourceKind.ImportedFile => "Imported file",

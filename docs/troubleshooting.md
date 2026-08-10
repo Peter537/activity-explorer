@@ -59,11 +59,11 @@ Version 0.1.0 supports Cycling, Running, and Walking. Unsupported sports are ski
 
 If an equivalent activity already exists for the same profile, the import enriches provenance rather than increasing the count.
 
-## Charts are empty or an older chart still looks wrong
+## Charts are empty, labels are missing, or an older chart still looks wrong
 
 **Not recorded in the source** is intentional when a sensor has no FIT samples; Activity Explorer does not infer power or other missing data. A missing or corrupt source must be exported again and reimported manually.
 
-Charts use real elapsed-time or distance axes, keep recording gaps, and downsample by bucket extrema. A hard refresh is appropriate after replacing the running Web build, but it does not manufacture absent source fields.
+Populated charts in current builds show labelled axes and gridlines and expose retained point values through pointer and keyboard inspection. Activity and effort streams use real elapsed-time or distance positions, preserve recording gaps, and downsample dense series by bucket extrema. If a populated chart has no axis labels or direct pointer values, rebuild and restart the Web host, then hard-refresh the page. See [Understanding charts](charts.md) for the summary, synchronization, and missing-data rules. A refresh does not manufacture absent source fields.
 
 ## Map is blank
 

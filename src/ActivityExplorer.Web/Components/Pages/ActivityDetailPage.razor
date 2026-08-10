@@ -76,20 +76,20 @@ else
     <div id="activity-streams" class="panel-heading chart-controls">
         <div><h2>Detailed streams</h2><p class="muted">Move across any chart to compare every recorded stream at the same point.</p></div>
         <div class="button-row">
-            <button class="@AxisButton(ChartAxisKind.ElapsedTime)" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button>
-            <button class="@AxisButton(ChartAxisKind.Distance)" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button>
+            <button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button>
+            <button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button>
         </div>
     </div>
-    <section id="@_chartGroupId" class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
-        <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" GroupId="_chartGroupId" />
+    <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
+        <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
         <TimeSeriesChart Title="@(_activity.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")"
                          Unit="@(_activity.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")"
-                         Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" GroupId="_chartGroupId" />
-        <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" GroupId="_chartGroupId" />
-        <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" GroupId="_chartGroupId" EmptyMessage="Not recorded in the source" />
-        <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" GroupId="_chartGroupId" />
-        <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" GroupId="_chartGroupId" />
-        <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" GroupId="_chartGroupId" />
+                         Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" />
+        <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" />
+        <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" />
+        <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" />
+        <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" />
+        <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" />
     </section>
     <section id="activity-details" class="detail-groups">
         <article class="panel"><h2>Timing</h2><dl class="detail-list"><dt>Timer time</dt><dd>@DurationOrDash(_activity.Rich.TimerSeconds)</dd><dt>Moving time</dt><dd>@Format.Duration(_activity.Summary.MovingSeconds) <small>@MovingLabel</small></dd><dt>Elapsed time</dt><dd>@Format.Duration(_activity.ElapsedSeconds)</dd></dl></article>
@@ -165,7 +165,6 @@ else
     private string _title = "", _routeName = "", _gear = "";
     private string? _description, _message;
     private Guid _ownerId;
-    private readonly string _chartGroupId = $"activity-charts-{Guid.NewGuid():N}";
     private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
     private Guid? _editingMetricId;
     private string _metricLabel = "", _metricKey = "", _metricUnit = "", _metricText = "";

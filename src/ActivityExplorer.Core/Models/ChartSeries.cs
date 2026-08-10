@@ -62,11 +62,26 @@ public static class ChartSeriesBuilder
         ChartSeriesData series,
         double width = 800,
         double height = 180,
-        double verticalPadding = 14)
+        double verticalPadding = 14,
+        double? plotMinimum = null,
+        double? plotMaximum = null)
     {
         if (series.Samples.Count < 2 || !series.Minimum.HasValue || !series.Maximum.HasValue) return [];
-        var valueSpan = Math.Max(series.Maximum.Value - series.Minimum.Value, 1e-9);
+        var minimum = plotMinimum ?? series.Minimum.Value;
+        var maximum = plotMaximum ?? series.Maximum.Value;
+        if (!double.IsFinite(minimum) || !double.IsFinite(maximum) || maximum <= minimum)
+        {
+            minimum = series.Minimum.Value;
+            maximum = series.Maximum.Value;
+        }
+        var hasValueRange = maximum > minimum;
+        var valueScale = hasValueRange ? Math.Max(Math.Abs(minimum), Math.Abs(maximum)) : 1;
+        var scaledMinimum = minimum / valueScale;
+        var scaledMaximum = maximum / valueScale;
+        var scaledSpan = scaledMaximum - scaledMinimum;
+        if (hasValueRange && (!double.IsFinite(scaledSpan) || scaledSpan <= 0)) return [];
         var axisSpan = Math.Max(series.AxisMaximum, 1e-9);
+        var plotHeight = height - verticalPadding * 2;
         var result = new List<string>();
         var current = new List<string>();
         foreach (var sample in series.Samples)
@@ -81,8 +96,11 @@ public static class ChartSeriesBuilder
                 current.Clear();
             }
 
-            var x = width * sample.X / axisSpan;
-            var y = height - verticalPadding - (height - verticalPadding * 2) * (sample.Value - series.Minimum.Value) / valueSpan;
+            var x = width * Math.Clamp(sample.X / axisSpan, 0, 1);
+            var valueFraction = hasValueRange
+                ? (sample.Value / valueScale - scaledMinimum) / scaledSpan
+                : 0.5;
+            var y = height - verticalPadding - plotHeight * Math.Clamp(valueFraction, 0, 1);
             current.Add(string.Create(CultureInfo.InvariantCulture, $"{x:F1},{y:F1}"));
         }
         if (current.Count > 1) result.Add(string.Join(" ", current));

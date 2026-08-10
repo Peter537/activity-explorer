@@ -1,22 +1,88 @@
-<div class="chart-panel">
+<div class="chart-panel spark-chart" data-unit="@Unit">
     <div class="chart-heading"><strong>@Title</strong><span>@Unit</span></div>
-    @if (_geometry.PointCount < 2)
+    @if (_geometry.PointCount == 0)
     {
-        <p class="muted">No usable samples</p>
+        <p class="muted chart-empty">No usable samples</p>
     }
     else
     {
-        <svg viewBox="0 0 800 180" preserveAspectRatio="none" role="img" aria-label="@AccessibleLabel">
-            <path class="chart-area" d="@_geometry.AreaPath"></path>
-            <polyline class="chart-line" points="@_geometry.Points"></polyline>
-        </svg>
+        <div class="chart-plot-layout">
+            <div class="chart-y-axis" aria-hidden="true">
+                @for (var index = _geometry.Scale.Ticks.Count - 1; index >= 0; index--)
+                {
+                    var tick = _geometry.Scale.Ticks[index];
+                    <span class="chart-axis-value" data-axis-index="@index">@tick.Label</span>
+                }
+            </div>
+            <div class="chart-canvas">
+                <svg class="chart-plot" viewBox="0 0 800 180" preserveAspectRatio="none"
+                     role="img" aria-label="@AccessibleLabel">
+                    <g aria-hidden="true">
+                        @foreach (var tick in _geometry.Scale.Ticks)
+                        {
+                            <line class="chart-gridline" x1="0" x2="800"
+                                  y1="@Invariant(tick.Position)" y2="@Invariant(tick.Position)"></line>
+                        }
+                    </g>
+                    @if (!string.IsNullOrEmpty(_geometry.AreaPath))
+                    {
+                        <path class="chart-area" d="@_geometry.AreaPath"></path>
+                    }
+                    @if (_geometry.PointCount > 1)
+                    {
+                        <polyline class="chart-line" points="@_geometry.Points"></polyline>
+                    }
+                    else
+                    {
+                        var sample = _geometry.Samples[0];
+                        <circle class="chart-single-point" cx="@Invariant(sample.X)" cy="@Invariant(sample.Y)" r="4"></circle>
+                    }
+                    <rect class="chart-hit-area" x="0" y="0" width="800" height="180" fill="transparent"></rect>
+                    <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
+                    <circle class="chart-marker" cx="0" cy="0" r="4"></circle>
+                    @foreach (var sample in _geometry.Samples)
+                    {
+                        <circle class="chart-sample" cx="@Invariant(sample.X)" cy="@Invariant(sample.Y)" r="0"
+                                data-axis="@Invariant(sample.SourceIndex)" data-value="@Invariant(sample.Value)"
+                                data-axis-label="@FormatAxis(sample.SourceIndex)"
+                                data-value-label="@FormatValue(sample.Value)"></circle>
+                    }
+                </svg>
+                <output class="chart-tooltip" aria-hidden="true"></output>
+            </div>
+        </div>
         @if (HasLabels)
         {
-            <div class="chart-axis-labels" aria-hidden="true">
-                <span>@Labels[_geometry.FirstIndex]</span>
-                <span>@Labels[_geometry.LastIndex]</span>
+            <div class="chart-x-axis" aria-hidden="true">
+                @for (var index = 0; index < _axisTicks.Count; index++)
+                {
+                    <span class="chart-axis-value" data-axis-index="@index">@_axisTicks[index].Label</span>
+                }
             </div>
         }
+        <details class="chart-accessible-values">
+            <summary>Inspect monthly values</summary>
+            <p id="@_inspectorHelpId">Move the slider to step through each displayed month. The exact month and distance update below.</p>
+            <label>
+                <span>@Title sample</span>
+                <input class="chart-inspector" type="range" min="0" max="@(_geometry.Samples.Count - 1)" step="1"
+                       aria-describedby="@_inspectorHelpId" aria-valuetext="@SelectedValueText"
+                       @bind="_selectedIndex" @bind:event="oninput" />
+            </label>
+            <output class="chart-exact-output" aria-live="polite">
+                <span>Sample @(_selectedIndex + 1) of @_geometry.Samples.Count</span>
+                <strong>@SelectedValueText</strong>
+            </output>
+            <details>
+                <summary>View @Title data table</summary>
+                <div class="chart-data-table"><table><caption>@Title values</caption><thead><tr><th scope="col">Month</th><th scope="col">Distance</th></tr></thead><tbody>
+                    @foreach (var sample in _geometry.Samples)
+                    {
+                        <tr><td>@FormatAxis(sample.SourceIndex)</td><td>@FormatValue(sample.Value)</td></tr>
+                    }
+                </tbody></table></div>
+            </details>
+        </details>
     }
 </div>
 
@@ -25,16 +91,55 @@
     [Parameter] public string Unit { get; set; } = "";
     [Parameter] public IReadOnlyList<double?> Values { get; set; } = [];
     [Parameter] public IReadOnlyList<string> Labels { get; set; } = [];
+    [Parameter] public bool IncludeZero { get; set; }
+    private readonly string _inspectorHelpId = $"spark-chart-help-{Guid.NewGuid():N}";
     private SparkChartGeometryResult _geometry = SparkChartGeometry.Build([]);
+    private IReadOnlyList<ChartAxisTick> _axisTicks = [];
+    private int _selectedIndex;
 
     protected override void OnParametersSet()
     {
-        _geometry = SparkChartGeometry.Build(Values);
+        _geometry = SparkChartGeometry.Build(Values, IncludeZero);
+        _axisTicks = HasLabels ? ChartAxisLabels.BuildCategoryTicks(Labels) : [];
+        _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_geometry.Samples.Count - 1, 0));
     }
 
-    private bool HasLabels => Labels.Count == Values.Count && _geometry.PointCount >= 2;
-    private string AccessibleLabel => _geometry.PointCount < 2
-        ? $"{Title}: no usable samples"
-        : $"{Title}: {_geometry.Trend} trend, range {_geometry.Minimum:N1} to {_geometry.Maximum:N1} {Unit}"
-          + (HasLabels ? $", from {Labels[_geometry.FirstIndex]} to {Labels[_geometry.LastIndex]}" : "");
+    private bool HasLabels => Labels.Count == Values.Count && _geometry.PointCount > 0;
+
+    private string AccessibleLabel
+    {
+        get
+        {
+            if (_geometry.PointCount == 0) return $"{Title}: no usable samples";
+            if (_geometry.PointCount == 1)
+            {
+                var only = _geometry.Samples[0];
+                return $"{Title}: one usable sample, {FormatValue(only.Value)}, at {FormatAxis(only.SourceIndex)}";
+            }
+
+            var first = _geometry.Samples[0];
+            var last = _geometry.Samples[^1];
+            return $"{Title}: {_geometry.Trend} trend, range {FormatRange(_geometry.Minimum, _geometry.Maximum)}"
+                + $", from {FormatAxis(first.SourceIndex)} to {FormatAxis(last.SourceIndex)}";
+        }
+    }
+
+    private string SelectedValueText => _geometry.Samples.Count == 0
+        ? "No samples"
+        : $"{FormatAxis(_geometry.Samples[_selectedIndex].SourceIndex)}; value {FormatValue(_geometry.Samples[_selectedIndex].Value)}";
+
+    private string FormatAxis(int sourceIndex) => HasLabels && sourceIndex >= 0 && sourceIndex < Labels.Count
+        ? Labels[sourceIndex]
+        : $"Sample {sourceIndex + 1:N0}";
+
+    private string FormatValue(double value) => string.IsNullOrWhiteSpace(Unit)
+        ? value.ToString("N1")
+        : $"{value:N1} {Unit}";
+
+    private string FormatRange(double minimum, double maximum) => string.IsNullOrWhiteSpace(Unit)
+        ? $"{minimum:N1}\u2013{maximum:N1}"
+        : $"{minimum:N1}\u2013{maximum:N1} {Unit}";
+
+    private static string Invariant(double value) =>
+        value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 }

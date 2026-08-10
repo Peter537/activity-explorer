@@ -46,7 +46,7 @@ Per-owner ranks are recalculated from elapsed time. The inline segment explorer 
 
 Local grade is calculated only within contiguous recorded elevation samples. Missing elevation remains a visible gap and is never interpolated across; the whole profile retains the truthful unavailable state when no drawable elevation sequence exists. Rendering uses at most 800 representative samples across all visible runs while retaining path endpoints, important extrema, and representative grade transitions within that budget. The complete stored definition is not downsampled. These local values are ephemeral presentation data and do not replace the persisted whole-segment average grade.
 
-Selecting a pass updates the `effort` URL query and renders synchronized charts from that exact activity-stream slice; no duplicate effort stream is stored. Pauses remain part of elapsed time, while moving time excludes stationary samples when usable position/timestamps exist.
+Selecting a pass updates the `effort` URL query and renders the axis-labelled, synchronized charts described in [Understanding charts](charts.md) from that exact activity-stream slice; no duplicate effort stream is stored. Pauses remain part of elapsed time, while moving time excludes stationary samples when usable position/timestamps exist.
 
 ## Accuracy limitations
 

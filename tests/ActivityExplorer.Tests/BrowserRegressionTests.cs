@@ -28,9 +28,7 @@ public sealed class BrowserRegressionTests
             return;
 
         var root = FindRepositoryRoot();
-        var webAssembly = Path.Combine(
-            root, "src", "ActivityExplorer.Web", "bin", "Release", "net10.0", "ActivityExplorer.Web.dll");
-        Assert.True(File.Exists(webAssembly), $"Build the Release web project before browser tests: {webAssembly}");
+        var webAssembly = FindWebAssembly(root);
         var dataRoot = TestSupport.NewDirectory();
         var port = ReservePort();
         var origin = $"http://127.0.0.1:{port}";
@@ -186,9 +184,7 @@ public sealed class BrowserRegressionTests
             return;
 
         var root = FindRepositoryRoot();
-        var webAssembly = Path.Combine(
-            root, "src", "ActivityExplorer.Web", "bin", "Release", "net10.0", "ActivityExplorer.Web.dll");
-        Assert.True(File.Exists(webAssembly), $"Build the Release web project before browser tests: {webAssembly}");
+        var webAssembly = FindWebAssembly(root);
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedRouteCreatorDataAsync(dataRoot);
         var port = ReservePort();
@@ -347,9 +343,7 @@ public sealed class BrowserRegressionTests
             return;
 
         var root = FindRepositoryRoot();
-        var webAssembly = Path.Combine(
-            root, "src", "ActivityExplorer.Web", "bin", "Release", "net10.0", "ActivityExplorer.Web.dll");
-        Assert.True(File.Exists(webAssembly), $"Build the Release web project before browser tests: {webAssembly}");
+        var webAssembly = FindWebAssembly(root);
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedActivityCreatorDataAsync(dataRoot);
         var port = ReservePort();
@@ -451,6 +445,38 @@ public sealed class BrowserRegressionTests
             await Assertions.Expect(page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "open activity", Exact = true }))
                 .ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
 
+            var effortCharts = page.Locator(".synchronized-charts");
+            await Assertions.Expect(effortCharts).ToHaveAttributeAsync("data-charts-bound", "true");
+            var renderedEffortCharts = effortCharts.Locator(".time-series-chart:has(.chart-plot)");
+            Assert.Equal(4, await renderedEffortCharts.CountAsync());
+            foreach (var chart in await renderedEffortCharts.AllAsync())
+            {
+                await AssertChartAxesAsync(chart, expectedXAxisTicks: 3);
+                await AssertChartSampleMetadataAsync(chart);
+            }
+            await AssertPointerInspectionAsync(page, effortCharts, expectedCharts: 4);
+            await AssertIndependentInspectorAndTableAsync(renderedEffortCharts.First);
+            var elapsedAxis = page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Elapsed time", Exact = true });
+            var distanceAxis = page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Distance", Exact = true });
+            await Assertions.Expect(elapsedAxis).ToHaveAttributeAsync("aria-pressed", "true");
+            await Assertions.Expect(distanceAxis).ToHaveAttributeAsync("aria-pressed", "false");
+            await distanceAxis.ClickAsync();
+            await Assertions.Expect(effortCharts).ToHaveAttributeAsync("data-axis-kind", "distance");
+            await Assertions.Expect(effortCharts).ToHaveAttributeAsync("data-charts-bound", "true");
+            await Assertions.Expect(elapsedAxis).ToHaveAttributeAsync("aria-pressed", "false");
+            await Assertions.Expect(distanceAxis).ToHaveAttributeAsync("aria-pressed", "true");
+            await AssertPointerInspectionAsync(page, effortCharts, expectedCharts: 4, expectedAxisSuffix: "m");
+            foreach (var width in new[] { 375, 768, 1121, 1280, 1920 })
+            {
+                await page.SetViewportSizeAsync(width, 1000);
+                await AssertNoDocumentOverflowAsync(page, $"Selected-effort charts at {width} CSS pixels");
+                foreach (var chart in await effortCharts.Locator(".time-series-chart:has(.chart-plot)").AllAsync())
+                    await AssertAxisLabelsFitAsync(chart);
+            }
+            await page.SetViewportSizeAsync(1280, 1000);
+
             var recompute = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Recompute efforts", Exact = true });
             await recompute.ClickAsync();
             await Assertions.Expect(recompute).ToBeEnabledAsync();
@@ -479,6 +505,25 @@ public sealed class BrowserRegressionTests
 
             var insufficientActivityUrl = origin + $"/activities/{seed.InsufficientGpsActivityId}";
             await page.GotoAsync(insufficientActivityUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var singleSampleGroup = page.Locator(".synchronized-charts");
+            await Assertions.Expect(singleSampleGroup).ToHaveAttributeAsync("data-charts-bound", "true");
+            await Assertions.Expect(singleSampleGroup.Locator(".time-series-chart:has(.chart-plot)")).ToHaveCountAsync(2);
+            await Assertions.Expect(singleSampleGroup.Locator(".time-series-chart:has(.chart-empty)")).ToHaveCountAsync(5);
+            foreach (var chart in await singleSampleGroup.Locator(".time-series-chart:has(.chart-plot)").AllAsync())
+            {
+                await Assertions.Expect(chart.Locator(".chart-sample")).ToHaveCountAsync(1);
+                await Assertions.Expect(chart.Locator(".chart-single-point")).ToHaveCountAsync(1);
+                await Assertions.Expect(chart.Locator(".chart-single-point")).ToBeVisibleAsync();
+                await AssertChartAxesAsync(chart, expectedXAxisTicks: 3);
+                await AssertChartSampleMetadataAsync(chart);
+            }
+            var emptyChartsHaveNoAxes = await singleSampleGroup.EvaluateAsync<bool>("""
+                group => Array.from(group.querySelectorAll('.time-series-chart:has(.chart-empty)'))
+                    .every(chart => !chart.querySelector('.chart-plot, .chart-x-axis, .chart-y-axis, .chart-gridline'))
+                """);
+            Assert.True(emptyChartsHaveNoAxes, "Zero-sample charts must remain axis-free unavailable states.");
+            await AssertIndependentInspectorAndTableAsync(
+                singleSampleGroup.Locator(".time-series-chart:has(.chart-plot)").First);
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Create segment", Exact = true })).ToBeDisabledAsync();
             await page.GotoAsync(insufficientActivityUrl + "/segments/new", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Segment unavailable" })).ToBeVisibleAsync();
@@ -508,9 +553,7 @@ public sealed class BrowserRegressionTests
             return;
 
         var root = FindRepositoryRoot();
-        var webAssembly = Path.Combine(
-            root, "src", "ActivityExplorer.Web", "bin", "Release", "net10.0", "ActivityExplorer.Web.dll");
-        Assert.True(File.Exists(webAssembly), $"Build the Release web project before browser tests: {webAssembly}");
+        var webAssembly = FindWebAssembly(root);
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedActivityBrowserDataAsync(dataRoot);
         var port = ReservePort();
@@ -618,6 +661,112 @@ public sealed class BrowserRegressionTests
         }
     }
 
+    [Fact]
+    public async Task Dashboard_and_activity_charts_expose_axes_exact_values_and_synchronized_pointer_inspection()
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
+                "1",
+                StringComparison.Ordinal))
+            return;
+
+        var root = FindRepositoryRoot();
+        var webAssembly = FindWebAssembly(root);
+        var dataRoot = TestSupport.NewDirectory();
+        var seed = await SeedActivityBrowserDataAsync(dataRoot);
+        var port = ReservePort();
+        var origin = $"http://127.0.0.1:{port}";
+        var output = new StringBuilder();
+        using var process = StartApplication(webAssembly, dataRoot, origin, output);
+        try
+        {
+            await WaitUntilReadyAsync(origin, process, output);
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                Locale = "da-DK",
+                ViewportSize = new ViewportSize { Width = 1280, Height = 1000 }
+            });
+            var page = await context.NewPageAsync();
+            var browserErrors = new List<string>();
+            page.PageError += (_, error) => browserErrors.Add(error);
+            page.Console += (_, message) =>
+            {
+                if (message.Type == "error") browserErrors.Add(message.Text);
+            };
+
+            await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var spark = page.Locator(".spark-chart");
+            await Assertions.Expect(spark).ToHaveAttributeAsync("data-charts-bound", "true");
+            await AssertChartAxesAsync(spark, expectedXAxisTicks: 5);
+            await Assertions.Expect(spark.Locator(".chart-sample")).ToHaveCountAsync(12);
+            await AssertChartSampleMetadataAsync(spark);
+            await AssertPointerInspectionAsync(page, spark, expectedCharts: 1);
+            await AssertIndependentInspectorAndTableAsync(spark);
+
+            foreach (var width in new[] { 375, 768, 1121, 1280, 1920 })
+            {
+                await page.SetViewportSizeAsync(width, 1000);
+                await AssertNoDocumentOverflowAsync(page, $"Dashboard charts at {width} CSS pixels");
+                await AssertAxisLabelsFitAsync(spark);
+            }
+
+            await page.SetViewportSizeAsync(1280, 1000);
+            var detailUrl = origin + $"/activities/{seed.DetailActivityId}";
+            await page.GotoAsync(detailUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var charts = page.Locator(".synchronized-charts");
+            await Assertions.Expect(charts).ToHaveAttributeAsync("data-charts-bound", "true");
+            var elapsedButton = page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Elapsed time", Exact = true });
+            var distanceButton = page.GetByRole(AriaRole.Button,
+                new PageGetByRoleOptions { Name = "Distance", Exact = true });
+            await Assertions.Expect(elapsedButton).ToHaveAttributeAsync("aria-pressed", "true");
+            await Assertions.Expect(distanceButton).ToHaveAttributeAsync("aria-pressed", "false");
+
+            var renderedCharts = charts.Locator(".time-series-chart:has(.chart-plot)");
+            Assert.Equal(6, await renderedCharts.CountAsync());
+            await Assertions.Expect(charts.Locator(".time-series-chart:has(.chart-empty)")).ToHaveCountAsync(1);
+            foreach (var chart in await renderedCharts.AllAsync())
+            {
+                await AssertChartAxesAsync(chart, expectedXAxisTicks: 3);
+                await AssertChartSampleMetadataAsync(chart);
+            }
+            await AssertPointerInspectionAsync(page, charts, expectedCharts: 6);
+            await AssertIndependentInspectorAndTableAsync(renderedCharts.First);
+
+            await distanceButton.ClickAsync();
+            await Assertions.Expect(charts).ToHaveAttributeAsync("data-axis-kind", "distance");
+            await Assertions.Expect(charts).ToHaveAttributeAsync("data-charts-bound", "true");
+            await Assertions.Expect(elapsedButton).ToHaveAttributeAsync("aria-pressed", "false");
+            await Assertions.Expect(distanceButton).ToHaveAttributeAsync("aria-pressed", "true");
+            await Assertions.Expect(charts.Locator(".chart-sample").First)
+                .ToHaveAttributeAsync("data-axis-label", new Regex("m$", RegexOptions.IgnoreCase));
+            Assert.DoesNotContain(
+                "km",
+                (await charts.Locator(".chart-sample").First.GetAttributeAsync("data-axis-label")) ?? string.Empty,
+                StringComparison.OrdinalIgnoreCase);
+            await AssertPointerInspectionAsync(page, charts, expectedCharts: 6, expectedAxisSuffix: "m");
+
+            foreach (var width in new[] { 375, 768, 1121, 1280, 1920 })
+            {
+                await page.SetViewportSizeAsync(width, 1000);
+                await AssertNoDocumentOverflowAsync(page, $"Activity charts at {width} CSS pixels");
+                foreach (var chart in await charts.Locator(".time-series-chart:has(.chart-plot)").AllAsync())
+                    await AssertAxisLabelsFitAsync(chart);
+            }
+
+            Assert.DoesNotContain(browserErrors, error => !IsKnownHeadlessMapLibreError(error));
+            Assert.DoesNotContain("Unhandled exception", output.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            await DeleteDirectoryAsync(dataRoot);
+        }
+    }
+
 
     private static async Task AssertNoHorizontalOverflowAsync(IPage page, string url, int width)
     {
@@ -626,6 +775,177 @@ public sealed class BrowserRegressionTests
         var overflow = await page.EvaluateAsync<bool>(
             "() => document.documentElement.scrollWidth > document.documentElement.clientWidth");
         Assert.False(overflow, $"The page overflows horizontally at {width} CSS pixels.");
+    }
+
+    private static async Task AssertChartAxesAsync(ILocator chart, int expectedXAxisTicks)
+    {
+        await Assertions.Expect(chart.Locator(".chart-plot")).ToBeVisibleAsync();
+        await Assertions.Expect(chart.Locator(".chart-hit-area")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-cursor")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-marker")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-tooltip")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-inspector")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-x-axis .chart-axis-value")).ToHaveCountAsync(expectedXAxisTicks);
+        var yAxisTicks = chart.Locator(".chart-y-axis .chart-axis-value");
+        Assert.InRange(await yAxisTicks.CountAsync(), 4, 5);
+        Assert.Equal(await yAxisTicks.CountAsync(), await chart.Locator(".chart-gridline").CountAsync());
+
+        var xLabels = (await chart.Locator(".chart-x-axis .chart-axis-value").AllTextContentsAsync())
+            .Select(value => value.Trim())
+            .ToArray();
+        var yLabels = (await yAxisTicks.AllTextContentsAsync())
+            .Select(value => value.Trim())
+            .ToArray();
+        Assert.DoesNotContain(xLabels, string.IsNullOrWhiteSpace);
+        Assert.DoesNotContain(yLabels, string.IsNullOrWhiteSpace);
+        Assert.Equal(xLabels.Length, xLabels.Distinct(StringComparer.CurrentCulture).Count());
+        Assert.Equal(yLabels.Length, yLabels.Distinct(StringComparer.CurrentCulture).Count());
+        await AssertAxisLabelsFitAsync(chart);
+    }
+
+    private static async Task AssertChartSampleMetadataAsync(ILocator chart)
+    {
+        var sample = chart.Locator(".chart-sample").First;
+        await Assertions.Expect(sample).ToHaveAttributeAsync("data-axis", new Regex(@"^-?\d+(?:\.\d+)?$"));
+        await Assertions.Expect(sample).ToHaveAttributeAsync("data-value", new Regex(@"^-?\d+(?:\.\d+)?$"));
+        await Assertions.Expect(sample).ToHaveAttributeAsync("data-axis-label", new Regex(@"\S"));
+        await Assertions.Expect(sample).ToHaveAttributeAsync("data-value-label", new Regex(@"\S"));
+    }
+
+    private static async Task AssertPointerInspectionAsync(
+        IPage page,
+        ILocator root,
+        int expectedCharts,
+        string? expectedAxisSuffix = null)
+    {
+        var sourcePlot = root.Locator(".chart-plot").First;
+        await sourcePlot.ScrollIntoViewIfNeededAsync();
+        var bounds = await sourcePlot.BoundingBoxAsync();
+        Assert.NotNull(bounds);
+        await page.Mouse.MoveAsync(
+            (float)(bounds.X + bounds.Width * 0.62),
+            (float)(bounds.Y + bounds.Height * 0.5));
+
+        await Assertions.Expect(root.Locator(".chart-cursor.visible")).ToHaveCountAsync(expectedCharts);
+        await Assertions.Expect(root.Locator(".chart-marker.visible")).ToHaveCountAsync(expectedCharts);
+        await Assertions.Expect(root.Locator(".chart-tooltip.visible")).ToHaveCountAsync(expectedCharts);
+        var inspection = await root.EvaluateAsync<string[]>("""
+            root => {
+                const charts = root.matches('.spark-chart:has(.chart-marker.visible)')
+                    ? [root]
+                    : Array.from(root.querySelectorAll('.time-series-chart:has(.chart-marker.visible)'));
+                return charts.map(chart => {
+                    const marker = chart.querySelector('.chart-marker.visible');
+                    const markerX = Number(marker?.getAttribute('cx'));
+                    const samples = Array.from(chart.querySelectorAll('.chart-sample'));
+                    const sample = samples.reduce((best, candidate) => {
+                        if (!best) return candidate;
+                        return Math.abs(Number(candidate.getAttribute('cx')) - markerX) <
+                            Math.abs(Number(best.getAttribute('cx')) - markerX) ? candidate : best;
+                    }, null);
+                    const tooltip = chart.querySelector('.chart-tooltip.visible');
+                    const text = tooltip?.textContent ?? '';
+                    const axis = sample?.dataset.axisLabel ?? '';
+                    const value = sample?.dataset.valueLabel ?? '';
+                    return [axis, value, text, marker?.getAttribute('cx') ?? ''].join('\u001f');
+                });
+            }
+            """);
+        Assert.Equal(expectedCharts, inspection.Length);
+        var selected = inspection.Select(value => value.Split('\u001f')).ToArray();
+        Assert.Single(selected.Select(value => value[0]).Distinct(StringComparer.CurrentCulture));
+        Assert.All(selected, value =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(value[0]));
+            Assert.False(string.IsNullOrWhiteSpace(value[1]));
+            Assert.Contains(value[0], value[2], StringComparison.CurrentCulture);
+            Assert.Contains(value[1], value[2], StringComparison.CurrentCulture);
+            Assert.False(string.IsNullOrWhiteSpace(value[3]));
+        });
+        if (expectedAxisSuffix is not null)
+            Assert.All(selected, value => Assert.EndsWith(expectedAxisSuffix, value[0], StringComparison.OrdinalIgnoreCase));
+
+        var cursorPositions = await root.Locator(".chart-cursor.visible")
+            .EvaluateAllAsync<string[]>("cursors => cursors.map(cursor => cursor.getAttribute('x1') ?? '')");
+        Assert.Single(cursorPositions.Distinct(StringComparer.Ordinal));
+        var tooltipsContained = await root.EvaluateAsync<bool>("""
+            root => Array.from(root.querySelectorAll('.chart-tooltip.visible')).every(tooltip => {
+                const card = tooltip.closest('.time-series-chart, .spark-chart');
+                const outer = card?.getBoundingClientRect();
+                const inner = tooltip.getBoundingClientRect();
+                return outer && inner.left >= outer.left - 1 && inner.right <= outer.right + 1 &&
+                    inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
+            })
+            """);
+        Assert.True(tooltipsContained, "Visible chart tooltips must remain inside their chart cards.");
+
+        await page.Mouse.MoveAsync(1, 1);
+        await Assertions.Expect(root.Locator(".chart-cursor.visible")).ToHaveCountAsync(0);
+        await Assertions.Expect(root.Locator(".chart-marker.visible")).ToHaveCountAsync(0);
+        await Assertions.Expect(root.Locator(".chart-tooltip.visible")).ToHaveCountAsync(0);
+    }
+
+    private static async Task AssertIndependentInspectorAndTableAsync(ILocator chart)
+    {
+        var exactValues = chart.Locator("details.chart-accessible-values");
+        await exactValues.Locator("summary").First.ClickAsync();
+        var inspector = exactValues.Locator(".chart-inspector");
+        var sampleCount = await chart.Locator(".chart-sample").CountAsync();
+        Assert.True(sampleCount > 0);
+        var initialValue = await inspector.GetAttributeAsync("aria-valuetext");
+        await inspector.FocusAsync();
+        if (sampleCount > 1)
+        {
+            await inspector.PressAsync("ArrowRight");
+            await Assertions.Expect(inspector).Not.ToHaveAttributeAsync("aria-valuetext", initialValue ?? string.Empty);
+        }
+        else
+        {
+            await Assertions.Expect(inspector).ToHaveAttributeAsync("aria-valuetext", new Regex(@"\S"));
+            await Assertions.Expect(exactValues.GetByText("Sample 1 of 1", new LocatorGetByTextOptions { Exact = true }))
+                .ToBeVisibleAsync();
+        }
+        await Assertions.Expect(chart.Locator(".chart-marker.visible")).ToHaveCountAsync(1);
+        await Assertions.Expect(chart.Locator(".chart-tooltip.visible")).ToHaveCountAsync(0);
+
+        await exactValues.Locator("summary").Last.ClickAsync();
+        await Assertions.Expect(chart.Locator(".chart-data-table tbody tr")).ToHaveCountAsync(sampleCount);
+        await inspector.PressAsync("Escape");
+        await Assertions.Expect(chart.Locator(".chart-marker.visible")).ToHaveCountAsync(0);
+    }
+
+    private static async Task AssertAxisLabelsFitAsync(ILocator chart)
+    {
+        var labelsFit = await chart.EvaluateAsync<bool>("""
+            chart => {
+                const outer = chart.getBoundingClientRect();
+                const axes = Array.from(chart.querySelectorAll('.chart-x-axis, .chart-y-axis'));
+                return axes.every(axis => {
+                    const labels = Array.from(axis.querySelectorAll('.chart-axis-value'))
+                        .filter(label => label.getClientRects().length > 0);
+                    const inside = labels.every(label => {
+                        const rect = label.getBoundingClientRect();
+                        return rect.left >= outer.left - 1 && rect.right <= outer.right + 1 &&
+                            rect.top >= outer.top - 1 && rect.bottom <= outer.bottom + 1;
+                    });
+                    const nonOverlapping = labels.every((label, index) => labels.slice(index + 1).every(other => {
+                        const first = label.getBoundingClientRect();
+                        const second = other.getBoundingClientRect();
+                        return first.right <= second.left + 0.5 || second.right <= first.left + 0.5 ||
+                            first.bottom <= second.top + 0.5 || second.bottom <= first.top + 0.5;
+                    }));
+                    return inside && nonOverlapping;
+                });
+            }
+            """);
+        Assert.True(labelsFit, "Visible chart axis labels must fit without overlapping.");
+    }
+
+    private static async Task AssertNoDocumentOverflowAsync(IPage page, string context)
+    {
+        var overflow = await page.EvaluateAsync<bool>(
+            "() => document.documentElement.scrollWidth > document.documentElement.clientWidth");
+        Assert.False(overflow, $"{context} overflows horizontally.");
     }
 
     private static bool IsKnownHeadlessMapLibreError(string message) =>
@@ -696,7 +1016,7 @@ public sealed class BrowserRegressionTests
                 start.AddSeconds(index),
                 index is 1 or 4 ? null : 55 + (index - (index > 4 ? 2 : index > 1 ? 1 : 0)) * 0.001,
                 index is 1 or 4 ? null : 12 + (index - (index > 4 ? 2 : index > 1 ? 1 : 0)) * 0.001,
-                null,
+                index * 120d,
                 10 + index * 7,
                 5, 130, 80, null, null))
             .ToArray();
@@ -706,7 +1026,7 @@ public sealed class BrowserRegressionTests
         var insufficientPoints = new[]
         {
             new TrackPoint(start.AddMinutes(2), 57, 10, null, 20, 3, null, null, null, null),
-            new TrackPoint(start.AddMinutes(2).AddSeconds(1), null, null, null, 21, 3, null, null, null, null)
+            new TrackPoint(start.AddMinutes(2).AddSeconds(2), null, null, null, null, null, null, null, null, null)
         };
         var activity = BrowserActivity(owner.Id, "Browser activity creator", SportKind.Cycling, points);
         var missingElevation = BrowserActivity(owner.Id, "Browser activity without elevation", SportKind.Running, missingElevationPoints);
@@ -884,6 +1204,19 @@ public sealed class BrowserRegressionTests
                 await Task.Delay(100);
             }
         }
+    }
+
+    private static string FindWebAssembly(string root)
+    {
+        var projectReferenceCopy = Path.Combine(AppContext.BaseDirectory, "ActivityExplorer.Web.dll");
+        if (File.Exists(projectReferenceCopy)) return projectReferenceCopy;
+
+        var repositoryBuild = Path.Combine(
+            root, "src", "ActivityExplorer.Web", "bin", "Release", "net10.0", "ActivityExplorer.Web.dll");
+        Assert.True(
+            File.Exists(repositoryBuild),
+            $"Build the Release web project before browser tests: {repositoryBuild}");
+        return repositoryBuild;
     }
 
     private static string FindRepositoryRoot()

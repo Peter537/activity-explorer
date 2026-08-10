@@ -48,7 +48,7 @@ else
         </article>
     </section>
     <section class="dashboard-grid">
-        <SparkChart Title="Distance over the last 12 months" Unit="km"
+        <SparkChart Title="Distance over the last 12 months" Unit="km" IncludeZero="true"
                     Values="@_summary.MonthlyTrend.Select(x => (double?)(x.DistanceMeters / 1000d)).ToArray()"
                     Labels="@_summary.MonthlyTrend.Select(x => x.Period.ToString("MMM yyyy", CultureInfo.CurrentCulture)).ToArray()" />
         <article class="panel">

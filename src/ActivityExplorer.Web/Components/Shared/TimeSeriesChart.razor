@@ -1,36 +1,67 @@
-<div class="chart-panel time-series-chart" data-chart-id="@_chartId" data-unit="@Unit">
+<div class="chart-panel time-series-chart" data-unit="@Unit">
     <div class="chart-heading">
         <div><strong>@Title</strong><small>@Summary</small></div>
         <span>@Unit</span>
     </div>
-    @if (_series.Samples.Count < 2)
+    @if (_series.Samples.Count == 0)
     {
         <p class="muted chart-empty">@EmptyMessage</p>
     }
     else
     {
-        <div class="chart-canvas">
-            <svg viewBox="0 0 800 180" preserveAspectRatio="none" role="img" aria-label="@($"{Title} chart. {Summary}")">
-                @foreach (var segment in _segments)
+        <div class="chart-plot-layout">
+            <div class="chart-y-axis" aria-hidden="true">
+                @for (var index = _valueScale.Ticks.Count - 1; index >= 0; index--)
                 {
-                    <polyline class="chart-line" points="@segment"></polyline>
+                    var tick = _valueScale.Ticks[index];
+                    <span class="chart-axis-value" data-axis-index="@index">@tick.Label</span>
                 }
-                <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
-                @foreach (var sample in _series.Samples)
-                {
-                    var coordinate = Coordinate(sample);
-                    <circle class="chart-sample" cx="@coordinate.X" cy="@coordinate.Y"
-                            data-axis="@Invariant(sample.X)" data-value="@Invariant(sample.Value)"></circle>
-                }
-            </svg>
-            <output class="chart-tooltip" aria-live="polite"></output>
+            </div>
+            <div class="chart-canvas">
+                <svg class="chart-plot" viewBox="0 0 800 180" preserveAspectRatio="none"
+                     role="img" aria-label="@($"{Title} chart. {Summary}")">
+                    <g aria-hidden="true">
+                        @foreach (var tick in _valueScale.Ticks)
+                        {
+                            <line class="chart-gridline" x1="0" x2="800"
+                                  y1="@Invariant(tick.Position)" y2="@Invariant(tick.Position)"></line>
+                        }
+                    </g>
+                    @foreach (var segment in _segments)
+                    {
+                        <polyline class="chart-line" points="@segment"></polyline>
+                    }
+                    @if (_series.Samples.Count == 1)
+                    {
+                        var coordinate = Coordinate(_series.Samples[0]);
+                        <circle class="chart-single-point" cx="@coordinate.X" cy="@coordinate.Y" r="4"></circle>
+                    }
+                    <rect class="chart-hit-area" x="0" y="0" width="800" height="180" fill="transparent"></rect>
+                    <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
+                    <circle class="chart-marker" cx="0" cy="0" r="4"></circle>
+                    @foreach (var sample in _series.Samples)
+                    {
+                        var coordinate = Coordinate(sample);
+                        <circle class="chart-sample" cx="@coordinate.X" cy="@coordinate.Y" r="0"
+                                data-axis="@Invariant(sample.X)" data-value="@Invariant(sample.Value)"
+                                data-axis-label="@FormatAxis(sample.X)" data-value-label="@FormatValue(sample.Value)"></circle>
+                    }
+                </svg>
+                <output class="chart-tooltip" aria-hidden="true"></output>
+            </div>
+        </div>
+        <div class="chart-x-axis" aria-hidden="true">
+            @for (var index = 0; index < _axisTicks.Count; index++)
+            {
+                <span class="chart-axis-value" data-axis-index="@index">@_axisTicks[index].Label</span>
+            }
         </div>
         <details class="chart-accessible-values">
             <summary>Inspect exact values</summary>
             <p id="@_inspectorHelpId">Move the slider to step through recorded samples. The exact @AxisName and value update below.</p>
             <label>
                 <span>@Title sample</span>
-                <input type="range" min="0" max="@(_series.Samples.Count - 1)" step="1"
+                <input class="chart-inspector" type="range" min="0" max="@(_series.Samples.Count - 1)" step="1"
                        aria-describedby="@_inspectorHelpId" aria-valuetext="@SelectedValueText"
                        @bind="_selectedIndex" @bind:event="oninput" />
             </label>
@@ -43,7 +74,7 @@
                 <div class="chart-data-table"><table><caption>@Title values</caption><thead><tr><th scope="col">Position</th><th scope="col">Value</th></tr></thead><tbody>
                     @foreach (var sample in _series.Samples)
                     {
-                        <tr><td>@FormatAxis(sample.X)</td><td>@sample.Value.ToString("N1") @Unit</td></tr>
+                        <tr><td>@FormatAxis(sample.X)</td><td>@FormatValue(sample.Value)</td></tr>
                     }
                 </tbody></table></div>
             </details>
@@ -52,57 +83,67 @@
 </div>
 
 @code {
-    [Inject] private IJSRuntime JS { get; set; } = default!;
     [Parameter, EditorRequired] public string Title { get; set; } = "";
     [Parameter] public string Unit { get; set; } = "";
     [Parameter] public string EmptyMessage { get; set; } = "Not recorded in the source";
     [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
     [Parameter, EditorRequired] public Func<TrackPoint, double?> Selector { get; set; } = _ => null;
     [Parameter] public ChartAxisKind Axis { get; set; } = ChartAxisKind.ElapsedTime;
-    [Parameter, EditorRequired] public string GroupId { get; set; } = "";
-    private readonly string _chartId = $"chart-{Guid.NewGuid():N}";
     private readonly string _inspectorHelpId = $"chart-help-{Guid.NewGuid():N}";
     private ChartSeriesData _series = new([], null, null, null, 0, 0);
+    private ChartScaleGeometry _valueScale = ChartScaleBuilder.Build(0, 0);
+    private IReadOnlyList<ChartAxisTick> _axisTicks = [];
     private IReadOnlyList<string> _segments = [];
     private int _selectedIndex;
 
     protected override void OnParametersSet()
     {
         _series = ChartSeriesBuilder.Build(Points, Selector, Axis);
-        _segments = ChartSeriesBuilder.ToSvgSegments(_series);
+        if (_series.Minimum.HasValue && _series.Maximum.HasValue)
+        {
+            _valueScale = ChartScaleBuilder.Build(_series.Minimum.Value, _series.Maximum.Value);
+            _axisTicks = ChartAxisLabels.BuildSeriesTicks(_series.AxisMaximum, Axis);
+            var displaySeries = _series with { AxisMaximum = _axisTicks[^1].Value };
+            _segments = ChartSeriesBuilder.ToSvgSegments(
+                displaySeries,
+                verticalPadding: 0,
+                plotMinimum: _valueScale.Minimum,
+                plotMaximum: _valueScale.Maximum);
+        }
+        else
+        {
+            _valueScale = ChartScaleBuilder.Build(0, 0);
+            _segments = [];
+            _axisTicks = [];
+        }
         _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_series.Samples.Count - 1, 0));
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (_series.Samples.Count >= 2)
-            await JS.InvokeVoidAsync("activityCharts.bind", GroupId);
-    }
-
     private string Summary => _series.Average.HasValue
-        ? $"Average {_series.Average.Value:N1} | Range {_series.Minimum:N1}-{_series.Maximum:N1} | {_series.CoveragePercent:N0}% coverage"
+        ? $"Average {FormatValue(_series.Average.Value)} \u00B7 Range {FormatRange(_series.Minimum!.Value, _series.Maximum!.Value)} \u00B7 {_series.CoveragePercent:N0}% coverage"
         : "No samples";
 
     private string SelectedValueText => _series.Samples.Count == 0
         ? "No samples"
-        : $"{AxisName} {FormatAxis(_series.Samples[_selectedIndex].X)}; value {_series.Samples[_selectedIndex].Value:N1} {Unit}";
+        : $"{AxisName} {FormatAxis(_series.Samples[_selectedIndex].X)}; value {FormatValue(_series.Samples[_selectedIndex].Value)}";
 
     private string AxisName => Axis == ChartAxisKind.Distance ? "distance" : "elapsed time";
 
-    private string FormatAxis(double value)
-    {
-        if (Axis == ChartAxisKind.Distance) return $"{value / 1000:N2} km";
-        var duration = TimeSpan.FromSeconds(Math.Max(0, value));
-        return duration.TotalHours >= 1
-            ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
-            : $"{duration.Minutes}:{duration.Seconds:00}";
-    }
+    private string FormatAxis(double value) => ChartAxisLabels.FormatPosition(value, Axis);
+
+    private string FormatValue(double value) => string.IsNullOrWhiteSpace(Unit)
+        ? value.ToString("N1")
+        : $"{value:N1} {Unit}";
+
+    private string FormatRange(double minimum, double maximum) => string.IsNullOrWhiteSpace(Unit)
+        ? $"{minimum:N1}\u2013{maximum:N1}"
+        : $"{minimum:N1}\u2013{maximum:N1} {Unit}";
 
     private (string X, string Y) Coordinate(ChartSample sample)
     {
-        var span = Math.Max((_series.Maximum ?? 0) - (_series.Minimum ?? 0), 1e-9);
-        var x = 800d * sample.X / Math.Max(_series.AxisMaximum, 1e-9);
-        var y = 166d - 152d * (sample.Value - (_series.Minimum ?? 0)) / span;
+        var axisMaximum = _axisTicks.Count == 0 ? _series.AxisMaximum : _axisTicks[^1].Value;
+        var x = 800d * Math.Clamp(sample.X / Math.Max(axisMaximum, 1e-9), 0, 1);
+        var y = _valueScale.Project(sample.Value, 180);
         return (Invariant(x), Invariant(y));
     }
 

@@ -15,7 +15,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Provides official-history ZIP, bounded multi-file, and local-inbox workflows without accepting provider credentials.
 - Keeps immutable copies of every distinct imported original.
 - Deduplicates exact files and equivalent activities across formats while retaining provenance.
-- Shows dashboards, searchable activities, synchronized gap-aware sensor/respiration charts, rich FIT summaries, laps, records, routes, segments, and a combined world map.
+- Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
 - Calculates an ordered catalog of cycling, running, and walking distance bests, 5-second through 2-hour power bests, and directional local segment efforts.
@@ -136,6 +136,7 @@ For a release candidate, also run the coverage gates, package advisory/deprecati
 No default test performs a live Garmin or Strava request. Test data is synthetic and fictional.
 
 - [Architecture](docs/architecture.md)
+- [Understanding charts](docs/charts.md)
 - [Records methodology](docs/records.md)
 - [Segment methodology](docs/segments.md)
 - [Testing](docs/testing.md)
