@@ -267,9 +267,17 @@ public sealed class SegmentEffort
     public double? MaxPowerWatts { get; set; }
     public double? AverageTemperatureCelsius { get; set; }
     public double? AverageRespirationRate { get; set; }
+    public double? RecordedDistanceMeters { get; set; }
     public double CoveragePercent { get; set; }
+    public int MetricComputationVersion { get; set; } = SegmentEffortMetricVersions.Current;
 
     public int Rank { get; set; }
+}
+
+public static class SegmentEffortMetricVersions
+{
+    public const int Legacy = 1;
+    public const int Current = 2;
 }
 
 public sealed class StatisticSnapshot

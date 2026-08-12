@@ -49,7 +49,8 @@ public sealed record SegmentEffortSummary(
     double MovingSeconds, double? AverageSpeed, double? MaxSpeed,
     double? AverageHeartRate, double? MaxHeartRate, double? AverageCadence, double? MaxCadence,
     double? AveragePower, double? MaxPower, double? AverageTemperature, double? AverageRespiration,
-    double? ElevationGain, double? ElevationLoss, double? AverageGrade, double CoveragePercent);
+    double? RecordedDistance, double? ElevationGain, double? ElevationLoss, double? AverageGrade,
+    double CoveragePercent, bool MetricsCurrent);
 public sealed record UpdateActivityRequest(string Title, string? Description, string? GearName, Guid OwnerId);
 
 public sealed record DashboardSummary(

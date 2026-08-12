@@ -4,7 +4,7 @@ Activity Explorer charts show recorded or calculated values without inventing sa
 
 ~~~mermaid
 flowchart LR
-    Stream["Recorded stream positions"] --> Stats["Full-series average, range, and coverage"]
+    Stream["Recorded stream positions"] --> Stats["Summary average, range, and coverage"]
     Stream --> Series["Gap-aware representative series"]
     Series --> Plot["Labelled axes, gridlines, and line"]
     Plot --> Pointer["Pointer: nearest retained sample"]
@@ -14,7 +14,7 @@ flowchart LR
     Missing --> State["Visible break or unavailable chart"]
 ~~~
 
-The summary is calculated from every usable source sample. The plotted line and inspection controls use a smaller representative series when dense recordings need to be downsampled.
+Range, coverage, and the ordinary sample average are calculated from the complete usable source series. The plotted line and inspection controls use a smaller representative series when dense recordings need to be downsampled. Selected segment efforts override the heading average with the persisted comparison metric so it agrees with the effort table.
 
 ## Reading the chart frame
 
@@ -22,7 +22,7 @@ The horizontal axis identifies where a value occurs: calendar month on the dashb
 
 Detailed stream headings summarize the full usable series:
 
-- **Average** is the arithmetic mean of usable metric samples and is displayed with the metric unit.
+- **Sample average** is the arithmetic mean of usable metric samples and is displayed with the metric unit on ordinary activity charts.
 - **Range** is the lowest through highest usable value. Both endpoints are displayed with the same unit.
 - **Coverage** is the percentage of stream positions that have both a usable horizontal-axis position and a finite metric value.
 
@@ -34,9 +34,9 @@ These figures do not change when the display selects representative points for a
 
 ## Activity and effort streams
 
-Activity details and a selected segment effort use the same chart system for elevation, speed or pace, heart rate, cadence, power, temperature, and respiration when those fields were recorded.
+Activity details and a selected segment effort use the same chart system for elevation, speed or pace, heart rate, cadence, power, temperature, and respiration when those fields were recorded. On a current selected effort, the speed or pace heading is labelled **Segment elapsed average** and uses saved segment distance divided by elapsed time. Sensor headings are labelled **Time-weighted average** and use the persisted timestamp-weighted value. A legacy effort is explicitly labelled **Legacy sample average** until recomputed. The plotted samples and displayed range remain the original recorded values in every case.
 
-Choose **Elapsed time** or **Distance** to change the shared horizontal axis. Moving the pointer across any populated chart places every other populated chart in that group at the same axis position. Each chart reports its own nearest retained representative sample, so values remain truthful when sensors were recorded at different intervals or have gaps.
+Choose **Elapsed time** or **Distance** to change the shared horizontal axis. A selected effort's distance begins at `0 m`; whole-activity distance values are not carried into the effort chart. Moving the pointer across any populated chart places every other populated chart in that group at the same axis position. Each chart reports its own nearest retained representative sample, so values remain truthful when sensors were recorded at different intervals or have gaps.
 
 Open **Inspect exact values** on one chart to step through that chart with a keyboard-operable slider or to open its data table. This inspector is intentionally independent: it does not move the other charts. Pointer comparison is the synchronized path; the slider and table provide a stable per-chart alternative for keyboard and assistive-technology users.
 

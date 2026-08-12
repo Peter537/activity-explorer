@@ -86,6 +86,8 @@
     [Parameter, EditorRequired] public string Title { get; set; } = "";
     [Parameter] public string Unit { get; set; } = "";
     [Parameter] public string EmptyMessage { get; set; } = "Not recorded in the source";
+    [Parameter] public double? SummaryAverage { get; set; }
+    [Parameter] public string SummaryAverageLabel { get; set; } = "Sample average";
     [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
     [Parameter, EditorRequired] public Func<TrackPoint, double?> Selector { get; set; } = _ => null;
     [Parameter] public ChartAxisKind Axis { get; set; } = ChartAxisKind.ElapsedTime;
@@ -119,9 +121,19 @@
         _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_series.Samples.Count - 1, 0));
     }
 
-    private string Summary => _series.Average.HasValue
-        ? $"Average {FormatValue(_series.Average.Value)} \u00B7 Range {FormatRange(_series.Minimum!.Value, _series.Maximum!.Value)} \u00B7 {_series.CoveragePercent:N0}% coverage"
-        : "No samples";
+    private double? DisplayAverage => SummaryAverage is double value && double.IsFinite(value)
+        ? value
+        : _series.Average;
+
+    private string DisplayAverageLabel => SummaryAverage is double value && double.IsFinite(value)
+        ? SummaryAverageLabel
+        : "Sample average";
+
+    private string Summary => DisplayAverage.HasValue && _series.Minimum.HasValue && _series.Maximum.HasValue
+        ? $"{DisplayAverageLabel} {FormatValue(DisplayAverage.Value)} \u00B7 Range {FormatRange(_series.Minimum.Value, _series.Maximum.Value)} \u00B7 {_series.CoveragePercent:N0}% coverage"
+        : DisplayAverage.HasValue
+            ? $"{DisplayAverageLabel} {FormatValue(DisplayAverage.Value)} \u00B7 No recorded samples"
+            : "No samples";
 
     private string SelectedValueText => _series.Samples.Count == 0
         ? "No samples"

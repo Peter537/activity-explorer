@@ -16,6 +16,7 @@ public sealed class DatabaseInitializer(
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await db.Database.EnsureCreatedAsync(cancellationToken);
         await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
+        await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -59,6 +60,32 @@ public sealed class DatabaseInitializer(
         if (!existing.Contains("SourceFormat"))
             await db.Database.ExecuteSqlRawAsync(
                 "ALTER TABLE \"Segments\" ADD COLUMN \"SourceFormat\" TEXT NULL", cancellationToken);
+    }
+
+    internal static async Task EnsureSegmentEffortMetricColumnsAsync(
+        ExplorerDbContext db,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = "PRAGMA table_info('SegmentEfforts')";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) existing.Add(reader.GetString(1));
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+
+        if (!existing.Contains("RecordedDistanceMeters"))
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"SegmentEfforts\" ADD COLUMN \"RecordedDistanceMeters\" REAL NULL", cancellationToken);
+        if (!existing.Contains("MetricComputationVersion"))
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE \"SegmentEfforts\" ADD COLUMN \"MetricComputationVersion\" INTEGER NOT NULL DEFAULT 1", cancellationToken);
     }
 
     private async Task ReportUntrackedOriginalsAsync(ExplorerDbContext db, CancellationToken cancellationToken)

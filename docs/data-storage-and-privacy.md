@@ -41,7 +41,7 @@ Local segment-path uploads are intentionally different. The endpoint parses one 
 
 ## What the database contains
 
-SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Segment provenance records source kind and may include a user-supplied base file name and normalized format. Treat the root as private health and location data even when profile names are fictional.
+SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Segment efforts store the matched stream indices and derived metrics rather than a duplicate stream. Current effort rows include nullable recorded GPS-polyline distance and a non-null calculation version; segment definition distance and terrain metrics remain on the segment. Segment provenance records source kind and may include a user-supplied base file name and normalized format. Treat the root as private health and location data even when profile names are fictional.
 
 ## Network behavior
 
@@ -63,7 +63,7 @@ Activity Explorer does not create automatic database backups. For a complete bac
 2. Copy the entire application-data directory, including WAL/SHM files, originals, keys, and quarantine, to encrypted storage.
 3. Restart the app.
 
-The profile JSON export contains summarized records only; it is not a backup of source files or the database. Startup adds the three segment-provenance columns to databases created by the immediately preceding schema. Other older pre-release schema changes remain unsupported and may require a fresh data root and reimport.
+The profile JSON export contains summarized records only; it is not a backup of source files or the database. Startup additively adds the three segment-provenance columns plus recorded-distance and calculation-version effort columns to databases created by the immediately preceding schemas. Existing effort values are left untouched, recorded distance remains null, and the version defaults to legacy version 1; no metric backfill runs during the schema upgrade. The segment page directs the user to explicit recomputation. Other older pre-release schema changes remain unsupported and may require a fresh data root and reimport.
 
 ## Activity transfer and deletion
 

@@ -25,6 +25,12 @@ else
         <div class="notice subtle">Imported provenance: @(_segment.Summary.SourceName ?? "user-supplied file")@if (!string.IsNullOrWhiteSpace(_segment.Summary.SourceFormat)) { <text> · @_segment.Summary.SourceFormat</text> }. Only local path geometry and this provenance label were retained.</div>
     }
 
+    @if (HasLegacyEfforts)
+    {
+        <StatusMessage IsWarning="true" Message="Some efforts use the legacy sample-average calculation. Select Recompute efforts to update this segment to fixed-distance speed and timestamp-weighted sensor averages." />
+    }
+    <StatusMessage Message="@_recomputeStatus" IsError="@_recomputeFailed" />
+
     <section class="metric-grid five">
         <MetricCard Label="Distance" Value="@Format.Distance(_segment.Summary.DistanceMeters)" />
         <MetricCard Label="Ascent" Value="@Value(_segment.Summary.ElevationGain, "m")" />
@@ -44,7 +50,7 @@ else
 
     <section class="panel">
         <div class="panel-heading">
-            <div><h2>Effort comparison</h2><p class="muted">Repeated passes remain separate. Select a row to inspect its exact stream slice.</p></div>
+            <div><h2>Effort comparison</h2><p class="muted">Repeated passes remain separate. Speed and pace use the saved segment distance divided by elapsed time. Select a row to inspect its exact recorded stream slice.</p></div>
             <label class="compact-select"><span>Sort by</span><select @bind="_sort"><option value="rank">Rank</option><option value="date">Newest</option><option value="elapsed">Elapsed time</option><option value="speed">Speed / pace</option><option value="heart-rate">Heart rate</option><option value="power">Power</option></select></label>
         </div>
         @if (_segment.Efforts.Count == 0)
@@ -55,7 +61,7 @@ else
         {
             <div class="effort-table-wrap">
                 <table class="effort-table">
-                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>Speed / pace</th><th>Ascent</th><th>Grade</th><th>Heart rate</th><th>Cadence</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
+                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>@(_segment.Summary.Sport == SportKind.Cycling ? "Segment avg speed" : "Segment avg pace")</th><th>Heart rate</th><th>Cadence</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
                     <tbody>
                     @foreach (var effort in SortedEfforts)
                     {
@@ -65,8 +71,6 @@ else
                             <td>@Format.Duration(effort.ElapsedSeconds)</td>
                             <td>@Format.Duration(effort.MovingSeconds)</td>
                             <td>@Format.Speed(effort.AverageSpeed, _segment.Summary.Sport)</td>
-                            <td>@Value(effort.ElevationGain, "m")</td>
-                            <td>@Value(effort.AverageGrade, "%", 1)</td>
                             <td>@Value(effort.AverageHeartRate, "bpm")</td>
                             <td>@Value(effort.AverageCadence, "rpm")</td>
                             <td>@Value(effort.AveragePower, "W")</td>
@@ -88,14 +92,26 @@ else
             <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@selected.StartTime.ToLocalTime().ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
             <div class="button-row"><button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button><button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button></div>
         </section>
+        <section class="panel effort-diagnostics" aria-labelledby="selected-effort-diagnostics">
+            <div class="panel-heading">
+                <div><h2 id="selected-effort-diagnostics">Recorded effort diagnostics</h2><p class="muted">These values describe the selected GPS and elevation slice. Differences from the saved segment can reflect recording noise or small path variations and do not change the comparison ranking.</p></div>
+                <span class="badge">@(selected.MetricsCurrent ? "Current calculation" : "Legacy calculation")</span>
+            </div>
+            <section class="metric-grid">
+                <MetricCard Label="Recorded distance" Value="@Value(selected.RecordedDistance, "m", 1)" Hint="@DiagnosticDifference(selected.RecordedDistance, _segment.Summary.DistanceMeters, "m", 1)" />
+                <MetricCard Label="Recorded ascent" Value="@Value(selected.ElevationGain, "m", 1)" Hint="@DiagnosticDifference(selected.ElevationGain, _segment.Summary.ElevationGain, "m", 1)" />
+                <MetricCard Label="Recorded descent" Value="@Value(selected.ElevationLoss, "m", 1)" Hint="@DiagnosticDifference(selected.ElevationLoss, _segment.Summary.ElevationLoss, "m", 1)" />
+                <MetricCard Label="Recorded grade" Value="@Value(selected.AverageGrade, "%", 1)" Hint="@DiagnosticDifference(selected.AverageGrade, _segment.Summary.AverageGrade, "percentage points", 1)" />
+            </section>
+        </section>
         <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
             <TimeSeriesChart Title="Elevation" Unit="m" Points="_segment.SelectedEffortPoints" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
-            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" />
-            <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" />
-            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" />
-            <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" />
-            <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" />
-            <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" />
+            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" SummaryAverage="@SpeedOrPace(selected.AverageSpeed)" SummaryAverageLabel="@(selected.MetricsCurrent ? "Segment elapsed average" : "Legacy sample average")" />
+            <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" SummaryAverage="@selected.AverageHeartRate" SummaryAverageLabel="@SensorAverageLabel(selected)" />
+            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" SummaryAverage="@selected.AverageCadence" SummaryAverageLabel="@SensorAverageLabel(selected)" />
+            <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" SummaryAverage="@selected.AveragePower" SummaryAverageLabel="@SensorAverageLabel(selected)" />
+            <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" SummaryAverage="@selected.AverageTemperature" SummaryAverageLabel="@SensorAverageLabel(selected)" />
+            <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" SummaryAverage="@selected.AverageRespiration" SummaryAverageLabel="@SensorAverageLabel(selected)" />
         </section>
     }
 }
@@ -110,7 +126,10 @@ else
     private bool _loaded;
     private bool _recomputing;
     private string? _loadError;
+    private string? _recomputeStatus;
+    private bool _recomputeFailed;
     private readonly string _definitionExplorerId = $"segment-definition-{Guid.NewGuid():N}";
+    private bool HasLegacyEfforts => _segment?.Efforts.Any(x => !x.MetricsCurrent) == true;
     private string SourceLabel => _segment?.Summary.SourceKind switch
     {
         SegmentSourceKind.ImportedFile => "Imported file",
@@ -132,6 +151,8 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
+        _recomputeStatus = null;
+        _recomputeFailed = false;
         await LoadAsync();
     }
 
@@ -151,10 +172,18 @@ else
     private async Task Recompute()
     {
         _recomputing = true;
+        _recomputeStatus = null;
+        _recomputeFailed = false;
         try
         {
             await SegmentService.RecomputeAsync(Id);
             _segment = await SegmentService.GetAsync(Id, EffortId);
+            _recomputeStatus = "Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.";
+        }
+        catch
+        {
+            _recomputeFailed = true;
+            _recomputeStatus = "Efforts could not be recomputed. Existing values were kept; try again.";
         }
         finally { _recomputing = false; }
     }
@@ -164,9 +193,25 @@ else
 
     private double? SpeedOrPace(TrackPoint point)
     {
-        if (point.SpeedMetersPerSecond is not > 0) return null;
+        return SpeedOrPace(point.SpeedMetersPerSecond);
+    }
+
+    private double? SpeedOrPace(double? speedMetersPerSecond)
+    {
+        if (speedMetersPerSecond is not > 0) return null;
         return _segment?.Summary.Sport == SportKind.Cycling
-            ? point.SpeedMetersPerSecond * 3.6
-            : 1000d / point.SpeedMetersPerSecond / 60d;
+            ? speedMetersPerSecond * 3.6
+            : 1000d / speedMetersPerSecond / 60d;
+    }
+
+    private static string SensorAverageLabel(SegmentEffortSummary effort) =>
+        effort.MetricsCurrent ? "Time-weighted average" : "Legacy sample average";
+
+    private static string DiagnosticDifference(double? recorded, double? canonical, string unit, int decimals)
+    {
+        if (!recorded.HasValue || !canonical.HasValue) return "Difference unavailable";
+        var zeroes = new string('0', decimals);
+        var pattern = decimals == 0 ? "+0;-0;0" : $"+0.{zeroes};-0.{zeroes};0.{zeroes}";
+        return $"Difference from saved: {(recorded.Value - canonical.Value).ToString(pattern)} {unit}";
     }
 }

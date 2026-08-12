@@ -39,11 +39,16 @@ public sealed class SegmentService(
         var efforts = await db.SegmentEfforts.AsNoTracking().Include(x => x.Activity)
             .Where(x => x.SegmentId == id)
             .OrderBy(x => x.ElapsedSeconds)
+            .ThenBy(x => x.StartTimeUtc)
+            .ThenBy(x => x.ActivityId)
+            .ThenBy(x => x.StartPointIndex)
             .Select(x => new SegmentEffortSummary(
                 x.Id, x.ActivityId, x.SegmentId, segment.Name, x.ElapsedSeconds, x.Rank, x.StartTimeUtc, x.StartPointIndex, x.EndPointIndex,
                 x.MovingSeconds, x.AverageSpeedMetersPerSecond, x.MaxSpeedMetersPerSecond,
                 x.AverageHeartRate, x.MaxHeartRate, x.AverageCadence, x.MaxCadence, x.AveragePowerWatts, x.MaxPowerWatts,
-                x.AverageTemperatureCelsius, x.AverageRespirationRate, x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent))
+                x.AverageTemperatureCelsius, x.AverageRespirationRate, x.RecordedDistanceMeters,
+                x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent,
+                x.MetricComputationVersion >= SegmentEffortMetricVersions.Current))
             .ToListAsync(cancellationToken);
         var selected = efforts.FirstOrDefault(x => x.Id == effortId) ?? efforts.FirstOrDefault();
         IReadOnlyList<TrackPoint> selectedPoints = [];
@@ -55,7 +60,11 @@ public sealed class SegmentService(
             {
                 var all = TrackCodec.Decode(payload);
                 if (selected.StartPointIndex >= 0 && selected.EndPointIndex < all.Count && selected.StartPointIndex <= selected.EndPointIndex)
-                    selectedPoints = all.Skip(selected.StartPointIndex).Take(selected.EndPointIndex - selected.StartPointIndex + 1).ToArray();
+                {
+                    var slice = all.Skip(selected.StartPointIndex).Take(selected.EndPointIndex - selected.StartPointIndex + 1).ToArray();
+                    var analysis = new TrackPathAnalysis(slice);
+                    selectedPoints = slice.Select((point, index) => point with { DistanceMeters = analysis.DistanceAt(index) }).ToArray();
+                }
             }
         }
         var definitionPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
@@ -164,8 +173,15 @@ public sealed class SegmentService(
         var segmentPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
         var generated = await GenerateEffortsAsync(db, segment, segmentPoints, cancellationToken);
         var existing = await db.SegmentEfforts.Where(x => x.SegmentId == segmentId).ToListAsync(cancellationToken);
-        db.SegmentEfforts.RemoveRange(existing);
-        db.SegmentEfforts.AddRange(generated);
+        var existingByKey = existing.ToDictionary(x => (x.ActivityId, x.StartPointIndex));
+        foreach (var candidate in generated)
+        {
+            if (existingByKey.Remove((candidate.ActivityId, candidate.StartPointIndex), out var current))
+                CopyEffort(candidate, current);
+            else
+                db.SegmentEfforts.Add(candidate);
+        }
+        db.SegmentEfforts.RemoveRange(existingByKey.Values);
         await db.SaveChangesAsync(cancellationToken);
     }
 
@@ -204,7 +220,7 @@ public sealed class SegmentService(
                     ? (lastTime.Value - firstTime.Value).TotalSeconds
                     : activity.ElapsedTimeSeconds * (match.EndIndex - match.StartIndex) / Math.Max(points.Count - 1d, 1d);
                 if (elapsed <= 0) continue;
-                var effortMetrics = new TrackPathAnalysis(slice).Slice(0, slice.Length - 1);
+                var effortMetrics = SegmentEffortMetricCalculator.Calculate(segment.DistanceMeters, slice, elapsed);
                 generated.Add(new SegmentEffort
                 {
                     OwnerId = segment.OwnerId,
@@ -215,25 +231,31 @@ public sealed class SegmentService(
                     StartTimeUtc = firstTime ?? activity.StartTimeUtc,
                     ElapsedSeconds = elapsed,
                     MovingSeconds = EstimateMovingSeconds(slice, elapsed),
-                    AverageHeartRate = Average(slice, x => x.HeartRate),
-                    AverageCadence = Average(slice, x => x.Cadence),
-                    AveragePowerWatts = Average(slice, x => x.PowerWatts),
+                    AverageHeartRate = effortMetrics.AverageHeartRate,
+                    AverageCadence = effortMetrics.AverageCadence,
+                    AveragePowerWatts = effortMetrics.AveragePowerWatts,
+                    RecordedDistanceMeters = effortMetrics.RecordedDistanceMeters,
                     ElevationGainMeters = effortMetrics.ElevationGainMeters,
                     ElevationLossMeters = effortMetrics.ElevationLossMeters,
                     AverageGradePercent = effortMetrics.AverageGradePercent,
-                    AverageSpeedMetersPerSecond = Average(slice, x => x.SpeedMetersPerSecond),
-                    MaxSpeedMetersPerSecond = Max(slice, x => x.SpeedMetersPerSecond),
-                    MaxHeartRate = Max(slice, x => x.HeartRate),
-                    MaxCadence = Max(slice, x => x.Cadence),
-                    MaxPowerWatts = Max(slice, x => x.PowerWatts),
-                    AverageTemperatureCelsius = Average(slice, x => x.TemperatureCelsius),
-                    AverageRespirationRate = Average(slice, x => x.RespirationRate),
-                    CoveragePercent = match.CoveragePercent
+                    AverageSpeedMetersPerSecond = effortMetrics.AverageSpeedMetersPerSecond,
+                    MaxSpeedMetersPerSecond = effortMetrics.MaxSpeedMetersPerSecond,
+                    MaxHeartRate = effortMetrics.MaxHeartRate,
+                    MaxCadence = effortMetrics.MaxCadence,
+                    MaxPowerWatts = effortMetrics.MaxPowerWatts,
+                    AverageTemperatureCelsius = effortMetrics.AverageTemperatureCelsius,
+                    AverageRespirationRate = effortMetrics.AverageRespirationRate,
+                    CoveragePercent = match.CoveragePercent,
+                    MetricComputationVersion = SegmentEffortMetricVersions.Current
                 });
             }
         }
 
-        var ranked = generated.OrderBy(x => x.ElapsedSeconds).ToArray();
+        var ranked = generated.OrderBy(x => x.ElapsedSeconds)
+            .ThenBy(x => x.StartTimeUtc)
+            .ThenBy(x => x.ActivityId)
+            .ThenBy(x => x.StartPointIndex)
+            .ToArray();
         for (var index = 0; index < ranked.Length; index++) ranked[index].Rank = index + 1;
         return ranked;
     }
@@ -303,16 +325,33 @@ public sealed class SegmentService(
         return moving > 0 ? moving : elapsed;
     }
 
-    private static double? Average(IEnumerable<TrackPoint> points, Func<TrackPoint, double?> selector)
+    private static void CopyEffort(SegmentEffort source, SegmentEffort target)
     {
-        var values = points.Select(selector).Where(x => x.HasValue).Select(x => x!.Value).ToArray();
-        return values.Length == 0 ? null : values.Average();
-    }
-
-    private static double? Max(IEnumerable<TrackPoint> points, Func<TrackPoint, double?> selector)
-    {
-        var values = points.Select(selector).Where(x => x.HasValue).Select(x => x!.Value).ToArray();
-        return values.Length == 0 ? null : values.Max();
+        target.OwnerId = source.OwnerId;
+        target.SegmentId = source.SegmentId;
+        target.ActivityId = source.ActivityId;
+        target.StartPointIndex = source.StartPointIndex;
+        target.EndPointIndex = source.EndPointIndex;
+        target.StartTimeUtc = source.StartTimeUtc;
+        target.ElapsedSeconds = source.ElapsedSeconds;
+        target.MovingSeconds = source.MovingSeconds;
+        target.AverageHeartRate = source.AverageHeartRate;
+        target.AverageCadence = source.AverageCadence;
+        target.AveragePowerWatts = source.AveragePowerWatts;
+        target.RecordedDistanceMeters = source.RecordedDistanceMeters;
+        target.ElevationGainMeters = source.ElevationGainMeters;
+        target.ElevationLossMeters = source.ElevationLossMeters;
+        target.AverageGradePercent = source.AverageGradePercent;
+        target.AverageSpeedMetersPerSecond = source.AverageSpeedMetersPerSecond;
+        target.MaxSpeedMetersPerSecond = source.MaxSpeedMetersPerSecond;
+        target.MaxHeartRate = source.MaxHeartRate;
+        target.MaxCadence = source.MaxCadence;
+        target.MaxPowerWatts = source.MaxPowerWatts;
+        target.AverageTemperatureCelsius = source.AverageTemperatureCelsius;
+        target.AverageRespirationRate = source.AverageRespirationRate;
+        target.CoveragePercent = source.CoveragePercent;
+        target.MetricComputationVersion = source.MetricComputationVersion;
+        target.Rank = source.Rank;
     }
 
 }

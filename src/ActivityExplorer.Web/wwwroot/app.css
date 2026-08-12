@@ -453,6 +453,7 @@ textarea { min-height: 105px; resize: vertical; }
 .effort-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .effort-table tr.selected { background: #eef7f3; }
 .effort-table-wrap { overflow-x: auto; }
+.effort-diagnostics .metric-grid { margin-bottom: 0; }
 .chart-grid.single-chart { grid-template-columns: minmax(0, 1fr); }
 .compact-select { min-width: 150px; }
 .import-workflows article { position: relative; overflow: hidden; }

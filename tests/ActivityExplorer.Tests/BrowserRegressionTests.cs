@@ -442,11 +442,22 @@ public sealed class BrowserRegressionTests
                 .Locator("strong");
             await Assertions.Expect(personalBest).Not.ToHaveTextAsync("--");
             await Assertions.Expect(page.Locator(".effort-table tbody tr")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator(".effort-table th").Filter(new LocatorFilterOptions { HasTextString = "Segment avg speed" })).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator(".effort-table th").Filter(new LocatorFilterOptions { HasTextString = "Ascent" })).ToHaveCountAsync(0);
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Recorded effort diagnostics" })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Current calculation", new PageGetByTextOptions { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Difference from saved:", new PageGetByTextOptions { Exact = false }).First).ToBeVisibleAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "open activity", Exact = true }))
                 .ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
+            await page.Locator(".compact-select select").SelectOptionAsync("speed");
+            await Assertions.Expect(page.Locator(".effort-table tbody tr")).ToHaveCountAsync(1);
 
             var effortCharts = page.Locator(".synchronized-charts");
             await Assertions.Expect(effortCharts).ToHaveAttributeAsync("data-charts-bound", "true");
+            await Assertions.Expect(effortCharts.Locator(".time-series-chart[data-unit='km/h'] .chart-heading small"))
+                .ToContainTextAsync("Segment elapsed average");
+            await Assertions.Expect(effortCharts.Locator(".time-series-chart[data-unit='bpm'] .chart-heading small"))
+                .ToContainTextAsync("Time-weighted average");
             var renderedEffortCharts = effortCharts.Locator(".time-series-chart:has(.chart-plot)");
             Assert.Equal(4, await renderedEffortCharts.CountAsync());
             foreach (var chart in await renderedEffortCharts.AllAsync())
@@ -467,6 +478,7 @@ public sealed class BrowserRegressionTests
             await Assertions.Expect(effortCharts).ToHaveAttributeAsync("data-charts-bound", "true");
             await Assertions.Expect(elapsedAxis).ToHaveAttributeAsync("aria-pressed", "false");
             await Assertions.Expect(distanceAxis).ToHaveAttributeAsync("aria-pressed", "true");
+            await Assertions.Expect(effortCharts.Locator(".chart-sample").First).ToHaveAttributeAsync("data-axis", "0");
             await AssertPointerInspectionAsync(page, effortCharts, expectedCharts: 4, expectedAxisSuffix: "m");
             foreach (var width in new[] { 375, 768, 1121, 1280, 1920 })
             {
@@ -477,18 +489,53 @@ public sealed class BrowserRegressionTests
             }
             await page.SetViewportSizeAsync(1280, 1000);
 
+            Guid originalEffortId;
+            await using (var db = new ExplorerDbContext(options))
+            {
+                var segment = await db.Segments.AsNoTracking().SingleAsync(value => value.Name == "Browser forward effort segment");
+                var effort = await db.SegmentEfforts.SingleAsync(value => value.SegmentId == segment.Id);
+                originalEffortId = effort.Id;
+                Assert.Equal(SegmentEffortMetricVersions.Current, effort.MetricComputationVersion);
+                effort.MetricComputationVersion = SegmentEffortMetricVersions.Legacy;
+                await db.SaveChangesAsync();
+            }
+            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page.GetByText("Some efforts use the legacy sample-average calculation.", new PageGetByTextOptions { Exact = false })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Legacy calculation", new PageGetByTextOptions { Exact = true })).ToBeVisibleAsync();
+
             var recompute = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Recompute efforts", Exact = true });
             await recompute.ClickAsync();
             await Assertions.Expect(recompute).ToBeEnabledAsync();
             await Assertions.Expect(page.Locator(".effort-table tbody tr")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.GetByText("Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.", new PageGetByTextOptions { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Some efforts use the legacy sample-average calculation.", new PageGetByTextOptions { Exact = false })).ToHaveCountAsync(0);
+            await Assertions.Expect(page.GetByText("Current calculation", new PageGetByTextOptions { Exact = true })).ToBeVisibleAsync();
             await using (var db = new ExplorerDbContext(options))
             {
                 var segment = await db.Segments.AsNoTracking().SingleAsync(value => value.Name == "Browser forward effort segment");
                 var effort = await db.SegmentEfforts.AsNoTracking().SingleAsync(value => value.SegmentId == segment.Id);
+                Assert.Equal(originalEffortId, effort.Id);
                 Assert.Equal(0, effort.StartPointIndex);
                 Assert.Equal(8, effort.EndPointIndex);
                 Assert.Equal(1, effort.Rank);
                 Assert.Equal(100, effort.CoveragePercent, 8);
+                Assert.Equal(SegmentEffortMetricVersions.Current, effort.MetricComputationVersion);
+            }
+
+            await using (var db = new ExplorerDbContext(options))
+            {
+                var segment = await db.Segments.SingleAsync(value => value.Name == "Browser forward effort segment");
+                segment.GeometryWkb = [0x01, 0x02, 0x03];
+                await db.SaveChangesAsync();
+            }
+            await recompute.ClickAsync();
+            await Assertions.Expect(page.GetByText("Efforts could not be recomputed. Existing values were kept; try again.", new PageGetByTextOptions { Exact = true })).ToBeVisibleAsync();
+            await using (var db = new ExplorerDbContext(options))
+            {
+                Assert.Equal(originalEffortId, await db.SegmentEfforts
+                    .Where(value => value.Id == originalEffortId)
+                    .Select(value => value.Id)
+                    .SingleAsync());
             }
 
             var missingElevationUrl = origin + $"/activities/{seed.MissingElevationActivityId}/segments/new";

@@ -40,13 +40,19 @@ Reverse-direction travel does not match. The file/drawing order defines start to
 
 ## Effort metrics
 
-Each accepted pass records elapsed and moving time; ascent, descent, and average grade; average/maximum speed, heart rate, cadence, and power; average temperature and respiration; coverage; start time; stream indices; and the linked activity. Missing sensors remain null.
+The saved segment definition supplies the canonical distance, ascent, descent, and average grade shown at the top of the page. These values describe one fixed path and therefore do not vary by effort. Comparison speed is the saved segment distance divided by the effort's elapsed time; running and walking display the equivalent pace. Ranking continues to use elapsed time, including pauses.
+
+Each accepted pass also retains recorded diagnostics from its exact activity-stream slice: GPS-polyline distance plus recorded ascent, descent, and average grade. These may differ slightly from the definition because of GPS sampling, elevation sensors, cornering, or small matched-path variations. They appear only in the selected-effort diagnostics with a signed difference from the saved definition, not as repeated comparison columns.
+
+Heart rate, cadence, power, temperature, and respiration averages are timestamp-weighted. For each pair of consecutive finite sensor samples, Activity Explorer applies trapezoidal weighting when the timestamp interval is greater than zero and no more than 30 seconds. Recorded zeroes are valid; missing and non-finite endpoints do not contribute. If no interval is usable, the finite sample mean is the fallback. Maximum values use finite samples only. Missing sensors remain null.
+
+An effort also stores moving time, coverage, start time, source stream indices, recorded distance, calculation version, and its linked activity. The moving-time threshold, coverage calculation, matching geometry, and maximum metrics are independent of the fixed-distance average speed.
 
 Per-owner ranks are recalculated from elapsed time. The inline segment explorer shows the directional path and a grade-colored definition profile, a sortable comparison table, and the selected pass highlighted with start/end points. The profile derives local grade over a disclosed 50 metre distance window, shifts that window at path boundaries, and uses the available span for shorter definitions. Downhill, flat, gentle, moderate, steep, and very steep colors are advisory display categories; exact percentages remain available through pointer, keyboard, and tabular inspection. Inspecting the profile marks the corresponding definition point on the map without moving the viewport.
 
 Local grade is calculated only within contiguous recorded elevation samples. Missing elevation remains a visible gap and is never interpolated across; the whole profile retains the truthful unavailable state when no drawable elevation sequence exists. Rendering uses at most 800 representative samples across all visible runs while retaining path endpoints, important extrema, and representative grade transitions within that budget. The complete stored definition is not downsampled. These local values are ephemeral presentation data and do not replace the persisted whole-segment average grade.
 
-Selecting a pass updates the `effort` URL query and renders the axis-labelled, synchronized charts described in [Understanding charts](charts.md) from that exact activity-stream slice; no duplicate effort stream is stored. Pauses remain part of elapsed time, while moving time excludes stationary samples when usable position/timestamps exist.
+Selecting a pass updates the `effort` URL query and renders the axis-labelled, synchronized charts described in [Understanding charts](charts.md) from that exact activity-stream slice; no duplicate effort stream is stored. The selected slice's chart distance is rebased to `0 m` while the original activity stream remains unchanged. Pauses remain part of elapsed time, while moving time excludes stationary samples when usable position/timestamps exist.
 
 ## Accuracy limitations
 
@@ -56,6 +62,8 @@ Increasing tolerance can recover a noisy match but also increases false positive
 
 ## Recalculation
 
-Segment recomputation is deterministic for the same stored streams and definition. It replaces calculated efforts; it never changes immutable source files.
+Effort calculation version 1 used arithmetic sample averages and did not persist recorded distance. Version 2 uses the canonical and timestamp-weighted rules above. The additive startup schema upgrade marks pre-existing rows as version 1 and does not recalculate them. Segment detail presents an accessible legacy notice until the user explicitly selects **Recompute efforts**.
+
+Segment recomputation is deterministic for the same stored streams and definition. It atomically upserts matches by activity and matched start index, updates metrics and ranks, removes matches that no longer qualify, and preserves the IDs of retained efforts so an inspected row remains selected. It never changes immutable source files.
 
 When diagnosing a missing match, confirm owner/sport and direction, inspect timestamp gaps and start/end geometry, increase tolerance gradually, then recompute and review the effort table.

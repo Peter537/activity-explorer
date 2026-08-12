@@ -62,7 +62,9 @@ public sealed class ActivityQueryService(
                 x.Id, x.ActivityId, x.SegmentId, x.Segment!.Name, x.ElapsedSeconds, x.Rank, x.StartTimeUtc, x.StartPointIndex, x.EndPointIndex,
                 x.MovingSeconds, x.AverageSpeedMetersPerSecond, x.MaxSpeedMetersPerSecond,
                 x.AverageHeartRate, x.MaxHeartRate, x.AverageCadence, x.MaxCadence, x.AveragePowerWatts, x.MaxPowerWatts,
-                x.AverageTemperatureCelsius, x.AverageRespirationRate, x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent))
+                x.AverageTemperatureCelsius, x.AverageRespirationRate, x.RecordedDistanceMeters,
+                x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent,
+                x.MetricComputationVersion >= SegmentEffortMetricVersions.Current))
             .ToListAsync(cancellationToken);
 
         return new ActivityDetail(

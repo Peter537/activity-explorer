@@ -501,16 +501,72 @@ public sealed class DatabaseIntegrationTests
         Assert.Equal(1, firstEffort.Rank);
         Assert.Equal(100, firstEffort.CoveragePercent, 8);
         Assert.Equal(firstEffort.ElapsedSeconds, created.Summary.BestElapsedSeconds);
+        Assert.True(firstEffort.MetricsCurrent);
+        Assert.Equal(created.Summary.DistanceMeters / firstEffort.ElapsedSeconds, firstEffort.AverageSpeed!.Value, 8);
+        Assert.Equal(0, created.SelectedEffortPoints[0].DistanceMeters);
+        var originalEffortId = firstEffort.Id;
+
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            await db.SegmentEfforts.Where(effort => effort.Id == originalEffortId)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(effort => effort.MetricComputationVersion, SegmentEffortMetricVersions.Legacy)
+                    .SetProperty(effort => effort.RecordedDistanceMeters, (double?)null)
+                    .SetProperty(effort => effort.AverageSpeedMetersPerSecond, 99));
+        }
+        var legacy = Assert.Single((await service.GetAsync(segmentId))!.Efforts);
+        Assert.False(legacy.MetricsCurrent);
+        Assert.Null(legacy.RecordedDistance);
+        Assert.Equal(99, legacy.AverageSpeed);
 
         await service.RecomputeAsync(segmentId);
 
         var recomputed = await service.GetAsync(segmentId);
         var recomputedEffort = Assert.Single(recomputed!.Efforts);
+        Assert.Equal(originalEffortId, recomputedEffort.Id);
         Assert.Equal(2, recomputedEffort.StartPointIndex);
         Assert.Equal(52, recomputedEffort.EndPointIndex);
         Assert.Equal(50, recomputedEffort.ElapsedSeconds, 8);
         Assert.Equal(1, recomputedEffort.Rank);
         Assert.Equal(100, recomputedEffort.CoveragePercent, 8);
+        Assert.True(recomputedEffort.MetricsCurrent);
+        Assert.NotNull(recomputedEffort.RecordedDistance);
+        Assert.Equal(recomputed.Summary.DistanceMeters / recomputedEffort.ElapsedSeconds, recomputedEffort.AverageSpeed!.Value, 8);
+    }
+
+    [Fact]
+    public async Task Segment_speed_uses_fixed_distance_so_a_slower_effort_cannot_show_a_higher_average()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Fixed distance segment athlete");
+        var start = new DateTimeOffset(2026, 5, 13, 15, 0, 0, TimeSpan.Zero);
+        var fasterIntervals = Enumerable.Range(0, 23).Select(index => index < 13 ? 5 : 4).ToArray();
+        var slowerIntervals = Enumerable.Range(0, 23).Select(index => index < 15 ? 5 : 4).ToArray();
+        var faster = EffortPoints(start, fasterIntervals, recordedSpeed: 4.4);
+        var slower = EffortPoints(start.AddHours(1), slowerIntervals, recordedSpeed: 16.1 / 3.6);
+        Assert.True(faster.Average(point => point.SpeedMetersPerSecond) < slower.Average(point => point.SpeedMetersPerSecond));
+        await setup.SeedActivityAsync(owner, "Faster pass", SportKind.Cycling, faster);
+        await setup.SeedActivityAsync(owner, "Slower pass", SportKind.Cycling, slower);
+        var service = new SegmentService(setup.Factory, new WholeStreamSegmentMatcher());
+
+        var segmentId = await service.CreateAsync(new CreateSegmentPathRequest(
+            owner,
+            "Fixed distance climb",
+            SportKind.Cycling,
+            faster,
+            30,
+            SourceKind: SegmentSourceKind.Drawn));
+        var detail = await service.GetAsync(segmentId);
+
+        Assert.NotNull(detail);
+        Assert.Equal(2, detail.Efforts.Count);
+        var fasterEffort = detail.Efforts.Single(effort => effort.ElapsedSeconds == 105);
+        var slowerEffort = detail.Efforts.Single(effort => effort.ElapsedSeconds == 107);
+        Assert.Equal(detail.Summary.DistanceMeters / 105, fasterEffort.AverageSpeed!.Value, 8);
+        Assert.Equal(detail.Summary.DistanceMeters / 107, slowerEffort.AverageSpeed!.Value, 8);
+        Assert.True(fasterEffort.AverageSpeed > slowerEffort.AverageSpeed);
+        Assert.Equal(fasterEffort.RecordedDistance!.Value, slowerEffort.RecordedDistance!.Value, 8);
+        Assert.All(detail.Efforts, effort => Assert.True(effort.MetricsCurrent));
     }
 
     [Fact]
@@ -940,6 +996,32 @@ public sealed class DatabaseIntegrationTests
             new OwnerMutationLock());
     }
 
+    private static TrackPoint[] EffortPoints(
+        DateTimeOffset start,
+        IReadOnlyList<int> intervals,
+        double recordedSpeed)
+    {
+        var elapsed = 0;
+        return Enumerable.Range(0, intervals.Count + 1)
+            .Select(index =>
+            {
+                if (index > 0) elapsed += intervals[index - 1];
+                return new TrackPoint(
+                    start.AddSeconds(elapsed),
+                    55,
+                    12 + index * 0.000314,
+                    null,
+                    100 + index,
+                    recordedSpeed,
+                    150 + index % 3,
+                    80,
+                    250,
+                    20,
+                    35);
+            })
+            .ToArray();
+    }
+
     private sealed class MetadataImporter : IActivityImporter
     {
         public string Name => "Synthetic metadata importer";
@@ -976,6 +1058,17 @@ public sealed class DatabaseIntegrationTests
             double toleranceMeters,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Synthetic matcher failure.");
+    }
+
+    private sealed class WholeStreamSegmentMatcher : ISegmentMatcher
+    {
+        public Task<IReadOnlyList<SegmentMatch>> MatchAsync(
+            IReadOnlyList<TrackPoint> activity,
+            IReadOnlyList<TrackPoint> segment,
+            double toleranceMeters,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<SegmentMatch>>(
+                activity.Count < 2 ? [] : [new SegmentMatch(0, activity.Count - 1, 100, 0)]);
     }
 
     private sealed class DatabaseSetup
