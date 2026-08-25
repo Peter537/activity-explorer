@@ -2,13 +2,13 @@
 
 ## The SDK version is not available
 
-`global.json` requires exactly .NET SDK 10.0.302. Install that SDK if `dotnet --info` reports only a different feature band.
+`global.json` prefers .NET SDK 10.0.303. With its `feature` roll-forward policy, the .NET CLI can use a newer patch in the 10.0.3xx band or a later installed .NET 10 feature band when 10.0.303 is unavailable.
 
 ~~~powershell
 dotnet --info
 ~~~
 
-Install a .NET 10 SDK from Microsoft, then rerun restore.
+Install .NET SDK 10.0.303, a newer 10.0.3xx patch, or a later .NET 10 feature band from Microsoft, then rerun restore.
 
 ## NuGet restore fails
 

@@ -29,7 +29,7 @@ Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credent
 
 Prerequisites:
 
-- [.NET SDK 10.0.302](https://dotnet.microsoft.com/download/dotnet/10.0), pinned exactly by global.json.
+- [.NET SDK 10.0.303](https://dotnet.microsoft.com/download/dotnet/10.0) is preferred; `global.json` accepts a later .NET 10 feature band when that exact SDK is unavailable.
 - An official account export or one or more FIT/GPX/TCX files.
 
 Run:

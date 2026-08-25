@@ -1,15 +1,17 @@
 # Dependency and license inventory
 
-This inventory applies to Activity Explorer 0.1.0. NuGet versions are centrally pinned in `Directory.Packages.props`, every project commits `packages.lock.json`, and restore runs in locked mode. The SDK and container images are independently pinned.
+This inventory applies to Activity Explorer 0.1.0. NuGet versions are centrally pinned in `Directory.Packages.props`, every project commits `packages.lock.json`, and restore runs in locked mode. The local SDK baseline and container images are managed independently.
 
 Activity Explorer source is MIT licensed. Dependencies and data providers retain their own terms.
 
 | Dependency | Pinned version | Purpose | License / terms |
 | --- | ---: | --- | --- |
-| .NET SDK | 10.0.302 | Build toolchain | MIT |
-| ASP.NET Core runtime/container | 10.0.10 | Blazor web runtime | MIT |
-| Entity Framework Core SQLite | 10.0.10 | ORM and schema creation | MIT |
-| Microsoft.Extensions.Hosting.Abstractions | 10.0.10 | Hosted-service contracts | MIT |
+| .NET SDK (local baseline) | 10.0.303 | Local build toolchain | MIT |
+| .NET SDK (Docker build) | 10.0.400 | Container build toolchain | MIT |
+| ASP.NET Core runtime/container | 10.0.11 | Blazor web runtime | MIT |
+| Microsoft.AspNetCore.Mvc.Testing | 10.0.11 | Web integration testing | MIT |
+| Entity Framework Core SQLite | 10.0.11 | ORM and schema creation | MIT |
+| Microsoft.Extensions.Hosting.Abstractions | 10.0.11 | Hosted-service contracts | MIT |
 | Garmin.FIT.Sdk | 21.212.0 | FIT decoding | Garmin FIT Protocol License |
 | NetTopologySuite | 2.6.0 | WKB geometry | BSD-3-Clause |
 | SQLitePCLRaw.bundle_e_sqlite3 | 3.0.5 | Native SQLite bundle | Apache-2.0; SQLite is public domain |
@@ -25,8 +27,8 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 
 The Docker build uses these multi-architecture image digests:
 
-- `mcr.microsoft.com/dotnet/sdk:10.0.302@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0`
-- `mcr.microsoft.com/dotnet/aspnet:10.0.10@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b`
+- `mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c`
+- `mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94`
 
 ## MapLibre provenance
 

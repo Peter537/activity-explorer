@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.302@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build
 WORKDIR /source
 
 COPY . .
@@ -11,7 +11,7 @@ RUN dotnet publish src/ActivityExplorer.Web/ActivityExplorer.Web.csproj \
     -p:UseAppHost=false \
     -p:Version=0.1.0
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.10@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS final
 LABEL org.opencontainers.image.title="Activity Explorer" \
       org.opencontainers.image.description="Local, file-first activity analytics" \
       org.opencontainers.image.version="0.1.0" \
