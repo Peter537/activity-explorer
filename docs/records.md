@@ -52,6 +52,22 @@ An edge exactly at the sport limit remains eligible. A benchmark window never cr
 
 Indoor and virtual activities without GPS cannot produce distance bests, even if the activity has a summary distance. They can still produce activity records and power bests in **All training**.
 
+## Timed distance bests
+
+Timed distance bests report the greatest distance covered within an exact elapsed-time window. Cycling uses these targets in display order:
+
+5 min, 10 min, 20 min, 30 min, 1 hour, 2 hours, and 4 hours.
+
+Running and Walking use:
+
+5 min, 10 min, 15 min, 30 min, 1 hour, and 2 hours.
+
+The calculation interpolates cumulative distance at the exact start and finish of each window and considers windows anchored at both start and finish samples. Pauses, stationary periods, and ordinary recording gaps remain inside the window, so their time counts. Incomplete windows and windows with no distance do not qualify; every displayed timed distance best has 100% duration coverage.
+
+For each edge, the calculation prefers a finite, nondecreasing per-point recorded-distance delta and otherwise falls back to valid GPS geometry. A new candidate segment starts at an invalid or reversed timestamp, a missing usable distance edge, a recorded-distance reset, or an edge above the sport speed limit listed under **Distance bests**. An edge exactly at the limit remains eligible.
+
+Unlike fixed-distance bests, timed distance bests can use a GPS-less indoor or virtual stream when every edge in the candidate window has valid per-point recorded distance. Those results appear only in **All training**. Summary distance alone never qualifies, and fixed-distance bests continue to require GPS.
+
 ## Power bests
 
 Power bests are calculated for Cycling, Running, and Walking whenever the imported stream contains recorded power samples. The targets are:
@@ -62,6 +78,6 @@ Each result is the highest time-weighted average power found in a qualifying str
 
 ## Recalculation
 
-Imports automatically recalculate both record scopes for the affected owner. The startup repair worker recomputes an owner only when an expected all-training or outdoor snapshot set is missing. Recalculation does not alter imported originals, user edits, profile assignments, gear, or custom metrics.
+Imports automatically recalculate both record scopes for the affected owner. Record computation version 6 adds timed distance bests and supersedes version-5 snapshots. On startup, the repair worker replaces an owner's complete derived snapshot set when an expected all-training or outdoor set is missing or any snapshot predates version 6. Existing version-5 snapshots therefore backfill automatically to version 6. An owner with any snapshot from a version newer than 6 is left untouched, preventing an older build from replacing newer derived data. Repeating the repair is safe and leaves current snapshots unchanged. Recalculation does not alter imported originals, user edits, profile assignments, gear, or custom metrics.
 
 Supported FIT sub-sports explicitly classify indoor, treadmill, spin, virtual, and clearly outdoor training. Generic cycling, running, and walking labels defer to the GPS fallback described above.

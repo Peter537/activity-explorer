@@ -50,6 +50,14 @@ public sealed class StatisticsService(IDbContextFactory<ExplorerDbContext> conte
                                 effort.Value.Value, effort.Value.CoveragePercent);
                     }
 
+                    foreach (var target in RecordCatalog.TimedDistanceTargets(activity.Sport))
+                    {
+                        var effort = BestEffortCalculator.BestTimedDistance(points, target.Target, activity.Sport);
+                        if (effort.HasValue)
+                            KeepHigher(snapshots, activity, scope, RecordKind.TimedDistanceEffort, target.Key,
+                                effort.Value.Value, effort.Value.CoveragePercent);
+                    }
+
                     foreach (var target in RecordCatalog.PowerTargets)
                     {
                         var curve = BestEffortCalculator.BestPower(points, target.Target);

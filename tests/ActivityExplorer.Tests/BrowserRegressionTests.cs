@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Processing;
+using ActivityExplorer.Infrastructure.Services;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -165,6 +166,115 @@ public sealed class BrowserRegressionTests
             var transitionDuration = await page.Locator(".entity-card").First.EvaluateAsync<string>("element => getComputedStyle(element).transitionDuration");
             Assert.True(transitionDuration is "0.01ms" or "1e-05s" or "0s", $"Unexpected reduced-motion transition: {transitionDuration}");
             Assert.DoesNotContain("Microsoft.EntityFrameworkCore.Query[10102]", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            await DeleteDirectoryAsync(dataRoot);
+        }
+    }
+
+    [Fact]
+    public async Task Timed_distance_records_render_in_order_with_semantic_responsive_tables()
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
+                "1",
+                StringComparison.Ordinal))
+            return;
+
+        var root = FindRepositoryRoot();
+        var webAssembly = FindWebAssembly(root);
+        var dataRoot = TestSupport.NewDirectory();
+        var seed = await SeedTimedDistanceRecordBrowserDataAsync(dataRoot);
+        var port = ReservePort();
+        var origin = $"http://127.0.0.1:{port}";
+        var output = new StringBuilder();
+        using var process = StartApplication(webAssembly, dataRoot, origin, output);
+        try
+        {
+            await WaitUntilReadyAsync(origin, process, output);
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                ViewportSize = new ViewportSize { Width = 1280, Height = 1000 }
+            });
+            var page = await context.NewPageAsync();
+            var browserErrors = new List<string>();
+            page.PageError += (_, error) => browserErrors.Add(error);
+            page.Console += (_, message) =>
+            {
+                if (message.Type == "error") browserErrors.Add(message.Text);
+            };
+
+            await page.GotoAsync(origin + "/records", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var cyclingPanel = page.Locator(".records-panel").Filter(new LocatorFilterOptions { HasTextString = "Cycling" });
+            var sectionHeadings = (await cyclingPanel.Locator(".records-section h3").AllTextContentsAsync())
+                .Select(heading => heading.Trim())
+                .ToArray();
+            Assert.Equal(["Distance bests", "Timed distance bests", "Power bests"], sectionHeadings);
+
+            var timedTable = page.GetByRole(
+                AriaRole.Table,
+                new PageGetByRoleOptions { Name = "Cycling timed distance bests", Exact = true });
+            await Assertions.Expect(timedTable).ToBeVisibleAsync();
+            Assert.Equal(
+                ["Benchmark", "Result", "Profile", "Date", "Coverage"],
+                (await timedTable.Locator("thead th").AllTextContentsAsync()).Select(value => value.Trim()).ToArray());
+            await Assertions.Expect(timedTable.Locator("tbody tr")).ToHaveCountAsync(1);
+            await Assertions.Expect(timedTable.GetByText("10 min", new LocatorGetByTextOptions { Exact = true })).ToHaveCountAsync(0);
+
+            var timedRow = timedTable.Locator("tbody tr").First;
+            var activityLink = timedRow.Locator("th a");
+            await Assertions.Expect(activityLink).ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
+            await Assertions.Expect(activityLink).ToHaveAttributeAsync(
+                "aria-label",
+                new Regex("^5 min: 4[.,]3 km, from Timed distance browser ride$"));
+            await Assertions.Expect(timedRow.Locator("td").Nth(0)).ToHaveTextAsync(
+                new Regex("^4[.,]3 km$"));
+            await Assertions.Expect(timedRow.Locator("td").Nth(1)).ToHaveTextAsync("Browser record athlete");
+            await Assertions.Expect(timedRow.Locator("td").Nth(3)).ToHaveTextAsync("100%");
+
+            foreach (var width in new[] { 320, 360, 375, 768, 1121, 1280, 1920 })
+            {
+                await page.SetViewportSizeAsync(width, 1000);
+                await AssertNoDocumentOverflowAsync(page, $"Populated Records at {width} CSS pixels");
+                await Assertions.Expect(timedTable).ToBeVisibleAsync();
+                await Assertions.Expect(timedRow.Locator("td")).ToHaveCountAsync(4);
+                foreach (var cell in await timedRow.Locator("td").AllAsync())
+                    await Assertions.Expect(cell).ToBeVisibleAsync();
+
+                var display = await timedTable.EvaluateAsync<string>("table => getComputedStyle(table).display");
+                if (width <= 700)
+                {
+                    Assert.Equal("block", display);
+                    Assert.Equal(
+                        "grid",
+                        await timedRow.EvaluateAsync<string>("row => getComputedStyle(row).display"));
+                }
+                else
+                {
+                    Assert.Equal("table", display);
+                    var widthDelta = await timedTable.EvaluateAsync<double>(
+                        "table => Math.abs(table.getBoundingClientRect().width - table.parentElement.getBoundingClientRect().width)");
+                    Assert.InRange(widthDelta, 0, 2.1);
+                    Assert.Equal(
+                        "left",
+                        await timedRow.Locator("td").Nth(0).EvaluateAsync<string>("cell => getComputedStyle(cell).textAlign"));
+                }
+            }
+
+            await page.SetViewportSizeAsync(1280, 1000);
+            await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var dashboardRecord = page.Locator(".record-row").Filter(new LocatorFilterOptions { HasTextString = "Cycling - 5 min" });
+            await Assertions.Expect(dashboardRecord).ToContainTextAsync(
+                new Regex("4[.,]3 km"));
+            await Assertions.Expect(dashboardRecord).ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
+
+            Assert.DoesNotContain(browserErrors, error => !IsKnownHeadlessMapLibreError(error));
+            Assert.DoesNotContain("Unhandled exception", output.ToString(), StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -999,6 +1109,46 @@ public sealed class BrowserRegressionTests
         message.Contains("Could not compile fragment shader", StringComparison.Ordinal) ||
         message.Contains("Style is not done loading", StringComparison.Ordinal);
 
+    private static async Task<TimedDistanceRecordSeed> SeedTimedDistanceRecordBrowserDataAsync(string dataRoot)
+    {
+        Directory.CreateDirectory(dataRoot);
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(dataRoot, "activity-explorer.db")}")
+            .Options;
+        await using var db = new ExplorerDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var owner = new OwnerProfile { DisplayName = "Browser record athlete" };
+        var activity = BrowserActivity(owner.Id, "Timed distance browser ride", SportKind.Cycling, 0);
+        db.AddRange(owner, activity);
+        db.StatisticSnapshots.AddRange(
+            BrowserRecord(owner.Id, activity.Id, RecordScope.All, RecordKind.DistanceEffort, "5 km", 900),
+            BrowserRecord(owner.Id, activity.Id, RecordScope.All, RecordKind.TimedDistanceEffort, "5 min", 4_321),
+            BrowserRecord(owner.Id, activity.Id, RecordScope.All, RecordKind.PowerCurve, "5 s", 275),
+            BrowserRecord(owner.Id, activity.Id, RecordScope.Outdoor, RecordKind.DistanceEffort, "5 km", 900));
+        await db.SaveChangesAsync();
+        return new TimedDistanceRecordSeed(activity.Id);
+    }
+
+    private static StatisticSnapshot BrowserRecord(
+        Guid ownerId,
+        Guid activityId,
+        RecordScope scope,
+        RecordKind kind,
+        string key,
+        double value) => new()
+        {
+            OwnerId = ownerId,
+            Sport = SportKind.Cycling,
+            Kind = kind,
+            Scope = scope,
+            Key = key,
+            Value = value,
+            ActivityId = activityId,
+            CoveragePercent = 100,
+            ComputationVersion = RecordCatalog.ComputationVersion
+        };
+
     private static async Task<BrowserActivitySeed> SeedActivityBrowserDataAsync(string dataRoot)
     {
         Directory.CreateDirectory(dataRoot);
@@ -1173,6 +1323,7 @@ public sealed class BrowserRegressionTests
     }
 
     private sealed record BrowserActivitySeed(Guid OwnerId, Guid DetailActivityId, Guid StaleActivityId);
+    private sealed record TimedDistanceRecordSeed(Guid ActivityId);
     private sealed record RouteCreatorSeed(Guid RouteId, Guid MissingElevationRouteId, IReadOnlyList<TrackPoint> Points);
     private sealed record ActivityCreatorSeed(
         Guid ActivityId,

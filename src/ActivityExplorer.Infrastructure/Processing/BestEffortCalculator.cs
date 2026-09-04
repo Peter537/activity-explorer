@@ -12,45 +12,29 @@ internal static class BestEffortCalculator
         SportKind sport)
     {
         if (targetMeters <= 0) return null;
-        var segment = new List<DistanceSample>();
-        TrackPoint? previous = null;
-
         double? bestSeconds = null;
-        foreach (var point in input)
-        {
-            if (!IsValidDistancePoint(point))
-            {
-                EvaluateDistanceSegment(segment, targetMeters, ref bestSeconds);
-                segment.Clear();
-                previous = null;
-                continue;
-            }
-
-            if (previous is null)
-            {
-                segment.Add(new DistanceSample(point.Timestamp!.Value, 0));
-                previous = point;
-                continue;
-            }
-
-            var interval = (point.Timestamp!.Value - previous.Timestamp!.Value).TotalSeconds;
-            if (interval <= 0 ||
-                !TryEdgeDistance(previous, point, out var edgeDistance) ||
-                edgeDistance / interval > MaximumSpeedMetersPerSecond(sport))
-            {
-                EvaluateDistanceSegment(segment, targetMeters, ref bestSeconds);
-                segment.Clear();
-                segment.Add(new DistanceSample(point.Timestamp.Value, 0));
-                previous = point;
-                continue;
-            }
-
-            segment.Add(new DistanceSample(point.Timestamp.Value, segment[^1].CumulativeMeters + edgeDistance));
-            previous = point;
-        }
-
-        EvaluateDistanceSegment(segment, targetMeters, ref bestSeconds);
+        VisitDistanceSegments(
+            input,
+            sport,
+            DistanceEligibility.RequireGps,
+            segment => EvaluateDistanceSegment(segment, targetMeters, ref bestSeconds));
         return bestSeconds.HasValue ? new EffortResult(bestSeconds.Value, 100) : null;
+    }
+
+    public static EffortResult? BestTimedDistance(
+        IReadOnlyList<TrackPoint> input,
+        double targetSeconds,
+        SportKind sport)
+    {
+        if (targetSeconds <= 0 || !double.IsFinite(targetSeconds)) return null;
+
+        double? bestMeters = null;
+        VisitDistanceSegments(
+            input,
+            sport,
+            DistanceEligibility.AllowRecordedDistanceWithoutGps,
+            segment => EvaluateTimedDistanceSegment(segment, targetSeconds, ref bestMeters));
+        return bestMeters.HasValue ? new EffortResult(bestMeters.Value, 100) : null;
     }
 
     public static EffortResult? BestPower(
@@ -132,24 +116,139 @@ internal static class BestEffortCalculator
         }
     }
 
-
-    private static bool IsValidDistancePoint(TrackPoint point)
+    private static void EvaluateTimedDistanceSegment(
+        IReadOnlyList<DistanceSample> points,
+        double targetSeconds,
+        ref double? bestMeters)
     {
-        return point.Timestamp.HasValue &&
-               point.Latitude is >= -90 and <= 90 && double.IsFinite(point.Latitude.Value) &&
-               point.Longitude is >= -180 and <= 180 && double.IsFinite(point.Longitude.Value);
+        var count = points.Count;
+        if (count < 2) return;
+
+        var cumulative = new double[count];
+        var times = new double[count];
+        var firstTimestamp = points[0].Timestamp;
+        for (var index = 1; index < count; index++)
+        {
+            cumulative[index] = points[index].CumulativeMeters;
+            times[index] = (points[index].Timestamp - firstTimestamp).TotalSeconds;
+        }
+        if (times[^1] < targetSeconds) return;
+
+        var finishEdge = 0;
+        for (var begin = 0; begin < count - 1; begin++)
+        {
+            var finishTime = times[begin] + targetSeconds;
+            if (finishTime > times[^1]) break;
+
+            finishEdge = Math.Max(finishEdge, begin);
+            while (finishEdge + 1 < count && times[finishEdge + 1] <= finishTime)
+                finishEdge++;
+
+            var finishDistance = InterpolateDistance(cumulative, times, finishEdge, finishTime);
+            KeepHigher(ref bestMeters, finishDistance - cumulative[begin]);
+        }
+
+        var beginEdge = 0;
+        for (var finish = 1; finish < count; finish++)
+        {
+            var beginTime = times[finish] - targetSeconds;
+            if (beginTime < 0) continue;
+
+            while (beginEdge + 1 < finish && times[beginEdge + 1] <= beginTime)
+                beginEdge++;
+
+            var beginDistance = InterpolateDistance(cumulative, times, beginEdge, beginTime);
+            KeepHigher(ref bestMeters, cumulative[finish] - beginDistance);
+        }
     }
 
-    private static bool TryEdgeDistance(TrackPoint previous, TrackPoint current, out double distanceMeters)
+    private static double InterpolateDistance(
+        IReadOnlyList<double> cumulative,
+        IReadOnlyList<double> times,
+        int edgeStart,
+        double requestedTime)
+    {
+        if (times[edgeStart] == requestedTime || edgeStart == times.Count - 1)
+            return cumulative[edgeStart];
+
+        var fraction = (requestedTime - times[edgeStart]) / (times[edgeStart + 1] - times[edgeStart]);
+        return cumulative[edgeStart] + fraction * (cumulative[edgeStart + 1] - cumulative[edgeStart]);
+    }
+
+    private static void VisitDistanceSegments(
+        IReadOnlyList<TrackPoint> input,
+        SportKind sport,
+        DistanceEligibility eligibility,
+        Action<IReadOnlyList<DistanceSample>> visitor)
+    {
+        var segment = new List<DistanceSample>();
+        TrackPoint? previous = null;
+
+        foreach (var point in input)
+        {
+            if (!IsValidDistancePoint(point, eligibility))
+            {
+                visitor(segment);
+                segment.Clear();
+                previous = null;
+                continue;
+            }
+
+            if (previous is null)
+            {
+                segment.Add(new DistanceSample(point.Timestamp!.Value, 0));
+                previous = point;
+                continue;
+            }
+
+            var interval = (point.Timestamp!.Value - previous.Timestamp!.Value).TotalSeconds;
+            if (interval <= 0 ||
+                !TryEdgeDistance(previous, point, eligibility, out var edgeDistance) ||
+                edgeDistance / interval > MaximumSpeedMetersPerSecond(sport))
+            {
+                visitor(segment);
+                segment.Clear();
+                segment.Add(new DistanceSample(point.Timestamp.Value, 0));
+                previous = point;
+                continue;
+            }
+
+            segment.Add(new DistanceSample(point.Timestamp.Value, segment[^1].CumulativeMeters + edgeDistance));
+            previous = point;
+        }
+
+        visitor(segment);
+    }
+
+
+    private static bool IsValidDistancePoint(TrackPoint point, DistanceEligibility eligibility)
+    {
+        return point.Timestamp.HasValue &&
+               (eligibility == DistanceEligibility.AllowRecordedDistanceWithoutGps || HasValidCoordinates(point));
+    }
+
+    private static bool TryEdgeDistance(
+        TrackPoint previous,
+        TrackPoint current,
+        DistanceEligibility eligibility,
+        out double distanceMeters)
     {
         if (previous.DistanceMeters.HasValue && current.DistanceMeters.HasValue)
         {
             var previousDistance = previous.DistanceMeters.Value;
             var currentDistance = current.DistanceMeters.Value;
             distanceMeters = currentDistance - previousDistance;
-            return double.IsFinite(previousDistance) &&
-                   double.IsFinite(currentDistance) &&
-                   distanceMeters >= 0;
+            if (double.IsFinite(previousDistance) && double.IsFinite(currentDistance))
+                return distanceMeters >= 0;
+
+            if (eligibility == DistanceEligibility.RequireGps)
+                return false;
+        }
+
+        if (!HasValidCoordinates(previous) || !HasValidCoordinates(current))
+        {
+            distanceMeters = 0;
+            return false;
         }
 
         distanceMeters = GeometryCodec.HaversineMeters(
@@ -159,6 +258,10 @@ internal static class BestEffortCalculator
             current.Longitude!.Value);
         return double.IsFinite(distanceMeters) && distanceMeters >= 0;
     }
+
+    private static bool HasValidCoordinates(TrackPoint point) =>
+        point.Latitude is >= -90 and <= 90 && double.IsFinite(point.Latitude.Value) &&
+        point.Longitude is >= -180 and <= 180 && double.IsFinite(point.Longitude.Value);
 
     private static double MaximumSpeedMetersPerSecond(SportKind sport)
     {
@@ -173,6 +276,12 @@ internal static class BestEffortCalculator
     }
 
     private readonly record struct DistanceSample(DateTimeOffset Timestamp, double CumulativeMeters);
+    private enum DistanceEligibility
+    {
+        RequireGps,
+        AllowRecordedDistanceWithoutGps
+    }
+
     private static void EvaluatePowerSegment(
         IReadOnlyList<TrackPoint> points,
         int start,
@@ -231,6 +340,12 @@ internal static class BestEffortCalculator
     {
         if (candidate <= 0 || double.IsNaN(candidate) || double.IsInfinity(candidate)) return;
         if (!current.HasValue || candidate < current.Value) current = candidate;
+    }
+
+    private static void KeepHigher(ref double? current, double candidate)
+    {
+        if (candidate <= 0 || !double.IsFinite(candidate)) return;
+        if (!current.HasValue || candidate > current.Value) current = candidate;
     }
 
     private static void KeepHigher(ref EffortResult? current, double value, double coverage)

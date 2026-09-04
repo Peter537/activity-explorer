@@ -18,7 +18,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
-- Calculates an ordered catalog of cycling, running, and walking distance bests, 5-second through 2-hour power bests, and directional local segment efforts.
+- Calculates ordered cycling, running, and walking distance bests, timed distance bests from 5 minutes through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
 - Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Uses locally vendored MapLibre with a blank basemap by default; OpenFreeMap is a persistent, explicit global opt-in.
 - Watches optional local folders without moving or deleting the files in them.

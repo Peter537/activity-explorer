@@ -20,7 +20,7 @@
 </PageHeader>
 <details class="notice subtle methodology">
     <summary>How records qualify</summary>
-    <p>Only achieved benchmarks are shown. Distance efforts require valid GPS and continuous, plausible progress; power efforts require at least 98% coverage with no sample gap over 5 seconds.</p>
+    <p>Only achieved benchmarks are shown. Distance bests require valid GPS. Timed distance bests use elapsed time, so pauses and recording gaps count; indoor activities can qualify from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
 </details>
 @if (_records is null && _loadError is null)
 {
@@ -46,6 +46,7 @@ else
     {
         var activityRecords = sportGroup.Where(record => IsActivityRecord(record.Kind)).ToArray();
         var distanceRecords = sportGroup.Where(record => record.Kind == RecordKind.DistanceEffort).ToArray();
+        var timedDistanceRecords = sportGroup.Where(record => record.Kind == RecordKind.TimedDistanceEffort).ToArray();
         var powerRecords = sportGroup.Where(record => record.Kind == RecordKind.PowerCurve).ToArray();
         <section class="panel records-panel">
             <div class="panel-heading"><h2>@sportGroup.Key</h2><span>@ScopeLabel</span></div>
@@ -61,6 +62,13 @@ else
                 <div class="records-section">
                     <h3>Distance bests</h3>
                     @RecordTable(distanceRecords, $"{sportGroup.Key} distance bests")
+                </div>
+            }
+            @if (timedDistanceRecords.Length > 0)
+            {
+                <div class="records-section">
+                    <h3>Timed distance bests</h3>
+                    @RecordTable(timedDistanceRecords, $"{sportGroup.Key} timed distance bests")
                 </div>
             }
             @if (powerRecords.Length > 0)
@@ -128,7 +136,7 @@ else
 
     private static string Value(PersonalRecord record) => record.Kind switch
     {
-        RecordKind.Distance => Format.Distance(record.Value),
+        RecordKind.Distance or RecordKind.TimedDistanceEffort => Format.Distance(record.Value),
         RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
         RecordKind.Elevation => $"{record.Value:N0} m",
         RecordKind.AverageSpeed => $"{record.Value * 3.6:N1} km/h",

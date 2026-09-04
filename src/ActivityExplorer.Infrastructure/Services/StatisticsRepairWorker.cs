@@ -33,18 +33,24 @@ public sealed class StatisticsRepairWorker(
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var ownerIds = await db.Owners.AsNoTracking()
             .Where(owner => db.Activities.Any(activity => activity.OwnerId == owner.Id) &&
+                            !db.StatisticSnapshots.Any(snapshot =>
+                                snapshot.OwnerId == owner.Id &&
+                                snapshot.ComputationVersion > RecordCatalog.ComputationVersion) &&
                             (!db.StatisticSnapshots.Any(snapshot =>
                                  snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.All) ||
                              db.Activities.Any(activity => activity.OwnerId == owner.Id && !activity.IsIndoor) &&
                              !db.StatisticSnapshots.Any(snapshot =>
-                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Outdoor)))
+                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Outdoor) ||
+                             db.StatisticSnapshots.Any(snapshot =>
+                                 snapshot.OwnerId == owner.Id &&
+                                 snapshot.ComputationVersion < RecordCatalog.ComputationVersion)))
             .OrderBy(owner => owner.CreatedAtUtc)
             .Select(owner => owner.Id)
             .ToListAsync(cancellationToken);
 
         foreach (var ownerId in ownerIds)
         {
-            logger.LogInformation("Repairing missing record snapshots for owner {OwnerId}.", ownerId);
+            logger.LogInformation("Repairing missing or stale record snapshots for owner {OwnerId}.", ownerId);
             await statistics.RecomputeAsync(ownerId, cancellationToken);
         }
     }

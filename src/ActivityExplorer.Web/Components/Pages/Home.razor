@@ -89,7 +89,7 @@ else
 
     private static string RecordValue(PersonalRecord record) => record.Kind switch
     {
-        RecordKind.Distance => Format.Distance(record.Value),
+        RecordKind.Distance or RecordKind.TimedDistanceEffort => Format.Distance(record.Value),
         RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
         RecordKind.Elevation => $"{record.Value:N0} m",
         RecordKind.AverageSpeed => $"{record.Value * 3.6:N1} km/h",

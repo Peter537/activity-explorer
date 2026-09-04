@@ -6,7 +6,7 @@ internal readonly record struct RecordTarget(string Key, double Target, int Disp
 
 internal static class RecordCatalog
 {
-    public const int ComputationVersion = 1;
+    public const int ComputationVersion = 6;
 
     private static readonly RecordTarget[] RunningAndWalkingDistances =
     [
@@ -45,6 +45,27 @@ internal static class RecordCatalog
         new("200 km", 200_000, 14)
     ];
 
+    private static readonly RecordTarget[] RunningAndWalkingTimes =
+    [
+        new("5 min", 300, 0),
+        new("10 min", 600, 1),
+        new("15 min", 900, 2),
+        new("30 min", 1_800, 3),
+        new("1 hour", 3_600, 4),
+        new("2 hours", 7_200, 5)
+    ];
+
+    private static readonly RecordTarget[] CyclingTimes =
+    [
+        new("5 min", 300, 0),
+        new("10 min", 600, 1),
+        new("20 min", 1_200, 2),
+        new("30 min", 1_800, 3),
+        new("1 hour", 3_600, 4),
+        new("2 hours", 7_200, 5),
+        new("4 hours", 14_400, 6)
+    ];
+
     public static IReadOnlyList<RecordTarget> PowerTargets { get; } =
     [
         new("5 s", 5, 0),
@@ -71,6 +92,13 @@ internal static class RecordCatalog
         _ => []
     };
 
+    public static IReadOnlyList<RecordTarget> TimedDistanceTargets(SportKind sport) => sport switch
+    {
+        SportKind.Cycling => CyclingTimes,
+        SportKind.Running or SportKind.Walking => RunningAndWalkingTimes,
+        _ => []
+    };
+
     public static int CategoryOrder(RecordKind kind) => kind switch
     {
         RecordKind.Distance => 0,
@@ -78,7 +106,8 @@ internal static class RecordCatalog
         RecordKind.Elevation => 2,
         RecordKind.AverageSpeed => 3,
         RecordKind.DistanceEffort => 4,
-        RecordKind.PowerCurve => 5,
+        RecordKind.TimedDistanceEffort => 5,
+        RecordKind.PowerCurve => 6,
         _ => int.MaxValue
     };
 
@@ -87,6 +116,7 @@ internal static class RecordCatalog
         var targets = kind switch
         {
             RecordKind.DistanceEffort => DistanceTargets(sport),
+            RecordKind.TimedDistanceEffort => TimedDistanceTargets(sport),
             RecordKind.PowerCurve => PowerTargets,
             _ => []
         };
