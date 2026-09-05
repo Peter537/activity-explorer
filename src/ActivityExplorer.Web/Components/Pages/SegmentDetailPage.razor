@@ -61,7 +61,7 @@ else
         {
             <div class="effort-table-wrap">
                 <table class="effort-table">
-                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>@(_segment.Summary.Sport == SportKind.Cycling ? "Segment avg speed" : "Segment avg pace")</th><th>Heart rate</th><th>Cadence</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
+                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>@(_segment.Summary.Sport == SportKind.Cycling ? "Segment avg speed" : "Segment avg pace")</th><th>Heart rate</th><th>@Format.CadenceLabel(_segment.Summary.Sport)</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
                     <tbody>
                     @foreach (var effort in SortedEfforts)
                     {
@@ -72,7 +72,7 @@ else
                             <td>@Format.Duration(effort.MovingSeconds)</td>
                             <td>@Format.Speed(effort.AverageSpeed, _segment.Summary.Sport)</td>
                             <td>@Value(effort.AverageHeartRate, "bpm")</td>
-                            <td>@Value(effort.AverageCadence, "rpm")</td>
+                            <td>@Value(effort.AverageCadence, Format.CadenceUnit(_segment.Summary.Sport))</td>
                             <td>@Value(effort.AveragePower, "W")</td>
                             <td>@Value(effort.AverageTemperature, "deg C", 1)</td>
                             <td>@Value(effort.AverageRespiration, "brpm", 1)</td>
@@ -106,9 +106,9 @@ else
         </section>
         <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
             <TimeSeriesChart Title="Elevation" Unit="m" Points="_segment.SelectedEffortPoints" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
-            <TimeSeriesChart Title="@(_segment.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")" Unit="@(_segment.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" SummaryAverage="@SpeedOrPace(selected.AverageSpeed)" SummaryAverageLabel="@(selected.MetricsCurrent ? "Segment elapsed average" : "Legacy sample average")" />
+            <TimeSeriesChart Title="@Format.SpeedLabel(_segment.Summary.Sport)" Unit="@Format.SpeedUnit(_segment.Summary.Sport)" Points="_segment.SelectedEffortPoints" Selector="SpeedOrPace" Axis="_axis" SummaryAverage="@SpeedOrPace(selected.AverageSpeed)" SummaryAverageLabel="@(selected.MetricsCurrent ? "Segment elapsed average" : "Legacy sample average")" />
             <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.HeartRate)" Axis="_axis" SummaryAverage="@selected.AverageHeartRate" SummaryAverageLabel="@SensorAverageLabel(selected)" />
-            <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" SummaryAverage="@selected.AverageCadence" SummaryAverageLabel="@SensorAverageLabel(selected)" />
+            <TimeSeriesChart Title="@Format.CadenceLabel(_segment.Summary.Sport)" Unit="@Format.CadenceUnit(_segment.Summary.Sport)" Points="_segment.SelectedEffortPoints" Selector="@(point => point.Cadence)" Axis="_axis" SummaryAverage="@selected.AverageCadence" SummaryAverageLabel="@SensorAverageLabel(selected)" />
             <TimeSeriesChart Title="Power" Unit="W" Points="_segment.SelectedEffortPoints" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" SummaryAverage="@selected.AveragePower" SummaryAverageLabel="@SensorAverageLabel(selected)" />
             <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_segment.SelectedEffortPoints" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" SummaryAverage="@selected.AverageTemperature" SummaryAverageLabel="@SensorAverageLabel(selected)" />
             <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_segment.SelectedEffortPoints" Selector="@(point => point.RespirationRate)" Axis="_axis" SummaryAverage="@selected.AverageRespiration" SummaryAverageLabel="@SensorAverageLabel(selected)" />
@@ -198,10 +198,7 @@ else
 
     private double? SpeedOrPace(double? speedMetersPerSecond)
     {
-        if (speedMetersPerSecond is not > 0) return null;
-        return _segment?.Summary.Sport == SportKind.Cycling
-            ? speedMetersPerSecond * 3.6
-            : 1000d / speedMetersPerSecond / 60d;
+        return Format.SpeedOrPace(speedMetersPerSecond, _segment!.Summary.Sport);
     }
 
     private static string SensorAverageLabel(SegmentEffortSummary effort) =>

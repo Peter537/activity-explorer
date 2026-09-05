@@ -9,7 +9,7 @@
 <PageHeader Title="Activities" Summary="Search, filter, and inspect every imported activity." />
 <form class="filter-bar" aria-label="Activity filters" @onsubmit="Apply" @onsubmit:preventDefault>
     <label><span>Search</span><input @bind="_search" @bind:after="FiltersChanged" placeholder="Title or notes" /></label>
-    <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option><option value="Cycling">Cycling</option><option value="Running">Running</option><option value="Walking">Walking</option></select></label>
+    <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
     <details class="more-filters" open="@HasSecondaryFilters">
         <summary>More filters <span class="filter-count">@SecondaryFilterCount active</span></summary>
         <div class="filter-fields">
@@ -74,7 +74,14 @@ else
                     <span class="activity-title"><strong>@activity.Title</strong><small>@activity.OwnerName - @activity.StartTime.ToLocalTime().ToString("g") @if (activity.DeviceName is not null) { <text>- @activity.DeviceName</text> }</small></span>
                     <span><strong>@Format.Distance(activity.DistanceMeters)</strong><small>distance</small></span>
                     <span><strong>@Format.Duration(activity.MovingSeconds)</strong><small>moving</small></span>
-                    <span><strong>@($"{activity.ElevationMeters:N0} m")</strong><small>elevation</small></span>
+                    @if (activity.Sport == SportKind.Rowing)
+                    {
+                        <span><strong>@(activity.AveragePowerWatts.HasValue ? $"{activity.AveragePowerWatts:N0} W" : "--")</strong><small>average power</small></span>
+                    }
+                    else
+                    {
+                        <span><strong>@($"{activity.ElevationMeters:N0} m")</strong><small>elevation</small></span>
+                    }
                     <span class="row-arrow">&rarr;</span>
                 </a>
             </div>

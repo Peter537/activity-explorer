@@ -25,7 +25,7 @@ else if (_summary.ActivityCount == 0)
 else
 {
     <section class="metric-grid">
-        <MetricCard Label="Activities" Value="@_summary.ActivityCount.ToString("N0")" Hint="Cycling / Running / Walking" />
+        <MetricCard Label="Activities" Value="@_summary.ActivityCount.ToString("N0")" Hint="@Format.SupportedSports" />
         <MetricCard Label="Distance" Value="@Format.Distance(_summary.DistanceMeters)" />
         <MetricCard Label="Moving time" Value="@Format.Duration(_summary.MovingSeconds)" />
         <MetricCard Label="Elevation" Value="@($"{_summary.ElevationMeters:N0} m")" />
@@ -92,7 +92,7 @@ else
         RecordKind.Distance or RecordKind.TimedDistanceEffort => Format.Distance(record.Value),
         RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
         RecordKind.Elevation => $"{record.Value:N0} m",
-        RecordKind.AverageSpeed => $"{record.Value * 3.6:N1} km/h",
+        RecordKind.AverageSpeed => record.Sport == SportKind.Rowing ? Format.Speed(record.Value, record.Sport) : $"{record.Value * 3.6:N1} km/h",
         RecordKind.PowerCurve => $"{record.Value:N0} W",
         _ => $"{record.Value:N1}"
     };

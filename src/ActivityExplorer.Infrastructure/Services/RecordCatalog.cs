@@ -6,7 +6,28 @@ internal readonly record struct RecordTarget(string Key, double Target, int Disp
 
 internal static class RecordCatalog
 {
-    public const int ComputationVersion = 6;
+    public const int ComputationVersion = 7;
+
+    private static readonly RecordTarget[] RowingDistances =
+    [
+        new("100 m", 100, 0),
+        new("500 m", 500, 1),
+        new("1 km", 1_000, 2),
+        new("2 km", 2_000, 3),
+        new("5 km", 5_000, 4),
+        new("6 km", 6_000, 5),
+        new("10 km", 10_000, 6),
+        new("Half marathon", 21_097, 7),
+        new("Marathon", 42_195, 8)
+    ];
+
+    private static readonly RecordTarget[] RowingTimes =
+    [
+        new("1 min", 60, 0),
+        new("4 min", 240, 1),
+        new("30 min", 1_800, 2),
+        new("1 hour", 3_600, 3)
+    ];
 
     private static readonly RecordTarget[] RunningAndWalkingDistances =
     [
@@ -89,6 +110,7 @@ internal static class RecordCatalog
     {
         SportKind.Cycling => CyclingDistances,
         SportKind.Running or SportKind.Walking => RunningAndWalkingDistances,
+        SportKind.Rowing => RowingDistances,
         _ => []
     };
 
@@ -96,6 +118,7 @@ internal static class RecordCatalog
     {
         SportKind.Cycling => CyclingTimes,
         SportKind.Running or SportKind.Walking => RunningAndWalkingTimes,
+        SportKind.Rowing => RowingTimes,
         _ => []
     };
 

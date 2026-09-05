@@ -7,7 +7,7 @@
 <PageTitle>World Map - Activity Explorer</PageTitle>
 <PageHeader Title="World Map" Summary="Explore your activities, routes, and local segments together." />
 <form class="filter-bar map-filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
-    <label><span>Sport</span><select @bind="_sport"><option value="">All sports</option><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+    <label><span>Sport</span><select @bind="_sport"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
     <label><span>From</span><input type="date" @bind="_from" /></label>
     <label><span>To</span><input type="date" @bind="_to" /></label>
     <button class="button primary" type="submit">Apply filters</button>

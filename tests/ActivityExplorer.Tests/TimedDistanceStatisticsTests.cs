@@ -13,7 +13,7 @@ public sealed class TimedDistanceStatisticsTests
     public void Record_catalog_has_the_expected_timed_distance_targets_and_order()
     {
         Assert.Equal(7, (int)RecordKind.TimedDistanceEffort);
-        Assert.Equal(6, RecordCatalog.ComputationVersion);
+        Assert.Equal(7, RecordCatalog.ComputationVersion);
         Assert.Equal(
             [
                 ("5 min", 300d, 0),
@@ -101,7 +101,7 @@ public sealed class TimedDistanceStatisticsTests
     }
 
     [Fact]
-    public async Task Indoor_recorded_distance_qualifies_only_for_all_timed_distance_records()
+    public async Task Indoor_recorded_distance_qualifies_for_all_and_indoor_timed_distance_records()
     {
         var setup = await Setup.CreateAsync();
         var ownerId = await setup.AddOwnerAsync("Indoor cyclist");
@@ -125,11 +125,14 @@ public sealed class TimedDistanceStatisticsTests
         Assert.All(timed, record => Assert.Equal(100, record.CoveragePercent));
         Assert.DoesNotContain(all, record => record.Kind == RecordKind.DistanceEffort);
         Assert.Empty(outdoor);
+        var indoor = await statistics.GetRecordsAsync(ownerId, RecordScope.Indoor);
+        Assert.Equal(all.Select(record => (record.Key, record.Value)), indoor.Select(record => (record.Key, record.Value)));
     }
 
     [Theory]
     [InlineData(1)]
     [InlineData(5)]
+    [InlineData(6)]
     public async Task Repair_replaces_complete_stale_snapshots_and_is_idempotent(int staleVersion)
     {
         var setup = await Setup.CreateAsync();

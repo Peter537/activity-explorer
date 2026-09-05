@@ -16,7 +16,9 @@ internal static class BestEffortCalculator
         VisitDistanceSegments(
             input,
             sport,
-            DistanceEligibility.RequireGps,
+            sport == SportKind.Rowing
+                ? DistanceEligibility.AllowRecordedDistanceWithoutGps
+                : DistanceEligibility.RequireGps,
             segment => EvaluateDistanceSegment(segment, targetMeters, ref bestSeconds));
         return bestSeconds.HasValue ? new EffortResult(bestSeconds.Value, 100) : null;
     }
@@ -270,6 +272,7 @@ internal static class BestEffortCalculator
             SportKind.Cycling => 200,
             SportKind.Running => 60,
             SportKind.Walking => 30,
+            SportKind.Rowing => 30,
             _ => 30
         };
         return kilometersPerHour / 3.6;

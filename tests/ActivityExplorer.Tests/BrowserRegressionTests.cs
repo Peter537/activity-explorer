@@ -15,7 +15,7 @@ using Microsoft.Playwright;
 
 namespace ActivityExplorer.Tests;
 
-public sealed class BrowserRegressionTests
+public sealed partial class BrowserRegressionTests
 {
     private static readonly string[] MapEndpoints = ["activities", "routes", "segments"];
 

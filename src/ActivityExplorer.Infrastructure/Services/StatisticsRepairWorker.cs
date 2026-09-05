@@ -41,6 +41,9 @@ public sealed class StatisticsRepairWorker(
                              db.Activities.Any(activity => activity.OwnerId == owner.Id && !activity.IsIndoor) &&
                              !db.StatisticSnapshots.Any(snapshot =>
                                  snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Outdoor) ||
+                             db.Activities.Any(activity => activity.OwnerId == owner.Id && activity.IsIndoor) &&
+                             !db.StatisticSnapshots.Any(snapshot =>
+                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Indoor) ||
                              db.StatisticSnapshots.Any(snapshot =>
                                  snapshot.OwnerId == owner.Id &&
                                  snapshot.ComputationVersion < RecordCatalog.ComputationVersion)))

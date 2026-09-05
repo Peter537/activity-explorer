@@ -12,15 +12,16 @@
             <span>Record scope</span>
             <select id="record-scope" value="@ScopeValue" @onchange="ChangeScope" aria-describedby="record-scope-help">
                 <option value="all">All training (including indoor)</option>
+                <option value="indoor">Indoor only</option>
                 <option value="outdoor">Outdoor only</option>
             </select>
-            <small id="record-scope-help">Indoor and virtual sessions are excluded from Outdoor only.</small>
+            <small id="record-scope-help">Indoor only includes indoor, virtual, and GPS-less activities without an outdoor classification. Outdoor only excludes them.</small>
         </label>
     </Actions>
 </PageHeader>
 <details class="notice subtle methodology">
     <summary>How records qualify</summary>
-    <p>Only achieved benchmarks are shown. Distance bests require valid GPS. Timed distance bests use elapsed time, so pauses and recording gaps count; indoor activities can qualify from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
+    <p>Only achieved benchmarks are shown. Rowing distance bests can use valid per-point recorded distance without GPS; other sports require valid GPS. Distance and timed distance bests use elapsed time, so pauses and recording gaps count. Indoor activities can qualify for timed distance bests from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
 </details>
 @if (_records is null && _loadError is null)
 {
@@ -37,7 +38,7 @@ else if (_records?.Count == 0)
 {
     <section class="empty-state">
         <h2>No @ScopeLabel.ToLowerInvariant() records calculated</h2>
-        <p>@(_scope == RecordScope.Outdoor ? "Import an outdoor activity with GPS to calculate this record set." : "Import activities to calculate records.")</p>
+        <p>@(_scope switch { RecordScope.Outdoor => "Import an outdoor activity to calculate this record set.", RecordScope.Indoor => "Import an indoor activity to calculate this record set.", _ => "Import activities to calculate records." })</p>
     </section>
 }
 else
@@ -90,20 +91,21 @@ else
     [Parameter, SupplyParameterFromQuery(Name = "scope")]
     public string? QueryScope { get; set; }
 
-    private string ScopeValue => _scope == RecordScope.Outdoor ? "outdoor" : "all";
-    private string ScopeLabel => _scope == RecordScope.Outdoor ? "Outdoor only" : "All training";
+    private string ScopeValue => _scope switch { RecordScope.Outdoor => "outdoor", RecordScope.Indoor => "indoor", _ => "all" };
+    private string ScopeLabel => _scope switch { RecordScope.Outdoor => "Outdoor only", RecordScope.Indoor => "Indoor only", _ => "All training" };
 
     protected override void OnInitialized() => ProfileState.Changed += Changed;
 
     protected override async Task OnParametersSetAsync()
     {
         var isOutdoor = string.Equals(QueryScope, "outdoor", StringComparison.OrdinalIgnoreCase);
-        if (QueryScope is not null && !isOutdoor)
+        var isIndoor = string.Equals(QueryScope, "indoor", StringComparison.OrdinalIgnoreCase);
+        if (QueryScope is not null && !isOutdoor && !isIndoor)
         {
             Navigation.NavigateTo("/records", replace: true);
         }
 
-        _scope = isOutdoor ? RecordScope.Outdoor : RecordScope.All;
+        _scope = isOutdoor ? RecordScope.Outdoor : isIndoor ? RecordScope.Indoor : RecordScope.All;
         await Load();
     }
 
@@ -123,9 +125,12 @@ else
 
     private void ChangeScope(ChangeEventArgs args)
     {
-        var next = string.Equals(args.Value?.ToString(), "outdoor", StringComparison.Ordinal)
-            ? "/records?scope=outdoor"
-            : "/records";
+        var next = args.Value?.ToString() switch
+        {
+            "outdoor" => "/records?scope=outdoor",
+            "indoor" => "/records?scope=indoor",
+            _ => "/records"
+        };
         Navigation.NavigateTo(next);
     }
 
@@ -139,7 +144,7 @@ else
         RecordKind.Distance or RecordKind.TimedDistanceEffort => Format.Distance(record.Value),
         RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
         RecordKind.Elevation => $"{record.Value:N0} m",
-        RecordKind.AverageSpeed => $"{record.Value * 3.6:N1} km/h",
+        RecordKind.AverageSpeed => record.Sport == SportKind.Rowing ? Format.Speed(record.Value, record.Sport) : $"{record.Value * 3.6:N1} km/h",
         RecordKind.PowerCurve => $"{record.Value:N0} W",
         _ => $"{record.Value:N1}"
     };

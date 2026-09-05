@@ -53,7 +53,14 @@ else
         <MetricCard Label="Distance" Value="@Format.Distance(_activity.Summary.DistanceMeters)" />
         <MetricCard Label="Moving time" Value="@Format.Duration(_activity.Summary.MovingSeconds)" />
         <MetricCard Label="Elapsed time" Value="@Format.Duration(_activity.ElapsedSeconds)" />
-        <MetricCard Label="Elevation" Value="@($"{_activity.Summary.ElevationMeters:N0} m")" />
+        @if (IsRowing)
+        {
+            <MetricCard Label="Average power" Value="@Value(_activity.Summary.AveragePowerWatts, "W", 0)" />
+        }
+        else
+        {
+            <MetricCard Label="Elevation" Value="@($"{_activity.Summary.ElevationMeters:N0} m")" />
+        }
         <MetricCard Label="@(_activity.Summary.Sport == SportKind.Cycling ? "Average speed" : "Average pace")" Value="@Format.Speed(_activity.AverageSpeed, _activity.Summary.Sport)" />
     </section>
     @if (_editing)
@@ -81,20 +88,42 @@ else
         </div>
     </div>
     <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
-        <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
-        <TimeSeriesChart Title="@(_activity.Summary.Sport == SportKind.Cycling ? "Speed" : "Pace")"
-                         Unit="@(_activity.Summary.Sport == SportKind.Cycling ? "km/h" : "min/km")"
+        @if (!IsRowing || HasElevation)
+        {
+            <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
+        }
+        <TimeSeriesChart Title="@Format.SpeedLabel(_activity.Summary.Sport)"
+                         Unit="@Format.SpeedUnit(_activity.Summary.Sport)"
                          Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" />
         <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" />
         <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" />
-        <TimeSeriesChart Title="Cadence" Unit="rpm" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" />
+        <TimeSeriesChart Title="@Format.CadenceLabel(_activity.Summary.Sport)" Unit="@Format.CadenceUnit(_activity.Summary.Sport)" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" />
         <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" />
         <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" />
     </section>
     <section id="activity-details" class="detail-groups">
         <article class="panel"><h2>Timing</h2><dl class="detail-list"><dt>Timer time</dt><dd>@DurationOrDash(_activity.Rich.TimerSeconds)</dd><dt>Moving time</dt><dd>@Format.Duration(_activity.Summary.MovingSeconds) <small>@MovingLabel</small></dd><dt>Elapsed time</dt><dd>@Format.Duration(_activity.ElapsedSeconds)</dd></dl></article>
-        <article class="panel"><h2>Elevation</h2><dl class="detail-list"><dt>Ascent</dt><dd>@Value(_activity.Summary.ElevationMeters, "m", 0)</dd><dt>Descent</dt><dd>@Value(_activity.Rich.ElevationLoss, "m", 0)</dd><dt>Minimum</dt><dd>@Value(_activity.Rich.MinElevation, "m", 0)</dd><dt>Maximum</dt><dd>@Value(_activity.Rich.MaxElevation, "m", 0)</dd></dl></article>
-        <article class="panel"><h2>Heart rate & cadence</h2><dl class="detail-list"><dt>Average heart rate</dt><dd>@Value(_activity.AverageHeartRate, "bpm", 0)</dd><dt>Maximum heart rate</dt><dd>@Value(_activity.MaxHeartRate, "bpm", 0)</dd><dt>Average cadence</dt><dd>@Value(_activity.AverageCadence, "rpm", 0)</dd><dt>Maximum cadence</dt><dd>@Value(_activity.Rich.MaxCadence, "rpm", 0)</dd><dt>Pedal revolutions</dt><dd>@Value(_activity.Rich.PedalRevolutions, "", 0)</dd></dl></article>
+        @if (!IsRowing || HasElevation)
+        {
+            <article class="panel"><h2>Elevation</h2><dl class="detail-list"><dt>Ascent</dt><dd>@Value(_activity.Summary.ElevationMeters, "m", 0)</dd><dt>Descent</dt><dd>@Value(_activity.Rich.ElevationLoss, "m", 0)</dd><dt>Minimum</dt><dd>@Value(_activity.Rich.MinElevation, "m", 0)</dd><dt>Maximum</dt><dd>@Value(_activity.Rich.MaxElevation, "m", 0)</dd></dl></article>
+        }
+        <article class="panel">
+            <h2>@(IsRowing ? "Heart rate & stroke rate" : "Heart rate & cadence")</h2>
+            <dl class="detail-list">
+                <dt>Average heart rate</dt><dd>@Value(_activity.AverageHeartRate, "bpm", 0)</dd>
+                <dt>Maximum heart rate</dt><dd>@Value(_activity.MaxHeartRate, "bpm", 0)</dd>
+                <dt>@(IsRowing ? "Average stroke rate" : "Average cadence")</dt><dd>@Value(_activity.AverageCadence, Format.CadenceUnit(_activity.Summary.Sport), 0)</dd>
+                <dt>@(IsRowing ? "Maximum stroke rate" : "Maximum cadence")</dt><dd>@Value(_activity.Rich.MaxCadence, Format.CadenceUnit(_activity.Summary.Sport), 0)</dd>
+                @if (IsRowing)
+                {
+                    <dt>Total strokes</dt><dd>@Value(_activity.Metrics.FirstOrDefault(metric => metric.Key == "fit.total_strokes" && metric.Origin == ActivityMetricOrigin.Imported)?.NumericValue, "", 0)</dd>
+                }
+                else
+                {
+                    <dt>Pedal revolutions</dt><dd>@Value(_activity.Rich.PedalRevolutions, "", 0)</dd>
+                }
+            </dl>
+        </article>
         <article class="panel"><h2>Temperature & respiration</h2><dl class="detail-list"><dt>Average temperature</dt><dd>@Value(_activity.Rich.AverageTemperature, "deg C", 1)</dd><dt>Minimum / maximum</dt><dd>@Range(_activity.Rich.MinTemperature, _activity.Rich.MaxTemperature, "deg C")</dd><dt>Average respiration</dt><dd>@Value(_activity.Rich.AverageRespiration, "brpm", 1)</dd><dt>Minimum / maximum</dt><dd>@Range(_activity.Rich.MinRespiration, _activity.Rich.MaxRespiration, "brpm")</dd></dl></article>
         <article class="panel"><h2>Training effect</h2><dl class="detail-list"><dt>Aerobic</dt><dd>@Value(_activity.Rich.AerobicTrainingEffect, "", 1)</dd><dt>Anaerobic</dt><dd>@Value(_activity.Rich.AnaerobicTrainingEffect, "", 1)</dd><dt>Training load</dt><dd>@Value(_activity.Rich.TrainingLoad, "", 0)</dd></dl></article>
         <article class="panel"><h2>Calories</h2><dl class="detail-list"><dt>Total</dt><dd>@Value(_activity.Calories, "kcal", 0)</dd><dt>Resting / metabolic</dt><dd>@Value(_activity.Rich.RestingCalories, "kcal", 0)</dd><dt>Derived active</dt><dd>@Value(_activity.Rich.ActiveCalories, "kcal", 0)</dd></dl><p class="muted compact-note">Active calories are derived only when total and metabolic calories both exist in the FIT source.</p></article>
@@ -128,7 +157,7 @@ else
             @if (_activity.Laps.Count == 0) { <p class="muted">No lap data in the source.</p> }
             @foreach (var lap in _activity.Laps)
             {
-                <div class="compact-row"><strong>Lap @lap.Sequence</strong><span>@Format.Distance(lap.DistanceMeters)</span><span>@Format.Duration(lap.ElapsedSeconds)</span><span>@(lap.AverageHeartRate.HasValue ? $"{lap.AverageHeartRate:N0} bpm" : "--")</span></div>
+                <div class="compact-row"><strong>Lap @lap.Sequence</strong><span>@Format.Distance(lap.DistanceMeters)</span><span>@Format.Duration(lap.ElapsedSeconds)</span>@if (IsRowing) { <span>@Format.Speed(lap.ElapsedSeconds > 0 ? lap.DistanceMeters / lap.ElapsedSeconds : null, SportKind.Rowing)</span> }<span>@(lap.AverageHeartRate.HasValue ? $"{lap.AverageHeartRate:N0} bpm" : "--")</span></div>
             }
         </article>
         <article class="panel">
@@ -195,12 +224,11 @@ else
         _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title;
     }
 
-    private double? SpeedOrPace(TrackPoint point) =>
-        point.SpeedMetersPerSecond is not > 0
-            ? null
-            : _activity!.Summary.Sport == SportKind.Cycling
-                ? point.SpeedMetersPerSecond * 3.6
-                : 1000d / point.SpeedMetersPerSecond / 60d;
+    private double? SpeedOrPace(TrackPoint point) => Format.SpeedOrPace(point.SpeedMetersPerSecond, _activity!.Summary.Sport);
+    private bool IsRowing => _activity?.Summary.Sport == SportKind.Rowing;
+    private bool HasElevation => _activity?.Points.Any(point => point.ElevationMeters.HasValue) == true ||
+        _activity?.Rich.MinElevation.HasValue == true || _activity?.Rich.MaxElevation.HasValue == true ||
+        _activity?.Summary.ElevationMeters > 0 || _activity?.Rich.ElevationLoss > 0;
     private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
     private bool HasMap => _activity?.Points.Any(point => point.Latitude.HasValue && point.Longitude.HasValue) == true;
     private bool CanCreateSegment => _activity?.Points.Count(point => point.Latitude.HasValue && point.Longitude.HasValue) >= 2;

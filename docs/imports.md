@@ -28,7 +28,7 @@ Activity Explorer's supported bulk-history path is a user-requested Garmin accou
 6. Choose the downloaded outer ZIP and queue it directly. Do not extract, recompress, rename, or rearrange it first. Activity Explorer accepts both known uploaded-file folder families: Garmin documentation names `DI_Connect/DI_Connect-fitness-Uploaded-Files`, while some exports and maintained third-party guidance use `DI_CONNECT/DI-Connect-Uploaded-Files`. Matching is insensitive to case and underscore, hyphen, or space separators, and the same detection applies to nested activity archives.
 7. Request and import another complete export whenever you want to refresh the history. Repeated exports are safe: owner-scoped Garmin activity IDs, SHA-256 hashes, and the natural activity fingerprint prevent duplicate activities and redundant source rows.
 
-The importer ignores unrelated wellness files in a recognized account-export layout while retaining all archive protections. It reports unrecognized contents, corrupt activity files, and sports outside Cycling, Running, and Walking instead of silently misclassifying them.
+The importer ignores unrelated wellness files in a recognized account-export layout while retaining all archive protections. It reports unrecognized contents, corrupt activity files, and sports outside Cycling, Running, Walking, and Rowing instead of silently misclassifying them.
 
 The two recognized folder forms are documented by [Garmin Support](https://support.garmin.com/en-US/?faq=mZi3iyunkt3VSzheytHbz7) and [Gadgetbridge](https://gadgetbridge.org/basics/topics/garmin/import-garmin-connect/) (accessed 2026-08-06). Neither name is treated as the only possible casing or separator form.
 
@@ -81,7 +81,7 @@ The bulk archive can contain `.fit.gz`, `.gpx.gz`, and `.tcx.gz` recordings. Act
 
 A Strava export is useful for Strava-edited titles, descriptions, gear, and activities that originated outside Garmin. It should not replace a Garmin account export when Garmin Connect is the source of truth. Garmin says that initially linking Garmin Connect to Strava automatically sends the previous year of activities plus future uploads, so older Garmin history may be absent unless it was transferred separately. See [Garmin's connection guidance](https://support.garmin.com/en-US/?faq=4uYoMd5zEt22rg0iehnro9).
 
-Activity Explorer imports only Cycling, Running, and Walking recordings and reports unsupported or corrupt entries. The upload and extraction limits under [Archive protections](#archive-protections) apply. Accepted underlying activity files are copied into private original storage, but the complete outer Strava ZIP is not retained as an account backup. Keep the archive you downloaded from Strava.
+Activity Explorer imports only Cycling, Running, Walking, and Rowing recordings and reports unsupported or corrupt entries. The upload and extraction limits under [Archive protections](#archive-protections) apply. Accepted underlying activity files are copied into private original storage, but the complete outer Strava ZIP is not retained as an account backup. Keep the archive you downloaded from Strava.
 
 Activity Explorer does not import Strava's proprietary segment catalog and never contacts Strava while importing or testing.
 
@@ -110,7 +110,11 @@ Choose several files in one selection. Browser uploads are streamed separately w
 
 A Garmin identifier is accepted only from export filenames such as `123456_ACTIVITY.fit`; a FIT device serial number is never treated as an activity ID. Missing sensors remain missing rather than being inferred.
 
-Only Cycling, Running, and Walking are supported in 0.1.0, including indoor and virtual subtypes that clearly identify one of those sports.
+Only Cycling, Running, Walking, and Rowing are supported in 0.1.0, including indoor and virtual subtypes that clearly identify one of those sports.
+
+Rowing FIT files may identify the sport as Rowing or as Fitness Equipment with the Indoor Rowing subtype. Both import as Rowing. FIT parser version 2 preserves recorded stroke counts as Total strokes and cadence as stroke rate. GPS is not required for indoor rowing. Use the normal Multi-file import workflow to select several recordings at once.
+
+GPX/TCX files need an explicit supported sport label. In a Strava archive, matched rowing metadata can supply the sport when the XML sport is missing or Other. A standalone Other activity remains unsupported; the importer does not guess its sport.
 
 ## Deduplication
 

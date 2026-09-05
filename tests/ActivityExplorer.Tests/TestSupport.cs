@@ -127,6 +127,71 @@ internal static class TestSupport
         return path;
     }
 
+    public static string RowingFit(
+        string directory,
+        Dynastream.Fit.Sport sport = Dynastream.Fit.Sport.FitnessEquipment,
+        Dynastream.Fit.SubSport subSport = Dynastream.Fit.SubSport.IndoorRowing,
+        bool withGps = false,
+        bool withSensors = true,
+        int durationSeconds = 600)
+    {
+        var path = Path.Combine(directory, "654321_ACTIVITY.fit");
+        var start = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+        using var stream = File.Create(path);
+        var encoder = new Dynastream.Fit.Encode(stream, Dynastream.Fit.ProtocolVersion.V20);
+        var identity = new Dynastream.Fit.FileIdMesg();
+        identity.SetType(Dynastream.Fit.File.Activity);
+        identity.SetTimeCreated(new Dynastream.Fit.DateTime(start));
+        encoder.Write(identity);
+        for (var second = 0; second <= durationSeconds; second += 2)
+        {
+            var record = new Dynastream.Fit.RecordMesg();
+            record.SetTimestamp(new Dynastream.Fit.DateTime(start.AddSeconds(second)));
+            record.SetDistance(second * 2.5f);
+            record.SetEnhancedSpeed(2.5f);
+            if (withGps)
+            {
+                record.SetPositionLat(ToSemicircles(0));
+                record.SetPositionLong(ToSemicircles(second * 0.00002));
+            }
+            if (withSensors)
+            {
+                record.SetHeartRate(130);
+                record.SetCadence(24);
+                record.SetPower(100);
+            }
+            encoder.Write(record);
+        }
+        for (var lapIndex = 0; lapIndex < 2; lapIndex++)
+        {
+            var lap = new Dynastream.Fit.LapMesg();
+            lap.SetStartTime(new Dynastream.Fit.DateTime(start.AddSeconds(lapIndex * durationSeconds / 2)));
+            lap.SetTimestamp(new Dynastream.Fit.DateTime(start.AddSeconds((lapIndex + 1) * durationSeconds / 2)));
+            lap.SetTotalDistance(durationSeconds * 1.25f);
+            lap.SetTotalElapsedTime(durationSeconds / 2);
+            lap.SetTotalTimerTime(durationSeconds / 2);
+            encoder.Write(lap);
+        }
+        var session = new Dynastream.Fit.SessionMesg();
+        session.SetSport(sport);
+        session.SetSubSport(subSport);
+        session.SetStartTime(new Dynastream.Fit.DateTime(start));
+        session.SetTimestamp(new Dynastream.Fit.DateTime(start.AddSeconds(durationSeconds)));
+        session.SetTotalDistance(durationSeconds * 2.5f);
+        session.SetTotalElapsedTime(durationSeconds);
+        session.SetTotalTimerTime(durationSeconds);
+        session.SetEnhancedAvgSpeed(2.5f);
+        if (withSensors)
+        {
+            session.SetAvgCadence(24);
+            session.SetMaxCadence(28);
+            session.SetTotalCycles(240);
+        }
+        encoder.Write(session);
+        encoder.Close();
+        return path;
+    }
+
     private static int ToSemicircles(double degrees) =>
         (int)Math.Round(degrees * 2_147_483_648d / 180d);
 

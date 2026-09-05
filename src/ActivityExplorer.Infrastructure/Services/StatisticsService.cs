@@ -10,7 +10,7 @@ namespace ActivityExplorer.Infrastructure.Services;
 
 public sealed class StatisticsService(IDbContextFactory<ExplorerDbContext> contextFactory) : IStatisticsService
 {
-    private static readonly RecordScope[] AllScope = [RecordScope.All];
+    private static readonly RecordScope[] AllAndIndoorScopes = [RecordScope.All, RecordScope.Indoor];
     private static readonly RecordScope[] AllAndOutdoorScopes = [RecordScope.All, RecordScope.Outdoor];
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _ownerGates = new();
 
@@ -27,14 +27,16 @@ public sealed class StatisticsService(IDbContextFactory<ExplorerDbContext> conte
 
             foreach (var activity in activities)
             {
-                var scopes = activity.IsIndoor ? AllScope : AllAndOutdoorScopes;
+                var scopes = activity.IsIndoor ? AllAndIndoorScopes : AllAndOutdoorScopes;
                 foreach (var scope in scopes)
                 {
                     KeepHigher(snapshots, activity, scope, RecordKind.Distance, "Longest distance", activity.DistanceMeters, 100);
                     KeepHigher(snapshots, activity, scope, RecordKind.Duration, "Longest moving time", activity.MovingTimeSeconds, 100);
-                    KeepHigher(snapshots, activity, scope, RecordKind.Elevation, "Most elevation gain", activity.ElevationGainMeters, 100);
+                    if (activity.Sport != SportKind.Rowing)
+                        KeepHigher(snapshots, activity, scope, RecordKind.Elevation, "Most elevation gain", activity.ElevationGainMeters, 100);
                     if (activity.DistanceMeters >= 1_000 && activity.MovingTimeSeconds > 0)
-                        KeepHigher(snapshots, activity, scope, RecordKind.AverageSpeed, "Best average speed (activities >= 1 km)",
+                        KeepHigher(snapshots, activity, scope, RecordKind.AverageSpeed,
+                            activity.Sport == SportKind.Rowing ? "Best average split (activities >= 1 km)" : "Best average speed (activities >= 1 km)",
                             activity.DistanceMeters / activity.MovingTimeSeconds, 100);
                 }
 

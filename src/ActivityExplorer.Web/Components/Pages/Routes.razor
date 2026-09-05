@@ -16,7 +16,7 @@
         <h2>Route details</h2>
         <div class="form-grid">
             <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
-            <label><span>Sport</span><select @bind="_sport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label><span>Sport</span><select @bind="_sport">@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
             <label class="wide"><span>Name</span><input @bind="_name" /></label>
         </div>
     </section>

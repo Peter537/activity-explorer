@@ -5,7 +5,7 @@
 [![Blazor Web App](https://img.shields.io/badge/Blazor-Web%20App-512BD4?logo=blazor&logoColor=white)](https://dotnet.microsoft.com/apps/aspnet/web-apps/blazor)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Activity Explorer is a local, open-source Blazor application for exploring your cycling, running, and walking history. It works from files you own - Garmin account exports, Strava bulk exports, and individual FIT, GPX, TCX, GZ, or ZIP files - without API credentials, web scraping, or automated access to Garmin or Strava.
+Activity Explorer is a local, open-source Blazor application for exploring your cycling, running, walking, and rowing history. It works from files you own - Garmin account exports, Strava bulk exports, and individual FIT, GPX, TCX, GZ, or ZIP files - without API credentials, web scraping, or automated access to Garmin or Strava.
 
 Version **0.1.0** is deliberately local-first and has no login system. It binds to localhost by default and stores the database, imported originals, and logs outside the repository.
 
@@ -18,7 +18,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
-- Calculates ordered cycling, running, and walking distance bests, timed distance bests from 5 minutes through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
+- Calculates ordered cycling, running, walking, and rowing distance bests, timed distance bests from 1 minute through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
 - Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Uses locally vendored MapLibre with a blank basemap by default; OpenFreeMap is a persistent, explicit global opt-in.
 - Watches optional local folders without moving or deleting the files in them.
@@ -90,7 +90,7 @@ Back up the whole application-data directory while Activity Explorer is stopped.
 | GZ / ZIP | Safely expanded with traversal, symlink, nesting, count, and size limits |
 | Local segment path | One GPX, FIT segment/course, TCX, KML, or GeoJSON path; reviewed sport, trim, direction, and tolerance |
 
-Only cycling, running, and walking activities are imported. Indoor and virtual variants map to their base sport. Other sport files are reported and skipped. Segment path uploads are parsed into local geometry and then discarded; only the safe file name and normalized format remain as provenance.
+Only cycling, running, walking, and rowing activities are imported. Indoor and virtual variants map to their base sport. Other sport files are reported and skipped. Segment path uploads are parsed into local geometry and then discarded; only the safe file name and normalized format remain as provenance.
 
 See [Importing data](docs/imports.md) and [Legal and export guides](docs/legal-and-exports.md).
 

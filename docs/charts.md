@@ -34,6 +34,8 @@ These figures do not change when the display selects representative points for a
 
 ## Activity and effort streams
 
+Rowing pace uses minutes per 500 m in charts and time per 500 m in summary cards and lap splits. Stroke rate uses strokes per minute (spm). Recorded stroke totals appear as Total strokes in activity details. Indoor rowing needs no GPS for its distance axis when per-point distance was recorded; empty rowing elevation panels are omitted.
+
 Activity details and a selected segment effort use the same chart system for elevation, speed or pace, heart rate, cadence, power, temperature, and respiration when those fields were recorded. On a current selected effort, the speed or pace heading is labelled **Segment elapsed average** and uses saved segment distance divided by elapsed time. Sensor headings are labelled **Time-weighted average** and use the persisted timestamp-weighted value. A legacy effort is explicitly labelled **Legacy sample average** until recomputed. The plotted samples and displayed range remain the original recorded values in every case.
 
 Choose **Elapsed time** or **Distance** to change the shared horizontal axis. A selected effort's distance begins at `0 m`; whole-activity distance values are not carried into the effort chart. Moving the pointer across any populated chart places every other populated chart in that group at the same axis position. Each chart reports its own nearest retained representative sample, so values remain truthful when sensors were recorded at different intervals or have gaps.

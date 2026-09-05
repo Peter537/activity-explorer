@@ -17,7 +17,7 @@
         <div class="form-grid">
             <label><span>Segment path file</span><input id="@ImportInputId" class="segment-file-input" type="file" accept=".gpx,.fit,.tcx,.kml,.geojson,.json" /></label>
             <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
-            <label><span>Sport</span><select @bind="_importSport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label><span>Sport</span><select @bind="_importSport">@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
             <label><span>Name</span><input maxlength="240" @bind="_importName" @bind:event="oninput" /></label>
             <label><span>Start point (optional)</span><input type="number" min="0" placeholder="0" @bind="_importStart" @bind:event="oninput" /></label>
             <label><span>End point (optional)</span><input type="number" min="1" placeholder="Last point" @bind="_importEnd" @bind:event="oninput" /></label>
@@ -34,7 +34,7 @@
         <div class="panel-heading"><h2>Draw a segment</h2><span>@_drawn.Count points</span></div>
         <div class="form-grid">
             <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
-            <label><span>Sport</span><select @bind="_sport"><option>Cycling</option><option>Running</option><option>Walking</option></select></label>
+            <label><span>Sport</span><select @bind="_sport">@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
             <label><span>Name</span><input maxlength="240" @bind="_name" /></label>
             <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
         </div>

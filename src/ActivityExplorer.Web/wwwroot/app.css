@@ -92,6 +92,7 @@ small { display: block; color: var(--muted); }
 .sport-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
 .sport-dot.running { background: var(--orange); }
 .sport-dot.walking { background: var(--blue); }
+.sport-dot.rowing { background: #7653a6; }
 .record-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid #edf0ed; color: var(--ink); }
 .record-row strong { display: block; font-size: 17px; }
 .activity-list { display: flex; flex-direction: column; }
@@ -104,6 +105,7 @@ small { display: block; color: var(--muted); }
 .sport-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--green-soft); color: var(--green-dark); font-weight: 700; }
 .sport-icon.running { background: #fae8df; color: #95441e; }
 .sport-icon.walking { background: #e5ebfa; color: #2c57ac; }
+.sport-icon.rowing { background: #eee6f7; color: #66428c; }
 .row-arrow { color: var(--green); font-size: 18px; }
 .activity-selection-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: stretch; border-top: 1px solid #edf0ed; }
 .activity-selection-row:first-child { border-top: 0; }
@@ -402,6 +404,7 @@ textarea { min-height: 105px; resize: vertical; }
 .chart-canvas { position: relative; }
 .time-series-chart .chart-heading, .spark-chart .chart-heading { gap: 16px; }
 .time-series-chart .chart-heading > div { min-width: 0; }
+.time-series-chart .chart-heading > span { flex-shrink: 0; white-space: nowrap; }
 .time-series-chart .chart-heading small { display: block; margin-top: 2px; overflow: visible; color: var(--muted); line-height: 1.35; text-overflow: clip; white-space: normal; }
 .chart-plot-layout { display: grid; grid-template-columns: 50px minmax(0, 1fr); gap: 8px; min-width: 0; }
 .chart-y-axis { display: flex; height: 150px; align-items: flex-end; justify-content: space-between; flex-direction: column; color: var(--muted); font-size: 11px; line-height: 1; text-align: right; }

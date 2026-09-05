@@ -55,7 +55,7 @@ Unknown layouts can be reported with a fictional/minimized reproduction. Never a
 
 ## Activity was skipped
 
-Version 0.1.0 supports Cycling, Running, and Walking. Unsupported sports are skipped intentionally. A file also needs a usable timestamp and enough data to be represented.
+Version 0.1.0 supports Cycling, Running, Walking, and Rowing. Unsupported sports are skipped intentionally. A file also needs a usable timestamp and enough data to be represented.
 
 If an equivalent activity already exists for the same profile, the import enriches provenance rather than increasing the count.
 

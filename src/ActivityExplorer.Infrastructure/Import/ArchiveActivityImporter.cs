@@ -75,15 +75,17 @@ public sealed class ArchiveActivityImporter(
         foreach (var file in activityFiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var importer = fit.CanImport(file.PhysicalPath) ? (IActivityImporter)fit : xml;
             try
             {
-                var candidates = await importer.ReadAsync(file.PhysicalPath, sourceKind, cancellationToken);
+                var meta = metadata.Find(file);
+                var candidates = fit.CanImport(file.PhysicalPath)
+                    ? await fit.ReadAsync(file.PhysicalPath, sourceKind, cancellationToken)
+                    : await XmlActivityImporter.ReadAsync(file.PhysicalPath, sourceKind,
+                        meta is null ? null : Value(meta, "Activity Type"), cancellationToken);
                 foreach (var candidate in candidates)
                 {
                     var logicalName = ArchiveFileName(file.LogicalPath);
                     var logicalCandidate = candidate with { OriginalName = logicalName };
-                    var meta = metadata.Find(file);
                     var enriched = meta is null ? logicalCandidate : Enrich(logicalCandidate, meta);
                     var provider = sourceKind switch
                     {
@@ -361,6 +363,7 @@ public sealed class ArchiveActivityImporter(
         if (normalized?.Contains("ride") == true || normalized?.Contains("cycl") == true) return SportKind.Cycling;
         if (normalized?.Contains("run") == true) return SportKind.Running;
         if (normalized?.Contains("walk") == true || normalized?.Contains("hik") == true) return SportKind.Walking;
+        if (RowingLabels.IsRowing(value)) return SportKind.Rowing;
         return null;
     }
 

@@ -1,6 +1,6 @@
 namespace ActivityExplorer.Core.Domain;
 
-public enum SportKind { Cycling = 1, Running = 2, Walking = 3 }
+public enum SportKind { Cycling = 1, Running = 2, Walking = 3, Rowing = 4 }
 public enum SegmentSourceKind { Unknown = 0, Drawn = 1, Activity = 2, Route = 3, ImportedFile = 4 }
 public enum SourceKind { GarminArchive = 1, StravaArchive = 2, Fit = 3, Tcx = 4, Gpx = 5, WatchedFolder = 6 }
 public enum ImportStatus { Queued = 1, Running = 2, Completed = 3, CompletedWithWarnings = 4, Failed = 5, Interrupted = 6 }
@@ -14,7 +14,7 @@ public enum RecordKind
     PowerCurve = 6,
     TimedDistanceEffort = 7
 }
-public enum RecordScope { All = 1, Outdoor = 2 }
+public enum RecordScope { All = 1, Outdoor = 2, Indoor = 3 }
 public enum SourceProvider { Unknown = 0, Garmin = 1, Strava = 2 }
 public enum AcquisitionMethod { DirectUpload = 1, AccountExport = 2, WatchedFolder = 3 }
 public enum MovingTimeSource { FitSession = 1, EstimatedFromRecords = 2, SourceSummary = 3, Unavailable = 4 }

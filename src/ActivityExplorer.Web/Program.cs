@@ -6,6 +6,7 @@ using ActivityExplorer.Infrastructure.Import;
 using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Infrastructure.Storage;
 using ActivityExplorer.Web.Components;
+using ActivityExplorer.Web.Components.Shared;
 using ActivityExplorer.Web.Services;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting.StaticWebAssets;
@@ -194,7 +195,7 @@ internalApi.MapPost("/segments/import", async (
     if (!Guid.TryParse(request.Query["ownerId"], out var ownerId))
         return Results.BadRequest(new { error = "Select a profile before importing a segment path." });
     if (!Enum.TryParse<SportKind>(request.Query["sport"], true, out var sport) || !Enum.IsDefined(sport))
-        return Results.BadRequest(new { error = "Choose Cycling, Running, or Walking." });
+        return Results.BadRequest(new { error = $"Choose a supported sport: {Format.SupportedSports}." });
     var name = request.Query["name"].ToString().Trim();
     if (name.Length is < 1 or > 240)
         return Results.BadRequest(new { error = "Segment name must contain 1 to 240 characters." });
@@ -290,7 +291,7 @@ internalApi.MapPost("/routes/import", async (
     if (!Guid.TryParse(request.Query["ownerId"], out var ownerId))
         return Results.BadRequest(new { error = "Select a profile before importing a route." });
     if (!Enum.TryParse<SportKind>(request.Query["sport"], true, out var sport) || !Enum.IsDefined(sport))
-        return Results.BadRequest(new { error = "Choose Cycling, Running, or Walking." });
+        return Results.BadRequest(new { error = $"Choose a supported sport: {Format.SupportedSports}." });
     var name = request.Query["name"].ToString().Trim();
     if (name.Length is < 1 or > 240)
         return Results.BadRequest(new { error = "Route name must contain 1 to 240 characters." });

@@ -10,7 +10,7 @@ namespace ActivityExplorer.Infrastructure.Import;
 public sealed class FitActivityImporter : IActivityImporter
 {
     private const double SemicirclesToDegrees = 180d / 2_147_483_648d;
-    public const int CurrentParserVersion = 1;
+    public const int CurrentParserVersion = 2;
     private static readonly Regex GarminActivityName = new(@"(?<!\d)(?<id>\d{6,})_ACTIVITY\.fit$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
 
@@ -99,7 +99,7 @@ public sealed class FitActivityImporter : IActivityImporter
         stream.Position = 0;
         decoder.Read(stream);
 
-        var sport = MapSport(session?.GetSport());
+        var sport = MapSport(session?.GetSport(), session?.GetSubSport());
         var isIndoor = ClassifyIndoor(sport, session?.GetSubSport());
         var start = ToTimestamp(session?.GetStartTime())
             ?? records.FirstOrDefault(x => x.Timestamp.HasValue)?.Timestamp
@@ -157,7 +157,7 @@ public sealed class FitActivityImporter : IActivityImporter
             MaxHeartRate = session?.GetMaxHeartRate() ?? Max(heartRates),
             AverageCadence = session?.GetAvgCadence() ?? Average(cadences),
             MaxCadence = session?.GetMaxCadence() ?? Max(cadences),
-            PedalRevolutions = session?.GetTotalCycles(),
+            PedalRevolutions = sport == SportKind.Rowing ? null : session?.GetTotalCycles(),
             AveragePowerWatts = session?.GetAvgPower() ?? Average(powers),
             MaxPowerWatts = session?.GetMaxPower() ?? Max(powers),
             NormalizedPowerWatts = session?.GetNormalizedPower(),
@@ -174,7 +174,7 @@ public sealed class FitActivityImporter : IActivityImporter
             AerobicTrainingEffect = session?.GetTotalTrainingEffect(),
             AnaerobicTrainingEffect = session?.GetTotalAnaerobicTrainingEffect(),
             TrainingLoad = session?.GetTrainingLoadPeak(),
-            Metrics = SessionMetrics(session),
+            Metrics = SessionMetrics(session, sport),
             Points = records,
             Laps = laps
         };
@@ -191,11 +191,13 @@ public sealed class FitActivityImporter : IActivityImporter
         return new DateTimeOffset(date);
     }
 
-    private static SportKind MapSport(Sport? sport) => sport switch
+    private static SportKind MapSport(Sport? sport, SubSport? subSport) => sport switch
     {
         Sport.Cycling => SportKind.Cycling,
         Sport.Running => SportKind.Running,
         Sport.Walking => SportKind.Walking,
+        Sport.Rowing => SportKind.Rowing,
+        Sport.FitnessEquipment when subSport == SubSport.IndoorRowing => SportKind.Rowing,
         _ => throw new UnsupportedActivityException($"FIT sport '{sport?.ToString() ?? "unknown"}' is outside v0.1.0.")
     };
 
@@ -290,7 +292,7 @@ public sealed class FitActivityImporter : IActivityImporter
         return moving;
     }
 
-    private static IReadOnlyList<ActivityMetricCandidate> SessionMetrics(SessionMesg? session)
+    private static IReadOnlyList<ActivityMetricCandidate> SessionMetrics(SessionMesg? session, SportKind sport)
     {
         var metrics = new List<ActivityMetricCandidate>();
         void Add(string key, string label, double? value, string? unit = null)
@@ -303,6 +305,8 @@ public sealed class FitActivityImporter : IActivityImporter
         Add("fit.threshold_power", "Threshold power", session?.GetThresholdPower(), "W");
         Add("fit.training_stress_score", "Training stress score", session?.GetTrainingStressScore());
         Add("fit.intensity_factor", "Intensity factor", session?.GetIntensityFactor());
+        if (sport == SportKind.Rowing)
+            Add("fit.total_strokes", "Total strokes", session?.GetTotalCycles(), "strokes");
         return metrics;
     }
 

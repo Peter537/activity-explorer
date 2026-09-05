@@ -17,13 +17,19 @@ public sealed class XmlActivityImporter : IActivityImporter
             || extension.Equals(".tcx", StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<IReadOnlyList<ImportCandidate>> ReadAsync(
+    public Task<IReadOnlyList<ImportCandidate>> ReadAsync(
         string path,
         SourceKind sourceKind,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) => ReadAsync(path, sourceKind, null, cancellationToken);
+
+    internal static async Task<IReadOnlyList<ImportCandidate>> ReadAsync(
+        string path,
+        SourceKind sourceKind,
+        string? rowingFallback,
+        CancellationToken cancellationToken)
     {
         var sha = await Fingerprint.Sha256Async(path, cancellationToken);
-        var parsed = Parse(path, cancellationToken);
+        var parsed = Parse(path, rowingFallback, cancellationToken);
         var provider = sourceKind switch
         {
             SourceKind.GarminArchive => SourceProvider.Garmin,
@@ -37,7 +43,7 @@ public sealed class XmlActivityImporter : IActivityImporter
             null, provider, acquisition)];
     }
 
-    private static ParsedActivity Parse(string path, CancellationToken cancellationToken)
+    private static ParsedActivity Parse(string path, string? rowingFallback, CancellationToken cancellationToken)
     {
         var points = new List<TrackPoint>();
         var laps = new List<LapCandidate>();
@@ -171,6 +177,9 @@ public sealed class XmlActivityImporter : IActivityImporter
             throw new InvalidDataException("The XML activity contains no track points.");
         }
 
+        if ((string.IsNullOrWhiteSpace(sportText) || string.Equals(sportText.Trim(), "Other", StringComparison.OrdinalIgnoreCase)) &&
+            RowingLabels.IsRowing(rowingFallback))
+            sportText = rowingFallback;
         var sport = MapSport(sportText);
         var start = points.FirstOrDefault(x => x.Timestamp.HasValue)?.Timestamp
             ?? throw new InvalidDataException("The XML activity has no timestamps.");
@@ -195,7 +204,7 @@ public sealed class XmlActivityImporter : IActivityImporter
             AverageCadence = Average(points, x => x.Cadence),
             AveragePowerWatts = Average(points, x => x.PowerWatts),
             MaxPowerWatts = Max(points, x => x.PowerWatts),
-            Points = FillDistancesAndSpeeds(points),
+            Points = FillDistancesAndSpeeds(points, sport),
             Laps = laps
         };
     }
@@ -206,7 +215,8 @@ public sealed class XmlActivityImporter : IActivityImporter
         if (value?.Contains("cycl") == true || value?.Contains("bik") == true) return SportKind.Cycling;
         if (value?.Contains("run") == true) return SportKind.Running;
         if (value?.Contains("walk") == true || value?.Contains("hik") == true) return SportKind.Walking;
-        throw new UnsupportedActivityException("The GPX/TCX sport is missing or outside cycling, running, and walking.");
+        if (RowingLabels.IsRowing(text)) return SportKind.Rowing;
+        throw new UnsupportedActivityException("The GPX/TCX sport is missing or outside cycling, running, walking, and rowing.");
     }
 
     private static bool? ParseIndoor(string? text)
@@ -222,13 +232,36 @@ public sealed class XmlActivityImporter : IActivityImporter
         return value.Contains("outdoor", StringComparison.Ordinal) ? false : null;
     }
 
-    private static IReadOnlyList<TrackPoint> FillDistancesAndSpeeds(IReadOnlyList<TrackPoint> points)
+    private static IReadOnlyList<TrackPoint> FillDistancesAndSpeeds(IReadOnlyList<TrackPoint> points, SportKind sport)
     {
         var result = new List<TrackPoint>(points.Count);
+        var preserveDistanceGaps = sport == SportKind.Rowing && points.Any(point =>
+            point.Latitude is not (>= -90 and <= 90) || point.Longitude is not (>= -180 and <= 180));
         double cumulative = 0;
         TrackPoint? previous = null;
         foreach (var point in points)
         {
+            if (preserveDistanceGaps)
+            {
+                // Retain source distance gaps. Best efforts can use GPS edges independently.
+                double? rowingSpeed = null;
+                if (previous?.Timestamp is not null && point.Timestamp is not null)
+                {
+                    var seconds = (point.Timestamp.Value - previous.Timestamp.Value).TotalSeconds;
+                    if (seconds > 0)
+                    {
+                        var delta = point.DistanceMeters - previous.DistanceMeters;
+                        if (delta is null && previous.Latitude is >= -90 and <= 90 && previous.Longitude is >= -180 and <= 180 &&
+                            point.Latitude is >= -90 and <= 90 && point.Longitude is >= -180 and <= 180)
+                            delta = GeometryCodec.HaversineMeters(previous.Latitude.Value, previous.Longitude.Value,
+                                point.Latitude.Value, point.Longitude.Value);
+                        if (delta is >= 0 && double.IsFinite(delta.Value)) rowingSpeed = delta / seconds;
+                    }
+                }
+                result.Add(point with { SpeedMetersPerSecond = point.SpeedMetersPerSecond ?? rowingSpeed });
+                previous = point;
+                continue;
+            }
             if (previous?.Latitude is not null && previous.Longitude is not null && point.Latitude is not null && point.Longitude is not null)
             {
                 cumulative += GeometryCodec.HaversineMeters(previous.Latitude.Value, previous.Longitude.Value, point.Latitude.Value, point.Longitude.Value);
