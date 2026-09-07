@@ -10,13 +10,73 @@ namespace ActivityExplorer.Tests;
 public sealed class StatisticsBestEffortTests
 {
     [Fact]
+    public void Every_benchmark_catalog_and_display_order_increases_by_numeric_target()
+    {
+        foreach (var sport in Enum.GetValues<SportKind>())
+        {
+            foreach (var kind in new[] { RecordKind.DistanceEffort, RecordKind.TimedDistanceEffort, RecordKind.PowerCurve })
+            {
+                var targets = kind switch
+                {
+                    RecordKind.DistanceEffort => RecordCatalog.DistanceTargets(sport),
+                    RecordKind.TimedDistanceEffort => RecordCatalog.TimedDistanceTargets(sport),
+                    _ => RecordCatalog.PowerTargets
+                };
+                var ascending = targets.Select(target => target.Target).Order().ToArray();
+                Assert.Equal(ascending, targets.Select(target => target.Target));
+                Assert.Equal(ascending, targets.OrderBy(target => RecordCatalog.TargetOrder(sport, kind, target.Key))
+                    .Select(target => target.Target));
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(SportKind.Running)]
+    [InlineData(SportKind.Walking)]
+    public async Task Mixed_unit_distance_records_sort_by_distance_in_every_scope(SportKind sport)
+    {
+        var setup = await Setup.CreateAsync();
+        var owner = await setup.AddOwnerAsync("Mixed distance athlete");
+        var activity = await setup.AddActivityAsync(owner, sport, GpsTrack(601, 1), "Mixed distance activity");
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            foreach (var scope in Enum.GetValues<RecordScope>())
+            {
+                foreach (var key in new[] { "1 km", "1 mile", "1/2 mile", "400 m" })
+                {
+                    db.StatisticSnapshots.Add(new StatisticSnapshot
+                    {
+                        OwnerId = owner,
+                        ActivityId = activity,
+                        Sport = sport,
+                        Scope = scope,
+                        Kind = RecordKind.DistanceEffort,
+                        Key = key,
+                        Value = 300,
+                        CoveragePercent = 100,
+                        ComputationVersion = RecordCatalog.ComputationVersion
+                    });
+                }
+            }
+            await db.SaveChangesAsync();
+        }
+        var statistics = new StatisticsService(setup.Factory);
+        foreach (var scope in Enum.GetValues<RecordScope>())
+        {
+            var records = await statistics.GetRecordsAsync(owner, scope);
+            Assert.Equal(["400 m", "1/2 mile", "1 km", "1 mile"], records.Select(record => record.Key));
+            Assert.All(records, record => Assert.Equal(activity, record.ActivityId));
+        }
+    }
+
+    [Fact]
     public void Record_catalog_has_the_expected_ordered_targets()
     {
         Assert.Equal(
             ["5 km", "5 miles", "10 km", "10 miles", "20 km", "30 km", "40 km", "50 km", "80 km", "50 miles", "90 km", "100 km", "100 miles", "180 km", "200 km"],
             RecordCatalog.DistanceTargets(SportKind.Cycling).Select(target => target.Key));
 
-        string[] running = ["400 m", "1 km", "1/2 mile", "1 mile", "2 miles", "5 km", "10 km", "15 km", "10 miles", "20 km", "Half marathon", "30 km", "Marathon", "50 km"];
+        string[] running = ["400 m", "1/2 mile", "1 km", "1 mile", "2 miles", "5 km", "10 km", "15 km", "10 miles", "20 km", "Half marathon", "30 km", "Marathon", "50 km"];
         Assert.Equal(running, RecordCatalog.DistanceTargets(SportKind.Running).Select(target => target.Key));
         Assert.Equal(running, RecordCatalog.DistanceTargets(SportKind.Walking).Select(target => target.Key));
 

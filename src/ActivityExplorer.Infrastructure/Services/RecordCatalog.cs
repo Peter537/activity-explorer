@@ -32,8 +32,8 @@ internal static class RecordCatalog
     private static readonly RecordTarget[] RunningAndWalkingDistances =
     [
         new("400 m", 400, 0),
-        new("1 km", 1_000, 1),
-        new("1/2 mile", 804.672, 2),
+        new("1/2 mile", 804.672, 1),
+        new("1 km", 1_000, 2),
         new("1 mile", 1_609.344, 3),
         new("2 miles", 3_218.688, 4),
         new("5 km", 5_000, 5),

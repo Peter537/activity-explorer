@@ -47,7 +47,7 @@ Cycling uses these targets in display order:
 
 Running and Walking use:
 
-400 m, 1 km, 1/2 mile, 1 mile, 2 miles, 5 km, 10 km, 15 km, 10 miles, 20 km, half marathon, 30 km, marathon, and 50 km.
+400 m, 1/2 mile, 1 km, 1 mile, 2 miles, 5 km, 10 km, 15 km, 10 miles, 20 km, half marathon, 30 km, marathon, and 50 km.
 
 Rowing uses:
 

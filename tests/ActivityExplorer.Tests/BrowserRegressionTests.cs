@@ -215,6 +215,14 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Running");
             Assert.Equal(["Cycling", "Running", "Walking"],
                 (await selector.GetByRole(AriaRole.Link).AllTextContentsAsync()).Select(text => text.Trim()).ToArray());
+            foreach (var sport in new[] { "Walking", "Running" })
+            {
+                await selector.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = sport, Exact = true }).ClickAsync();
+                var distanceTable = page.GetByRole(AriaRole.Table, new PageGetByRoleOptions { Name = $"{sport} distance bests", Exact = true });
+                await Assertions.Expect(distanceTable).ToBeVisibleAsync();
+                Assert.Equal(["400 m", "1/2 mile", "1 km", "1 mile"],
+                    (await distanceTable.Locator("tbody th strong").AllTextContentsAsync()).Select(text => text.Trim()).ToArray());
+            }
             var cycling = selector.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = "Cycling", Exact = true });
             await cycling.FocusAsync();
             await cycling.PressAsync("Enter");
@@ -1199,7 +1207,18 @@ public sealed partial class BrowserRegressionTests
         runRecord.Sport = SportKind.Running;
         var walkRecord = BrowserRecord(walkerOwner.Id, walker.Id, RecordScope.All, RecordKind.Distance, "Longest distance", 1000);
         walkRecord.Sport = SportKind.Walking;
-        db.StatisticSnapshots.AddRange(runRecord, walkRecord);
+        var outdoorWalkRecord = BrowserRecord(walkerOwner.Id, walker.Id, RecordScope.Outdoor, RecordKind.Distance, "Longest distance", 1000);
+        outdoorWalkRecord.Sport = SportKind.Walking;
+        db.StatisticSnapshots.AddRange(runRecord, walkRecord, outdoorWalkRecord);
+        foreach (var source in new[] { runner, walker })
+        {
+            foreach (var key in new[] { "1 km", "1 mile", "1/2 mile", "400 m" })
+            {
+                var record = BrowserRecord(source.OwnerId, source.Id, RecordScope.All, RecordKind.DistanceEffort, key, 300);
+                record.Sport = source.Sport;
+                db.StatisticSnapshots.Add(record);
+            }
+        }
         await db.SaveChangesAsync();
         return new TimedDistanceRecordSeed(activity.Id);
     }
