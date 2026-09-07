@@ -4,9 +4,19 @@ Activity Explorer calculates records only from activity files imported into the 
 
 Only achieved records appear on the **Records** page. Each result links to its source activity and includes its profile, date, and source-data coverage. The table keeps these fields visible when rows restack on narrow screens.
 
+## Sport selection
+
+The Records page shows one sport at a time. Use the icons and sport names above the tables to switch sports. The selector lists sports with achieved records in All training for the selected profile, in Cycling, Running, Walking, and Rowing order. Sports remain available when you change record scope.
+
+Without an explicit sport choice, the page opens the available sport with the most imported activities across indoor and outdoor training. Ties use the selector order. All profiles counts stored activities across all profiles. A sport without calculated records cannot become the default.
+
+Selecting a sport adds its lowercase name to the URL, for example `/records?sport=rowing&scope=indoor`. Refresh and browser Back or Forward restore explicit choices. Changing scope preserves the sport. Changing profile also preserves it when available; otherwise the page removes the sport parameter and selects the new profile's default. Unsupported sport values are removed independently of scope. No last-used sport preference is stored.
+
+When a sport has no records in the selected scope, the page keeps it selected and offers **View all training**. A profile without records shows an import-oriented empty state without the selector.
+
 ## Record scope
 
-**All training (including indoor)** is the default. **Indoor only** includes activities classified as indoor or virtual, plus GPS-less activities without an explicit outdoor classification. **Outdoor only** excludes these activities. The route-local choices use `/records?scope=indoor` and `/records?scope=outdoor`; the default `/records` URL omits the query value. Refresh and browser Back or Forward restore the selected scope, while unsupported values normalize to the default.
+**All training (including indoor)** is the default. **Indoor only** includes activities classified as indoor or virtual, plus GPS-less activities without an explicit outdoor classification. **Outdoor only** excludes these activities. The route-local choices use `/records?scope=indoor` and `/records?scope=outdoor`; the default `/records` URL omits the query value. Refresh and browser Back or Forward restore the selected scope, while unsupported scope values normalize to All training without discarding a valid sport choice.
 
 Classification uses the strongest imported evidence available:
 

@@ -1,6 +1,7 @@
 @page "/records"
 @implements IDisposable
 @inject IStatisticsService Statistics
+@inject IActivityQueryService Activities
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @using ActivityExplorer.Web.Components.Shared
@@ -19,6 +20,41 @@
         </label>
     </Actions>
 </PageHeader>
+@if (_sports.Length > 0)
+{
+    <nav class="sport-selector" aria-labelledby="record-sport-label">
+        <span id="record-sport-label">Sport</span>
+        <div class="sport-options">
+            @foreach (var sport in _sports)
+            {
+                <a @key="sport" href="@RecordsUrl(sport, _scope)" aria-current="@(sport == _selectedSport ? "true" : null)">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                        @switch (sport)
+                        {
+                            case SportKind.Cycling:
+                                <circle cx="5" cy="17" r="4" /><circle cx="19" cy="17" r="4" />
+                                <path d="m5 17 5-9 5 9H5m5-9h7l2 9M8 5h4m4-1h3l1 3" />
+                                break;
+                            case SportKind.Running:
+                                <circle cx="15" cy="4" r="2" />
+                                <path d="m8 9 4-2 4 5 4 1M12 7l-2 7 5 3-2 5M10 14l-4 5H2" />
+                                break;
+                            case SportKind.Walking:
+                                <circle cx="13" cy="4" r="2" />
+                                <path d="m7 12 3-4 4 1 2 4 4 1M11 8l-1 7-4 7m4-7 4 1 2 6" />
+                                break;
+                            case SportKind.Rowing:
+                                <circle cx="13" cy="5" r="2" />
+                                <path d="m12 8-3 5 5 2 2 3M10 11l7 1M4 9l15 12M2 17h20l-3 4H6l-4-4" />
+                                break;
+                        }
+                    </svg>
+                    <span>@sport</span>
+                </a>
+            }
+        </div>
+    </nav>
+}
 <details class="notice subtle methodology">
     <summary>How records qualify</summary>
     <p>Only achieved benchmarks are shown. Rowing distance bests can use valid per-point recorded distance without GPS; other sports require valid GPS. Distance and timed distance bests use elapsed time, so pauses and recording gaps count. Indoor activities can qualify for timed distance bests from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
@@ -34,16 +70,24 @@ else if (_loadError is not null)
         <button class="button" @onclick="Load">Try again</button>
     </div>
 }
-else if (_records?.Count == 0)
+else if (_sports.Length == 0)
 {
     <section class="empty-state">
-        <h2>No @ScopeLabel.ToLowerInvariant() records calculated</h2>
-        <p>@(_scope switch { RecordScope.Outdoor => "Import an outdoor activity to calculate this record set.", RecordScope.Indoor => "Import an indoor activity to calculate this record set.", _ => "Import activities to calculate records." })</p>
+        <h2>No records calculated</h2>
+        <p>Import activities to calculate records.</p>
+    </section>
+}
+else if (!_records!.Any(record => record.Sport == _selectedSport))
+{
+    <section class="empty-state">
+        <h2>No @_selectedSport records for @ScopeLabel.ToLowerInvariant()</h2>
+        <p>No achieved records match this sport and scope.</p>
+        <a class="button" href="@RecordsUrl(_selectedSport, RecordScope.All)">View all training</a>
     </section>
 }
 else
 {
-    @foreach (var sportGroup in _records!.GroupBy(record => record.Sport))
+    @foreach (var sportGroup in _records!.Where(record => record.Sport == _selectedSport).GroupBy(record => record.Sport))
     {
         var activityRecords = sportGroup.Where(record => IsActivityRecord(record.Kind)).ToArray();
         var distanceRecords = sportGroup.Where(record => record.Kind == RecordKind.DistanceEffort).ToArray();
@@ -85,11 +129,20 @@ else
 
 @code {
     private IReadOnlyList<PersonalRecord>? _records;
+    private readonly Dictionary<RecordScope, IReadOnlyList<PersonalRecord>> _scopeRecords = [];
+    private IReadOnlyDictionary<SportKind, int> _activityCounts = new Dictionary<SportKind, int>();
+    private SportKind[] _sports = [];
+    private SportKind? _selectedSport;
     private RecordScope _scope = RecordScope.All;
+    private Guid? _loadedOwner;
+    private int _loadVersion;
     private string? _loadError;
 
     [Parameter, SupplyParameterFromQuery(Name = "scope")]
     public string? QueryScope { get; set; }
+
+    [Parameter, SupplyParameterFromQuery(Name = "sport")]
+    public string? QuerySport { get; set; }
 
     private string ScopeValue => _scope switch { RecordScope.Outdoor => "outdoor", RecordScope.Indoor => "indoor", _ => "all" };
     private string ScopeLabel => _scope switch { RecordScope.Outdoor => "Outdoor only", RecordScope.Indoor => "Indoor only", _ => "All training" };
@@ -98,40 +151,99 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
-        var isOutdoor = string.Equals(QueryScope, "outdoor", StringComparison.OrdinalIgnoreCase);
-        var isIndoor = string.Equals(QueryScope, "indoor", StringComparison.OrdinalIgnoreCase);
-        if (QueryScope is not null && !isOutdoor && !isIndoor)
+        _scope = QueryScope?.ToLowerInvariant() switch
         {
-            Navigation.NavigateTo("/records", replace: true);
-        }
-
-        _scope = isOutdoor ? RecordScope.Outdoor : isIndoor ? RecordScope.Indoor : RecordScope.All;
-        await Load();
+            "outdoor" => RecordScope.Outdoor,
+            "indoor" => RecordScope.Indoor,
+            _ => RecordScope.All
+        };
+        await RefreshRecords();
     }
 
-    private async Task Load()
+    private async Task RefreshRecords()
     {
+        var version = ++_loadVersion;
+        var owner = ProfileState.SelectedOwnerId;
+        var scope = _scope;
         _records = null;
         _loadError = null;
+        if (_loadedOwner != owner)
+        {
+            _scopeRecords.Clear();
+            _sports = [];
+        }
         try
         {
-            _records = await Statistics.GetRecordsAsync(ProfileState.SelectedOwnerId, _scope);
+            if (!_scopeRecords.TryGetValue(RecordScope.All, out var allRecords))
+            {
+                var recordsTask = Statistics.GetRecordsAsync(owner, RecordScope.All);
+                var countsTask = Activities.GetSportActivityCountsAsync(owner);
+                await Task.WhenAll(recordsTask, countsTask);
+                if (version != _loadVersion) return;
+                allRecords = await recordsTask;
+                _activityCounts = await countsTask;
+                _scopeRecords[RecordScope.All] = allRecords;
+                _loadedOwner = owner;
+                _sports = allRecords.Select(record => record.Sport).Distinct().Order().ToArray();
+            }
+
+            if (!_scopeRecords.TryGetValue(scope, out var records))
+            {
+                records = await Statistics.GetRecordsAsync(owner, scope);
+                if (version != _loadVersion) return;
+                _scopeRecords[scope] = records;
+            }
+            _records = records;
+            var requested = ParseSport(QuerySport);
+            var available = requested.HasValue && _sports.Contains(requested.Value);
+            _selectedSport = available ? requested : _sports
+                .OrderByDescending(sport => _activityCounts.GetValueOrDefault(sport))
+                .Select(sport => (SportKind?)sport).FirstOrDefault();
+
+            var canonicalScope = scope == RecordScope.All ? null : ScopeValue;
+            var canonicalSport = available ? requested!.Value.ToString().ToLowerInvariant() : null;
+            if (QueryScope != canonicalScope || QuerySport != canonicalSport)
+                Navigation.NavigateTo(RecordsUrl(available ? requested : null, scope), replace: true);
         }
         catch (Exception exception)
         {
-            _loadError = exception.Message;
+            if (version == _loadVersion) _loadError = exception.Message;
         }
+    }
+
+    private static SportKind? ParseSport(string? value) => value?.ToLowerInvariant() switch
+    {
+        "cycling" => SportKind.Cycling,
+        "running" => SportKind.Running,
+        "walking" => SportKind.Walking,
+        "rowing" => SportKind.Rowing,
+        _ => null
+    };
+
+    private static string RecordsUrl(SportKind? sport, RecordScope scope)
+    {
+        var parameters = new List<string>();
+        if (sport.HasValue) parameters.Add($"sport={sport.Value.ToString().ToLowerInvariant()}");
+        if (scope != RecordScope.All) parameters.Add($"scope={scope.ToString().ToLowerInvariant()}");
+        return parameters.Count == 0 ? "/records" : $"/records?{string.Join("&", parameters)}";
     }
 
     private void ChangeScope(ChangeEventArgs args)
     {
-        var next = args.Value?.ToString() switch
+        var scope = args.Value?.ToString() switch
         {
-            "outdoor" => "/records?scope=outdoor",
-            "indoor" => "/records?scope=indoor",
-            _ => "/records"
+            "outdoor" => RecordScope.Outdoor,
+            "indoor" => RecordScope.Indoor,
+            _ => RecordScope.All
         };
-        Navigation.NavigateTo(next);
+        Navigation.NavigateTo(RecordsUrl(ParseSport(QuerySport), scope));
+    }
+
+    private async Task Load()
+    {
+        _scopeRecords.Clear();
+        _sports = [];
+        await RefreshRecords();
     }
 
     private void Changed() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
@@ -173,5 +285,9 @@ else
         </table>
     </div>;
 
-    public void Dispose() => ProfileState.Changed -= Changed;
+    public void Dispose()
+    {
+        ++_loadVersion;
+        ProfileState.Changed -= Changed;
+    }
 }

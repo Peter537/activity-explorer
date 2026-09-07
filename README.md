@@ -128,7 +128,7 @@ The design keeps EF entities out of Razor components and exposes testable servic
 dotnet restore ActivityExplorer.slnx --locked-mode
 dotnet format ActivityExplorer.slnx --verify-no-changes --no-restore
 dotnet build ActivityExplorer.slnx --configuration Release --no-restore -m:1 -p:BuildInParallel=false
-dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore -m:1 -p:BuildInParallel=false
+dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore
 ~~~
 
 For a release candidate, also run the coverage gates, package advisory/deprecation check, isolated Playwright regressions, and loopback-only Docker smoke test documented in [Testing](docs/testing.md).

@@ -84,7 +84,7 @@ public sealed partial class BrowserRegressionTests
             await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.NetworkIdle });
             await Assertions.Expect(page.Locator("#record-scope")).ToHaveValueAsync("indoor");
             await page.Locator("#record-scope").SelectOptionAsync("outdoor");
-            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "No outdoor only records calculated" })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "No Rowing records for outdoor only" })).ToBeVisibleAsync();
             await page.GoBackAsync(new PageGoBackOptions { WaitUntil = WaitUntilState.NetworkIdle });
             await Assertions.Expect(page.Locator("#record-scope")).ToHaveValueAsync("indoor");
             await page.GoForwardAsync(new PageGoForwardOptions { WaitUntil = WaitUntilState.NetworkIdle });
@@ -100,7 +100,7 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Empty profile", Exact = true })).ToBeVisibleAsync();
             await page.GotoAsync(origin + "/records?scope=indoor", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "Empty profile" });
-            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "No indoor only records calculated" })).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "No records calculated" })).ToBeVisibleAsync();
             await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "Browser rower" });
             await Assertions.Expect(page.Locator("#record-scope")).ToHaveValueAsync("indoor");
             await Assertions.Expect(records).ToBeVisibleAsync();

@@ -210,6 +210,46 @@ public sealed partial class BrowserRegressionTests
             };
 
             await page.GotoAsync(origin + "/records", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            var selector = page.GetByRole(AriaRole.Navigation, new PageGetByRoleOptions { Name = "Sport", Exact = true });
+            await Assertions.Expect(page.Locator(".records-panel")).ToHaveCountAsync(1);
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Running");
+            Assert.Equal(["Cycling", "Running", "Walking"],
+                (await selector.GetByRole(AriaRole.Link).AllTextContentsAsync()).Select(text => text.Trim()).ToArray());
+            var cycling = selector.GetByRole(AriaRole.Link, new LocatorGetByRoleOptions { Name = "Cycling", Exact = true });
+            await cycling.FocusAsync();
+            await cycling.PressAsync("Enter");
+            await Assertions.Expect(cycling).ToHaveAttributeAsync("aria-current", "true");
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?sport=cycling");
+            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Cycling");
+            await page.Locator("#record-scope").SelectOptionAsync("indoor");
+            await Assertions.Expect(page.Locator(".empty-state")).ToContainTextAsync("No Cycling records for indoor only");
+            await Assertions.Expect(selector.GetByRole(AriaRole.Link)).ToHaveCountAsync(3);
+            await page.GoBackAsync();
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Cycling");
+            await page.GoForwardAsync();
+            await Assertions.Expect(page.Locator("#record-scope")).ToHaveValueAsync("indoor");
+            await page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "View all training", Exact = true }).ClickAsync();
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?sport=cycling");
+            await page.GotoAsync(origin + "/records?sport=running&scope=invalid", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?sport=running");
+            await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "Browser record athlete" });
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Running");
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?sport=running");
+            await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "Browser walker" });
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Walking");
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records");
+            await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "Browser empty athlete" });
+            await Assertions.Expect(page.Locator(".empty-state")).ToContainTextAsync("No records calculated");
+            await Assertions.Expect(selector).ToHaveCountAsync(0);
+            await page.GetByLabel("Profile selector").SelectOptionAsync(new SelectOptionValue { Label = "All profiles" });
+            await page.GotoAsync(origin + "/records?sport=invalid&scope=outdoor", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?scope=outdoor");
+            await Assertions.Expect(page.Locator(".empty-state")).ToContainTextAsync("No Running records for outdoor only");
+            await cycling.ClickAsync();
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records?sport=cycling&scope=outdoor");
+            await page.Locator("#record-scope").SelectOptionAsync("all");
+            await Assertions.Expect(page.Locator(".records-panel")).ToHaveCountAsync(1);
             var cyclingPanel = page.Locator(".records-panel").Filter(new LocatorFilterOptions { HasTextString = "Cycling" });
             var sectionHeadings = (await cyclingPanel.Locator(".records-section h3").AllTextContentsAsync())
                 .Select(heading => heading.Trim())
@@ -241,6 +281,18 @@ public sealed partial class BrowserRegressionTests
             {
                 await page.SetViewportSizeAsync(width, 1000);
                 await AssertNoDocumentOverflowAsync(page, $"Populated Records at {width} CSS pixels");
+                await Assertions.Expect(selector.GetByRole(AriaRole.Link)).ToHaveCountAsync(3);
+                foreach (var sportLink in await selector.GetByRole(AriaRole.Link).AllAsync())
+                {
+                    await Assertions.Expect(sportLink).ToBeVisibleAsync();
+                    Assert.True(await sportLink.EvaluateAsync<bool>("link => link.getBoundingClientRect().height >= 44"));
+                }
+                if (width is 375 or 1280)
+                {
+                    var captureDirectory = Path.Combine(root, "artifacts", "records-ui");
+                    Directory.CreateDirectory(captureDirectory);
+                    await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(captureDirectory, $"records-{width}.png"), FullPage = true });
+                }
                 await Assertions.Expect(timedTable).ToBeVisibleAsync();
                 await Assertions.Expect(timedRow.Locator("td")).ToHaveCountAsync(4);
                 foreach (var cell in await timedRow.Locator("td").AllAsync())
@@ -267,6 +319,16 @@ public sealed partial class BrowserRegressionTests
             }
 
             await page.SetViewportSizeAsync(1280, 1000);
+            await cycling.FocusAsync();
+            await cycling.PressAsync("Tab");
+            await page.Keyboard.PressAsync("Shift+Tab");
+            await Assertions.Expect(cycling).ToBeFocusedAsync();
+            Assert.True(await cycling.EvaluateAsync<bool>("link => getComputedStyle(link).outlineStyle != 'none'"));
+            await page.EmulateMediaAsync(new PageEmulateMediaOptions { ReducedMotion = ReducedMotion.Reduce });
+            await page.EvaluateAsync("document.documentElement.style.fontSize = '200%'; document.body.style.fontSize = '30px'");
+            await AssertNoDocumentOverflowAsync(page, "Records at 200% text size");
+            await Assertions.Expect(cycling).ToBeVisibleAsync();
+            await page.EvaluateAsync("document.documentElement.style.removeProperty('font-size'); document.body.style.removeProperty('font-size')");
             await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             var dashboardRecord = page.Locator(".record-row").Filter(new LocatorFilterOptions { HasTextString = "Cycling - 5 min" });
             await Assertions.Expect(dashboardRecord).ToContainTextAsync(
@@ -1126,6 +1188,18 @@ public sealed partial class BrowserRegressionTests
             BrowserRecord(owner.Id, activity.Id, RecordScope.All, RecordKind.TimedDistanceEffort, "5 min", 4_321),
             BrowserRecord(owner.Id, activity.Id, RecordScope.All, RecordKind.PowerCurve, "5 s", 275),
             BrowserRecord(owner.Id, activity.Id, RecordScope.Outdoor, RecordKind.DistanceEffort, "5 km", 900));
+        var runner = BrowserActivity(owner.Id, "Browser run", SportKind.Running, 1);
+        var walkerOwner = new OwnerProfile { DisplayName = "Browser walker" };
+        var walker = BrowserActivity(walkerOwner.Id, "Browser walk", SportKind.Walking, 2);
+        db.AddRange(runner, BrowserActivity(owner.Id, "Second browser run", SportKind.Running, 3),
+            walkerOwner, walker, new OwnerProfile { DisplayName = "Browser empty athlete" });
+        for (var index = 0; index < 3; index++)
+            db.Activities.Add(BrowserActivity(owner.Id, $"Uncalculated row {index}", SportKind.Rowing, index + 4));
+        var runRecord = BrowserRecord(owner.Id, runner.Id, RecordScope.All, RecordKind.Distance, "Longest distance", 2000);
+        runRecord.Sport = SportKind.Running;
+        var walkRecord = BrowserRecord(walkerOwner.Id, walker.Id, RecordScope.All, RecordKind.Distance, "Longest distance", 1000);
+        walkRecord.Sport = SportKind.Walking;
+        db.StatisticSnapshots.AddRange(runRecord, walkRecord);
         await db.SaveChangesAsync();
         return new TimedDistanceRecordSeed(activity.Id);
     }

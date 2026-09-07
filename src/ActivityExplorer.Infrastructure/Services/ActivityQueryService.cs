@@ -102,6 +102,17 @@ public sealed class ActivityQueryService(
                 .ToArray());
     }
 
+    public async Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(
+        Guid? ownerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var query = db.Activities.AsNoTracking().AsQueryable();
+        if (ownerId.HasValue) query = query.Where(x => x.OwnerId == ownerId);
+        return await query.GroupBy(x => x.Sport)
+            .Select(group => new { Sport = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(x => x.Sport, x => x.Count, cancellationToken);
+    }
+
     public async Task<DashboardSummary> GetDashboardAsync(Guid? ownerId, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);

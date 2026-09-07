@@ -15,6 +15,33 @@ namespace ActivityExplorer.Tests;
 public sealed class DatabaseIntegrationTests
 {
     [Fact]
+    public async Task Sport_activity_counts_include_uncalculated_activities_and_respect_profiles()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var first = await setup.SeedOwnerAsync("Count athlete");
+        var second = await setup.SeedOwnerAsync("Other count athlete");
+        var empty = await setup.SeedOwnerAsync("Empty count athlete");
+        await setup.SeedActivityAsync(first, "Ride", SportKind.Cycling);
+        await setup.SeedActivityAsync(first, "Run one", SportKind.Running);
+        await setup.SeedActivityAsync(first, "Run two", SportKind.Running);
+        await setup.SeedActivityAsync(second, "Other ride", SportKind.Cycling);
+        var storage = CreateStorageServices(setup);
+        var service = new ActivityQueryService(
+            setup.Factory, new StatisticsService(setup.Factory), new SegmentService(setup.Factory, new SegmentMatcher()),
+            storage.Originals, storage.FileOperations, storage.OwnerLock, NullLogger<ActivityQueryService>.Instance);
+
+        var counts = await service.GetSportActivityCountsAsync(first);
+        Assert.Equal(2, counts.Count);
+        Assert.Equal(1, counts[SportKind.Cycling]);
+        Assert.Equal(2, counts[SportKind.Running]);
+        Assert.Single(await service.GetSportActivityCountsAsync(second));
+        var combined = await service.GetSportActivityCountsAsync(null);
+        Assert.Equal(2, combined[SportKind.Cycling]);
+        Assert.Equal(2, combined[SportKind.Running]);
+        Assert.Empty(await service.GetSportActivityCountsAsync(empty));
+    }
+
+    [Fact]
     public async Task Ensure_created_builds_the_expected_schema_without_migration_history()
     {
         var setup = await DatabaseSetup.CreateAsync();

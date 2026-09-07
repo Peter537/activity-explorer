@@ -73,6 +73,7 @@ public interface IImportProcessor
 
 public interface IActivityQueryService
 {
+    Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(Guid? ownerId, CancellationToken cancellationToken = default);
     Task<PagedResult<ActivitySummary>> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
     Task<ActivityDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<DashboardSummary> GetDashboardAsync(Guid? ownerId, CancellationToken cancellationToken = default);

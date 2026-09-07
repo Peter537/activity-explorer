@@ -23,8 +23,55 @@
     line-height: 1.35;
 }
 
-.records-panel + .records-panel {
-    margin-top: 18px;
+.sport-selector {
+    margin-bottom: 20px;
+}
+
+.sport-selector > span {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 700;
+}
+
+.sport-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.sport-options a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 8px 14px;
+    border: 2px solid #dce5df;
+    border-radius: 10px;
+    background: #fff;
+    color: var(--ink);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.sport-options svg {
+    flex-shrink: 0;
+}
+
+.sport-options a:hover {
+    border-color: var(--green);
+}
+
+.sport-options a[aria-current="true"] {
+    border-color: var(--green);
+    background: #e3f1eb;
+    color: #0e644f;
+}
+
+.sport-options a:focus-visible {
+    outline: 3px solid var(--green);
+    outline-offset: 3px;
 }
 
 .records-panel .panel-heading > span {
