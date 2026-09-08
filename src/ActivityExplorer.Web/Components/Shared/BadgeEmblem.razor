@@ -1,0 +1,73 @@
+<svg class="badge-emblem @(Completed ? "earned" : "unearned")" viewBox="0 0 180 200" aria-hidden="true" focusable="false">
+    <path d="M90 5 169 49v99l-79 47-79-47V49Z" fill="@Rim" />
+    <path d="M90 11 164 53v92l-74 44-74-44V53Z" fill="var(--panel)" />
+    <path d="M90 17 158 56v85l-68 40-68-40V56Z" fill="@Dark" />
+    <path d="m22 116 47-49 40 47 24-29 25 31v25l-68 40-68-40Z" fill="@Accent" opacity=".55" />
+    <path d="m22 138 44-33 43 31 49-31v36l-68 40-68-40Z" fill="@Accent" />
+    <circle cx="130" cy="57" r="10" fill="#ffe2a0" opacity=".8" />
+    <g stroke="#fff9e9" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        @if (Definition.Artwork == "mountain")
+        {
+            <path d="m37 121 34-57 22 32 14-20 38 45Z" fill="#dceee9" stroke="none" />
+            <path d="m71 64-13 23 13-6 12 10m24-15-8 12 9-4 10 7" stroke="@Dark" stroke-width="3" />
+        }
+        else if (Definition.Artwork == "moon")
+        {
+            <path d="M109 52c-33-6-57 21-43 48 12 25 43 27 62 4-36 5-49-26-19-52Z" fill="#fff3c6" stroke="none" />
+            <path d="M128 80h12m-6-6v12M49 56h8m-4-4v8" stroke-width="2" />
+        }
+        else if (Definition.Artwork == "sun")
+        {
+            <circle cx="90" cy="85" r="23" fill="#ffcf72" stroke="none" />
+            <path d="M90 49v-8m0 88v-8M54 85h-8m88 0h-8M64 59l-6-6m64 64-6-6m0-52 6-6m-64 64 6-6" stroke="#ffdf91" stroke-width="3" />
+        }
+        else if (Definition.Artwork == "leaf")
+        {
+            <path d="M61 108C39 64 88 50 127 53c1 45-19 76-58 57" fill="#aee8b2" stroke="none" />
+            <path d="m56 125 49-52m-26 27 1-20m9 10 20-1" stroke="@Dark" stroke-width="4" />
+        }
+        else if (Definition.Artwork == "fireworks")
+        {
+            <path d="M76 58v-15m0 59V87M54 74H39m74 0H98M60 58 49 47m53 53L91 89m0-31 11-11m-53 53 11-11" stroke="#ffdd80" stroke-width="4" />
+            <path d="M120 117v-12m0 39v-12m-8-8h-12m40 0h-12" stroke-width="3" />
+        }
+        else if (Definition.Artwork == "clock")
+        {
+            <circle cx="90" cy="88" r="31" fill="@Accent" />
+            <path d="M90 68v21l15 10M81 46h18m-9 0v10" />
+        }
+        else if (Definition.Artwork is "calendar" or "count" or "variety")
+        {
+            <rect x="54" y="56" width="72" height="66" rx="7" fill="@Accent" />
+            <path d="M72 49v14m36-14v14M55 76h70m-51 23 12 12 22-25" />
+        }
+        else if (Definition.Sport == SportKind.Cycling)
+        {
+            <circle cx="53" cy="104" r="20" /><circle cx="127" cy="104" r="20" />
+            <path d="m53 104 24-39 25 39H53m24-39h39l11 39M67 56h18m24-5h12l5 13" />
+        }
+        else if (Definition.Sport == SportKind.Rowing)
+        {
+            <circle cx="93" cy="60" r="7" fill="#fff9e9" stroke="none" />
+            <path d="m89 75-15 23 29 9 13 16M80 89l34 3M52 77l78 61M35 119h111l-16 16H52Z" />
+        }
+        else
+        {
+            <circle cx="99" cy="52" r="8" fill="#fff9e9" stroke="none" />
+            <path d="m62 84 19-17 21 8 15 24 19 4M88 71l-13 36-25 26m25-26 26 8 8 23" />
+        }
+    </g>
+    <path d="m22 141 68 25 68-25v13l-68 40-68-40Z" fill="@Rim" />
+    <text x="90" y="155" text-anchor="middle" fill="white" font-size="@(TargetLabel.Length > 12 ? 12 : 17)" font-weight="800" stroke="@Dark" stroke-width="3" paint-order="stroke">@TargetLabel</text>
+    <text x="90" y="182" text-anchor="middle" fill="#17211d" font-size="10" font-weight="800">@(Edition == "lifetime" ? "LIFETIME" : Edition)</text>
+</svg>
+@code {
+    [Parameter, EditorRequired] public BadgeDefinition Definition { get; set; } = default!;
+    [Parameter] public string Edition { get; set; } = "lifetime";
+    [Parameter] public bool Completed { get; set; }
+    private string Accent => Definition.Sport switch { SportKind.Running => "#bf622f", SportKind.Walking => "#3f74ad", SportKind.Rowing => "#8661b4", _ => "#308773" };
+    private string Dark => Definition.Sport switch { SportKind.Running => "#603923", SportKind.Walking => "#243d61", SportKind.Rowing => "#40305d", _ => "#173e38" };
+    private string Rim => Definition.Points >= 8 ? "#e6b864" : Definition.Points >= 4 ? "#b7cbc8" : "#8fbaa9";
+    private string TargetLabel => Definition.Measure is BadgeMeasure.SpecialDate or BadgeMeasure.Morning or BadgeMeasure.Night
+        ? $"{Definition.Points} POINT" : $"{Definition.Target:0.####} {(Definition.Target == 1 && Definition.Unit == "activities" ? "activity" : Definition.Unit)}";
+}

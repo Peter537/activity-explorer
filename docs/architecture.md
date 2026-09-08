@@ -28,6 +28,12 @@ flowchart LR
 
 Razor components consume service DTOs; EF entities stay inside infrastructure.
 
+## Badge calculation
+
+`IBadgeService` reads profile settings and activity summaries in one consistent SQLite read transaction, then passes plain DTOs to the pure `BadgeEvaluator`. `BadgeCatalog` defines stable family/tier identifiers, targets, recurrence, points, requirements, and local vector artwork keys. Calendar groups and shared contributions are reused across tiers; streams are not loaded. Results, evidence, points, and levels are calculated on demand without an award table, background worker, or cross-request cache.
+
+The profile timezone and selected month determine the historical cutoff. Import order and source provenance do not affect an award's identity: profile, definition, and edition identify it. Every new read reflects committed imports, edits, transfers, and deletions. Profile timezone changes use the existing owner mutation lock and field. The Badges component cancels superseded requests and preserves query state in navigation. See [Badges and levels](badges.md) for the catalogue and qualification rules.
+
 ## Import lifecycle
 
 1. The browser obtains a no-store antiforgery token. A bounded multipart reader streams one upload to a `CreateNew` file under a unique staging directory. A watched-folder import copies a stable source into the same managed area.

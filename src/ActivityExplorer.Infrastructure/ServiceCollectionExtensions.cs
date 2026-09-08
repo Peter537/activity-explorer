@@ -44,6 +44,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISegmentService, SegmentService>();
         services.AddSingleton<IRouteService, RouteService>();
         services.AddSingleton<IStatisticsService, StatisticsService>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IBadgeService, BadgeService>();
         services.AddHostedService<StatisticsRepairWorker>();
         services.AddSingleton<IMapFeatureService, MapFeatureService>();
         services.AddSingleton<IMapSettingsService, MapSettingsService>();

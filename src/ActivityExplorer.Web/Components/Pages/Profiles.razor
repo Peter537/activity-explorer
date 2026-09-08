@@ -22,6 +22,15 @@
     <article class="entity-card">
         <span class="eyebrow">Profile</span><h2>@profile.DisplayName</h2>
         <div class="entity-metrics"><span><strong>@profile.ActivityCount</strong><small>activities</small></span><span><strong>@($"{profile.DistanceMeters / 1000:N1} km")</strong><small>distance</small></span></div>
+        <div class="profile-timezone">
+            <label for="@($"timezone-{profile.Id}")">Badge timezone</label>
+            <select id="@($"timezone-{profile.Id}")" value="@TimeZoneValue(profile)" @onchange="e => _timeZones[profile.Id] = e.Value?.ToString() ?? BadgeTimeZone.DefaultId">
+                @if (!AvailableTimeZones.Any(x => x.Id == TimeZoneValue(profile))) { <option value="@TimeZoneValue(profile)">@TimeZoneValue(profile)</option> }
+                @foreach (var zone in AvailableTimeZones) { <option value="@zone.Id">@zone.Id</option> }
+            </select>
+            <p class="muted">Controls badge dates and morning/night awards. Changing it recalculates historical badges and points.</p>
+            <button class="button" disabled="@_busy" @onclick="() => SaveTimeZone(profile)">Save timezone</button>
+        </div>
         <div class="card-actions"><a class="button" href="@($"/internal/profiles/{profile.Id}/export")">Export JSON</a><button class="button danger" @onclick="() => BeginDelete(profile)">Delete</button></div>
         @if (_deleting?.Id == profile.Id)
         {
@@ -38,6 +47,22 @@
     private bool _focusConfirmation;
     private bool _busy;
     private bool CanConfirmDelete => _deleting is not null && _confirmation == $"DELETE {_deleting.DisplayName}";
+    private readonly Dictionary<Guid, string> _timeZones = [];
+    private static IReadOnlyList<TimeZoneInfo> AvailableTimeZones { get; } = TimeZoneInfo.GetSystemTimeZones().OrderBy(x => x.Id).ToArray();
+    private string TimeZoneValue(ProfileSummary profile) => _timeZones.GetValueOrDefault(profile.Id, profile.TimeZoneId ?? BadgeTimeZone.DefaultId);
+
+    private async Task SaveTimeZone(ProfileSummary profile)
+    {
+        _busy = true;
+        try
+        {
+            await ProfilesService.UpdateTimeZoneAsync(profile.Id, TimeZoneValue(profile));
+            await ProfileState.RefreshAsync();
+            _message = $"Badge timezone saved for {profile.DisplayName}. Badges will use it on the next refresh.";
+        }
+        catch (Exception exception) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
 
     protected override async Task OnInitializedAsync() => await ProfileState.InitializeAsync();
 

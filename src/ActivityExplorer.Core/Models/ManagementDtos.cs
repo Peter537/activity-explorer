@@ -2,7 +2,7 @@ using ActivityExplorer.Core.Domain;
 
 namespace ActivityExplorer.Core.Models;
 
-public sealed record ProfileSummary(Guid Id, string DisplayName, int ActivityCount, double DistanceMeters, DateTimeOffset CreatedAt);
+public sealed record ProfileSummary(Guid Id, string DisplayName, int ActivityCount, double DistanceMeters, DateTimeOffset CreatedAt, string? TimeZoneId = null);
 public sealed record ProfileExport(string FileName, string Json);
 public sealed record ImportBatchSummary(
     Guid Id, Guid OwnerId, string OwnerName, string DisplayName, SourceKind SourceKind, ImportBatchKind Kind, ImportStatus Status,

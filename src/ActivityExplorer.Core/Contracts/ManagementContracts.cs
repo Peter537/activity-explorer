@@ -7,6 +7,7 @@ public interface IProfileService
 {
     Task<IReadOnlyList<ProfileSummary>> ListAsync(CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(string displayName, CancellationToken cancellationToken = default);
+    Task UpdateTimeZoneAsync(Guid ownerId, string timeZoneId, CancellationToken cancellationToken = default);
     Task DeleteAsync(Guid ownerId, string confirmation, CancellationToken cancellationToken = default);
     Task<ProfileExport> ExportAsync(Guid ownerId, CancellationToken cancellationToken = default);
 }

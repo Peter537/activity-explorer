@@ -1,0 +1,4 @@
+.profile-timezone { margin: 18px 0; }
+.profile-timezone label { display: block; font-weight: 600; margin-bottom: 6px; }
+.profile-timezone select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: white; }
+.profile-timezone p { font-size: 13px; margin-top: 8px; }

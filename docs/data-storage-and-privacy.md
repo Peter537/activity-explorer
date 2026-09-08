@@ -43,6 +43,10 @@ Local segment-path uploads are intentionally different. The endpoint parses one 
 
 SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Segment efforts store the matched stream indices and derived metrics rather than a duplicate stream. Current effort rows include nullable recorded GPS-polyline distance and a non-null calculation version; segment definition distance and terrain metrics remain on the segment. Segment provenance records source kind and may include a user-supplied base file name and normalized format. Treat the root as private health and location data even when profile names are fictional.
 
+## Badge settings
+
+Profiles also store an optional badge timezone, defaulting to Europe/Copenhagen. Changing it updates badge calendar interpretation without rewriting imported timestamps or source offsets. Badge results and points are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).
+
 ## Network behavior
 
 Every map starts in persistent global `Blank` mode. Blank mode uses local MapLibre assets and an in-memory style and makes zero requests to external map hosts. Activity, route, segment, and drawing maps all read the same setting before initialization.

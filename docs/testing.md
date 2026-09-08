@@ -48,6 +48,10 @@ The browser matrix also verifies:
 
 ## Covered behavior
 
+Badge tests cover retrospective 2018 awards, stacked tiers, deduplicated identities, historical cutoffs, all metric targets, missing-data and duration gates, profile timezones and DST, calendar boundaries and leap days, active-day aggregation, consecutive weeks across years, level thresholds, and the five fictional scoring scenarios. SQLite lifecycle tests exercise duplicate imports, transfers, deletion/reimport, corrections, timezone validation/export, invalid-profile recovery, and fresh-service reads. A 10,000-activity benchmark checks two summary queries with no stream reads; its local performance target is one second and its test ceiling is five seconds to tolerate instrumented CI runs. The catalogue reference in the badge guide is checked against every executable family target and point tier.
+
+The isolated badge browser regression covers separate profile summaries, preserved query state, April 2026 snapshots, pagination, filters, edition history, qualifying activity links, collection grouping, empty profiles, missing badges, keyboard entry, enlarged text, reduced motion, and the existing 320–1920 pixel viewport matrix. It saves desktop and mobile screenshots under its isolated runtime data directory.
+
 Coverage includes:
 
 - rowing FIT imports with both Rowing and FitnessEquipment/IndoorRowing classifications, stroke totals, missing sensors, XML/Strava rowing labels, independent Indoor records, GPS-free fixed-distance benchmarks, and rowing pace/stroke-rate browser displays;

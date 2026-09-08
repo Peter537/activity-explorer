@@ -20,7 +20,7 @@ public sealed class ProfileService(
             .Select(x => new ProfileSummary(x.Id, x.DisplayName,
                 db.Activities.Count(a => a.OwnerId == x.Id),
                 db.Activities.Where(a => a.OwnerId == x.Id).Sum(a => a.DistanceMeters),
-                x.CreatedAtUtc))
+                x.CreatedAtUtc, x.TimeZoneId))
             .ToListAsync(cancellationToken);
     }
 
@@ -36,6 +36,20 @@ public sealed class ProfileService(
         await db.SaveChangesAsync(cancellationToken);
         paths.GetOwnerOriginalsPath(owner.Id);
         return owner.Id;
+    }
+
+    public async Task UpdateTimeZoneAsync(Guid ownerId, string timeZoneId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(timeZoneId) || timeZoneId.Length > 120)
+            throw new ArgumentException("Choose a valid badge timezone.", nameof(timeZoneId));
+        var zone = BadgeTimeZone.Resolve(timeZoneId.Trim());
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var owner = await db.Owners.SingleOrDefaultAsync(x => x.Id == ownerId, cancellationToken)
+            ?? throw new InvalidOperationException("Profile was not found.");
+        owner.TimeZoneId = zone.Id;
+        owner.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task DeleteAsync(Guid ownerId, string confirmation, CancellationToken cancellationToken = default)
@@ -124,7 +138,7 @@ public sealed class ProfileService(
             schemaVersion = 1,
             productVersion = "0.1.0",
             exportedAtUtc = DateTimeOffset.UtcNow,
-            profile = new { owner.Id, owner.DisplayName, owner.CreatedAtUtc },
+            profile = new { owner.Id, owner.DisplayName, owner.CreatedAtUtc, timeZoneId = owner.TimeZoneId ?? BadgeTimeZone.DefaultId },
             activities
         }, ExportJsonOptions);
         return new ProfileExport($"{SafeName(owner.DisplayName)}-activity-explorer.json", payload);

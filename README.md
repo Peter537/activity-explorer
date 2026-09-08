@@ -19,6 +19,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
 - Calculates ordered cycling, running, walking, and rowing distance bests, timed distance bests from 1 minute through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
+- Awards retrospective metric badges, related calendar editions, points, and progressive levels per profile, with monthly snapshots and activity evidence. See [Badges and levels](docs/badges.md).
 - Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Uses locally vendored MapLibre with a blank basemap by default; OpenFreeMap is a persistent, explicit global opt-in.
 - Watches optional local folders without moving or deleting the files in them.
@@ -138,6 +139,7 @@ No default test performs a live Garmin or Strava request. Test data is synthetic
 - [Architecture](docs/architecture.md)
 - [Understanding charts](docs/charts.md)
 - [Records methodology](docs/records.md)
+- [Badges and levels](docs/badges.md)
 - [Segment methodology](docs/segments.md)
 - [Testing](docs/testing.md)
 - [Troubleshooting](docs/troubleshooting.md)
