@@ -172,7 +172,12 @@
     min-width: 0;
     color: var(--text);
     text-decoration: none;
+    min-height: 24px;
+    align-content: center;
 }
+
+.records-table tbody th a:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
+.records-table tbody th .activity-link:hover small { text-decoration: underline; text-underline-offset: 3px; }
 
 .records-table tbody th a:hover strong {
     color: var(--accent);

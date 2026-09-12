@@ -1,0 +1,196 @@
+@page "/records/attempts"
+@attribute [StreamRendering]
+@implements IDisposable
+@inject IStatisticsService Statistics
+@inject ProfileState ProfileState
+@inject NavigationManager Navigation
+@inject ILogger<RecordAttempts> Logger
+
+<PageTitle>@Title - Activity Explorer</PageTitle>
+<PageHeader Title="@Title">
+    <Metadata>
+        @if (_result is not null) { <span>@_result.Benchmark.Category</span> }
+        <span>@RecordDisplay.ScopeLabel(_scope)</span>
+    </Metadata>
+    <Actions><a class="button" href="@BackUrl">Back to Records</a></Actions>
+</PageHeader>
+
+@if (_invalid)
+{
+    <section class="empty-state"><h2>Benchmark not found</h2><p>Choose an achieved benchmark from Records.</p></section>
+}
+else if (_error)
+{
+    <section class="notice error" role="alert"><h2>Attempts could not be loaded</h2><p>Try loading this benchmark again.</p><button class="button" @onclick="Load">Try again</button></section>
+}
+else if (_result is null)
+{
+    <div class="loading" role="status">Calculating benchmark attempts...</div>
+}
+else
+{
+    <section class="panel attempts-panel">
+        <div class="attempt-controls">
+            <p role="status">@_result.Attempts.Total.ToString("N0") @(_result.Attempts.Total == 1 ? "attempt" : "attempts") · strongest first</p>
+            @if (!_result.Benchmark.IsWholeActivity)
+            {
+                <label for="attempt-mode"><span>Attempts per activity</span>
+                    <select id="attempt-mode" value="@(_multiple ? "multiple" : "best")" @onchange="ChangeMode" aria-describedby="attempt-mode-help">
+                        <option value="best">Best only</option><option value="multiple">Multiple, non-overlapping</option>
+                    </select>
+                </label>
+            }
+        </div>
+        @if (!_result.Benchmark.IsWholeActivity)
+        {
+            <p class="muted attempt-help" id="attempt-mode-help">@(_multiple
+                ? "Each activity contributes its strongest attempt first, then its strongest remaining non-overlapping attempts. Adjacent attempts may share an endpoint."
+                : "Each activity contributes its best qualifying attempt. Choose multiple to include further non-overlapping efforts.")</p>
+        }
+        @if (_result.Attempts.Total == 0)
+        {
+            <div class="empty-state"><h2>No matching attempts</h2><p>No qualifying attempts match this benchmark, profile, and training scope.</p><a href="@BackUrl">Choose another benchmark or scope in Records</a></div>
+        }
+        else
+        {
+            <div class="attempt-table-wrap">
+                <table class="attempt-table">
+                    <caption class="visually-hidden">@Title</caption>
+                    <thead><tr><th scope="col">Rank</th><th scope="col">Result</th><th scope="col">Activity</th><th scope="col">Profile</th><th scope="col">Date</th><th scope="col">Coverage</th><th scope="col">Position in activity</th></tr></thead>
+                    <tbody>
+                    @for (var index = 0; index < _result.Attempts.Items.Count; index++)
+                    {
+                        var attempt = _result.Attempts.Items[index];
+                        <tr>
+                            <td data-label="Rank">@(((_result.Attempts.Page - 1) * _result.Attempts.PageSize + index + 1).ToString("N0"))</td>
+                            <td data-label="Result"><strong>@RecordDisplay.Value(_result.Benchmark.Sport, _result.Benchmark.Kind, attempt.Value)</strong></td>
+                            <th scope="row" data-label="Activity"><a href="@($"/activities/{attempt.ActivityId}")">@attempt.ActivityTitle</a></th>
+                            <td data-label="Profile">@attempt.OwnerName</td>
+                            <td data-label="Date">@attempt.ActivityDate.ToLocalTime().ToString("d")</td>
+                            <td data-label="Coverage">@attempt.CoveragePercent.ToString("N0")%</td>
+                            <td data-label="Position in activity">@Position(attempt)</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            @if (_result.Attempts.TotalPages > 1)
+            {
+                <nav class="attempt-pagination" aria-label="Attempt pages">
+                    @if (_result.Attempts.Page > 1) { <a class="button" href="@Url(_result.Attempts.Page - 1)">Previous</a> }
+                    <span>Page @_result.Attempts.Page of @_result.Attempts.TotalPages</span>
+                    @if (_result.Attempts.Page < _result.Attempts.TotalPages) { <a class="button" href="@Url(_result.Attempts.Page + 1)">Next</a> }
+                </nav>
+            }
+        }
+    </section>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "kind")] public string? QueryKind { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "key")] public string? QueryKey { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "scope")] public string? QueryScope { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "owner")] public string? QueryOwner { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "mode")] public string? QueryMode { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "page")] public string? QueryPage { get; set; }
+
+    private RecordAttemptPage? _result;
+    private SportKind? _sport;
+    private RecordKind? _kind;
+    private RecordScope _scope;
+    private Guid? _owner;
+    private bool _multiple, _invalid, _error, _syncingProfile, _disposed;
+    private int _page = 1;
+    private CancellationTokenSource? _loadCancellation;
+    private string Title => _sport.HasValue && !string.IsNullOrWhiteSpace(QueryKey) ? $"{_sport} · {QueryKey} attempts" : "Benchmark attempts";
+    private string BackUrl => "/records" + (_sport.HasValue ? $"?sport={_sport.Value.ToString().ToLowerInvariant()}" : "")
+        + (_scope != RecordScope.All ? $"{(_sport.HasValue ? "&" : "?")}scope={_scope.ToString().ToLowerInvariant()}" : "");
+
+    protected override void OnInitialized() => ProfileState.Changed += Changed;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadCancellation?.Cancel();
+        _sport = RecordDisplay.Parse<SportKind>(QuerySport);
+        _kind = RecordDisplay.Parse<RecordKind>(QueryKind);
+        _scope = RecordDisplay.Parse<RecordScope>(QueryScope) ?? RecordScope.All;
+        _multiple = string.Equals(QueryMode, "multiple", StringComparison.OrdinalIgnoreCase);
+        _page = int.TryParse(QueryPage, out var page) ? Math.Max(1, page) : 1;
+        _owner = Guid.TryParse(QueryOwner, out var owner) ? owner : null;
+        _invalid = !_sport.HasValue || !_kind.HasValue || string.IsNullOrWhiteSpace(QueryKey)
+            || (QueryOwner is not null && (!_owner.HasValue || !ProfileState.Profiles.Any(profile => profile.Id == _owner)));
+        _result = null;
+        _error = false;
+        if (_invalid) return;
+        _syncingProfile = true;
+        try { if (ProfileState.SelectedOwnerId != _owner) ProfileState.Select(_owner); }
+        finally { _syncingProfile = false; }
+        var canonical = Url(_page);
+        if (new Uri(Navigation.Uri).PathAndQuery != canonical)
+        {
+            Navigation.NavigateTo(canonical, replace: true);
+            return;
+        }
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        if (!_sport.HasValue || !_kind.HasValue || QueryKey is null) return;
+        _loadCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _loadCancellation = cancellation;
+        _result = null;
+        _error = false;
+        try
+        {
+            var result = await Statistics.GetAttemptsAsync(new(_sport.Value, _kind.Value, QueryKey, _owner, _scope, _multiple, _page), cancellation.Token);
+            if (cancellation.IsCancellationRequested || _disposed) return;
+            _result = result;
+            _invalid = result is null;
+            if (result is not null && (result.Attempts.Page != _page || (result.Benchmark.IsWholeActivity && _multiple)))
+            {
+                if (result.Benchmark.IsWholeActivity) _multiple = false;
+                Navigation.NavigateTo(Url(result.Attempts.Page), replace: true);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (!cancellation.IsCancellationRequested && !_disposed)
+            {
+                Logger.LogError(exception, "Could not load benchmark attempts");
+                _error = true;
+            }
+        }
+        finally { if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null; }
+    }
+
+    private string Url(int page) => RecordDisplay.AttemptsUrl(_sport!.Value, _kind!.Value, QueryKey!, _scope, _owner, _multiple, page);
+    private void ChangeMode(ChangeEventArgs args)
+    {
+        _multiple = args.Value?.ToString() == "multiple";
+        Navigation.NavigateTo(Url(1));
+    }
+    private void Changed()
+    {
+        if (_syncingProfile || _disposed || !_sport.HasValue || !_kind.HasValue) return;
+        _loadCancellation?.Cancel();
+        _owner = ProfileState.SelectedOwnerId;
+        _ = InvokeAsync(() => Navigation.NavigateTo(Url(1)));
+    }
+    private static string Position(RecordAttempt attempt) => attempt.StartSeconds.HasValue && attempt.FinishSeconds.HasValue
+        ? $"{Elapsed(attempt.StartSeconds.Value)} – {Elapsed(attempt.FinishSeconds.Value)} elapsed" : "Whole activity";
+    private static string Elapsed(double seconds)
+    {
+        var time = TimeSpan.FromSeconds(Math.Abs(seconds));
+        return $"{(seconds < 0 ? "−" : "")}{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}";
+    }
+    public void Dispose()
+    {
+        _disposed = true;
+        _loadCancellation?.Cancel();
+        ProfileState.Changed -= Changed;
+    }
+}

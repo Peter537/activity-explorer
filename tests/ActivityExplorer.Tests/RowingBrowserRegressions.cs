@@ -92,7 +92,7 @@ public sealed partial class BrowserRegressionTests
             await page.GotoAsync(origin + "/records?scope=indoor", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             var records = page.GetByRole(AriaRole.Table, new PageGetByRoleOptions { Name = "Rowing distance bests", Exact = true });
             Assert.Equal(3, await records.Locator("tbody tr").CountAsync());
-            await records.GetByRole(AriaRole.Link).First.ClickAsync();
+            await records.Locator(".activity-link").First.ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(detailUrl);
             await page.GotoAsync(origin + "/profiles", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             await page.GetByLabel("Display name").FillAsync("Empty profile");

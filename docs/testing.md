@@ -33,6 +33,7 @@ The browser matrix also verifies:
 - Activities and World Map query URLs survive refresh and browser Back/Forward, normalize invalid values, reset deterministically, and reset pagination after a profile change;
 - the generated component stylesheet is loaded; populated Records data keeps Distance, Timed distance, and Power sections in order, formats timed results as metric distance, preserves activity links and semantic columns, omits unachieved targets, and uses a full-width, left-aligned table at 768, 1121, 1280, and 1920 pixels whose restacked rows retain result, profile, date, and coverage at 320, 360, and 375 pixels;
 - Records shows one sport at a time, defaults to the most active sport with records, retains sport choices across empty scopes, restores explicit sport URLs, and handles unavailable sports and empty profiles;
+- benchmark names open attempt history while activity names open their source; attempt history covers all achieved categories, best-only and multiple modes, profile and training-scope context, refresh, Back/Forward, pagination, invalid benchmarks, empty results, retryable stream errors, keyboard operation, enlarged text, and the 320–1920 pixel viewport matrix;
 - `/records?scope=outdoor` and `/records?scope=indoor` survive refresh and browser Back/Forward, invalid scope values normalize to all training, and profile changes preserve scope;
 - the dashboard monthly-distance chart renders five readable month labels, kilometre ticks, gridlines, exact pointer values, and an independent keyboard slider and 12-row Month/Distance table without overflowing at representative desktop and mobile widths;
 - Import history starts collapsed, opens with 10 entries, reveals 10 more cumulatively, and remains readable with warning states and long expandable summaries;
@@ -53,6 +54,8 @@ Badge tests cover retrospective 2018 awards, stacked tiers, deduplicated identit
 The isolated badge browser regression covers separate profile summaries, preserved query state, April 2026 snapshots, pagination, filters, edition history, qualifying activity links, collection grouping, empty profiles, missing badges, keyboard entry, enlarged text, reduced motion, and the existing 320–1920 pixel viewport matrix. It saves desktop and mobile screenshots under its isolated runtime data directory.
 
 Coverage includes:
+
+- benchmark attempts: strongest-first non-overlap, the 6 km / 5 km case, adjacent interpolated endpoints, strongest middle efforts, repeated paths and timestamp resets, natural power coverage boundaries, GPS-free rowing, winner parity across catalog targets, profile and scope filtering, complete pagination, transfers/deletions, cancellation, and summary benchmarks with unreadable stream payloads; a 100,001-sample power stream must produce 20,000 separate five-second efforts within a 15-second test ceiling;
 
 - rowing FIT imports with both Rowing and FitnessEquipment/IndoorRowing classifications, stroke totals, missing sensors, XML/Strava rowing labels, independent Indoor records, GPS-free fixed-distance benchmarks, and rowing pace/stroke-rate browser displays;
 - official-SDK FIT parsing, indoor/outdoor/generic sub-sport classification, XML hardening, archive traversal/link/limit handling, and both Garmin uploaded-file folder families including nested archives;

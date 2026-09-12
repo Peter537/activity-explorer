@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed class StatisticsService(IDbContextFactory<ExplorerDbContext> contextFactory) : IStatisticsService
+public sealed partial class StatisticsService(IDbContextFactory<ExplorerDbContext> contextFactory) : IStatisticsService
 {
     private static readonly RecordScope[] AllAndIndoorScopes = [RecordScope.All, RecordScope.Indoor];
     private static readonly RecordScope[] AllAndOutdoorScopes = [RecordScope.All, RecordScope.Outdoor];

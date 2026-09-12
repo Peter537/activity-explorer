@@ -275,11 +275,11 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(timedTable.GetByText("10 min", new LocatorGetByTextOptions { Exact = true })).ToHaveCountAsync(0);
 
             var timedRow = timedTable.Locator("tbody tr").First;
-            var activityLink = timedRow.Locator("th a");
+            var activityLink = timedRow.Locator("th .activity-link");
             await Assertions.Expect(activityLink).ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
-            await Assertions.Expect(activityLink).ToHaveAttributeAsync(
-                "aria-label",
-                new Regex("^5 min: 4[.,]3 km, from Timed distance browser ride$"));
+            await Assertions.Expect(activityLink).ToHaveTextAsync("Timed distance browser ride");
+            await Assertions.Expect(timedRow.Locator(".benchmark-link")).ToHaveAttributeAsync("href",
+                new Regex("^/records/attempts\\?sport=cycling&kind=timeddistanceeffort&key=5%20min"));
             await Assertions.Expect(timedRow.Locator("td").Nth(0)).ToHaveTextAsync(
                 new Regex("^4[.,]3 km$"));
             await Assertions.Expect(timedRow.Locator("td").Nth(1)).ToHaveTextAsync("Browser record athlete");

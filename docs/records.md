@@ -2,7 +2,23 @@
 
 Activity Explorer calculates records only from activity files imported into the selected local profile. Benchmark names are code-defined; no record values are downloaded from or seeded from Garmin or Strava.
 
-Only achieved records appear on the **Records** page. Each result links to its source activity and includes its profile, date, and source-data coverage. The table keeps these fields visible when rows restack on narrow screens.
+Only achieved records appear on the **Records** page. The benchmark name opens its attempt history; the activity name underneath opens the source activity. Each result includes its profile, date, and source-data coverage. The table keeps these fields visible when rows restack on narrow screens.
+
+## Benchmark attempt history
+
+Open any benchmark to compare qualifying attempts for its sport, selected profile (or All profiles), and training scope. This includes activity records, distance bests, timed distance bests, and power bests. Attempts are ordered strongest first using unrounded values, with 50 rows per page and no overall result limit. Equal results sort by activity date, activity ID, and position in the recorded stream.
+
+**Best only** is the default: each activity contributes its best qualifying attempt. **Multiple, non-overlapping** keeps the strongest attempt in each activity, then the strongest remaining attempt that shares no part of the recorded stream with an already selected attempt. This can yield fewer attempts than a selection that prioritizes fitting the most attempts. For example, a fastest 5 km in the middle of a 10 km activity can exclude two slower adjacent 5 km efforts. A 6 km activity can contribute at most one 5 km attempt.
+
+Adjacent attempts may share an exact endpoint, including one between recorded samples. Riding or running the same road again later can count as another attempt. Non-overlap applies separately to each activity and benchmark: a 5 km attempt and a 10 km attempt may use the same portion of an activity. There is no intensity threshold or requirement that an effort was a deliberate attempt.
+
+Rows show result, activity, profile, date, coverage, and elapsed start–finish position. Positions include milliseconds to distinguish interpolated endpoints. Whole-activity benchmarks contribute one row per qualifying activity, show **Whole activity**, and have no attempt-mode selector.
+
+The detail route is `/records/attempts`, with sport, kind, and key parameters identifying the benchmark; optional scope, owner, mode, and page parameters preserve the view. It has no separate sidebar entry. Direct links, refresh, and browser Back/Forward work normally. Changing profile keeps the benchmark and scope and resets pagination. **Back to Records** restores the sport and scope.
+
+Attempt history is calculated on demand from the current stored summaries and streams; it does not create a second persisted record set. The query filters activities before reading streams and processes payloads in batches of 16. Whole-activity records do not read stream payloads. Refresh to include later imports, corrections, transfers, or deletions. Loading failures offer a retry instead of presenting an incomplete list as complete.
+
+Attempts use the qualification rules below. Selecting multiple attempts does not relax power coverage requirements or turn a newly cut boundary into a recording gap. The Records overview and dashboard continue to use the existing derived winning snapshots.
 
 ## Sport selection
 

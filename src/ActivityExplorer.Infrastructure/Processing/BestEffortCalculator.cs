@@ -4,7 +4,7 @@ namespace ActivityExplorer.Infrastructure.Processing;
 
 internal readonly record struct EffortResult(double Value, double CoveragePercent);
 
-internal static class BestEffortCalculator
+internal static partial class BestEffortCalculator
 {
     public static EffortResult? BestDistance(
         IReadOnlyList<TrackPoint> input,
@@ -186,8 +186,9 @@ internal static class BestEffortCalculator
         var segment = new List<DistanceSample>();
         TrackPoint? previous = null;
 
-        foreach (var point in input)
+        for (var sourceIndex = 0; sourceIndex < input.Count; sourceIndex++)
         {
+            var point = input[sourceIndex];
             if (!IsValidDistancePoint(point, eligibility))
             {
                 visitor(segment);
@@ -198,7 +199,7 @@ internal static class BestEffortCalculator
 
             if (previous is null)
             {
-                segment.Add(new DistanceSample(point.Timestamp!.Value, 0));
+                segment.Add(new DistanceSample(point.Timestamp!.Value, 0, sourceIndex));
                 previous = point;
                 continue;
             }
@@ -210,12 +211,12 @@ internal static class BestEffortCalculator
             {
                 visitor(segment);
                 segment.Clear();
-                segment.Add(new DistanceSample(point.Timestamp.Value, 0));
+                segment.Add(new DistanceSample(point.Timestamp.Value, 0, sourceIndex));
                 previous = point;
                 continue;
             }
 
-            segment.Add(new DistanceSample(point.Timestamp.Value, segment[^1].CumulativeMeters + edgeDistance));
+            segment.Add(new DistanceSample(point.Timestamp.Value, segment[^1].CumulativeMeters + edgeDistance, sourceIndex));
             previous = point;
         }
 
@@ -278,7 +279,7 @@ internal static class BestEffortCalculator
         return kilometersPerHour / 3.6;
     }
 
-    private readonly record struct DistanceSample(DateTimeOffset Timestamp, double CumulativeMeters);
+    private readonly record struct DistanceSample(DateTimeOffset Timestamp, double CumulativeMeters, int Position);
     private enum DistanceEligibility
     {
         RequireGps,

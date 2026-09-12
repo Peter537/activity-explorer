@@ -119,6 +119,7 @@ public interface IStatisticsService
     Task RecomputeAsync(Guid ownerId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PersonalRecord>> GetRecordsAsync(
         Guid? ownerId, RecordScope scope = RecordScope.All, CancellationToken cancellationToken = default);
+    Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default);
 }
 
 public interface IMapFeatureService

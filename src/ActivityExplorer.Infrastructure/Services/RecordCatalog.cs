@@ -1,4 +1,5 @@
 using ActivityExplorer.Core.Domain;
+using ActivityExplorer.Core.Models;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
@@ -6,6 +7,31 @@ internal readonly record struct RecordTarget(string Key, double Target, int Disp
 
 internal static class RecordCatalog
 {
+    public static RecordBenchmark? Find(SportKind sport, RecordKind kind, string key)
+    {
+        if (!Enum.IsDefined(sport)) return null;
+        var activityKey = kind switch
+        {
+            RecordKind.Distance => "Longest distance",
+            RecordKind.Duration => "Longest moving time",
+            RecordKind.Elevation when sport != SportKind.Rowing => "Most elevation gain",
+            RecordKind.AverageSpeed => sport == SportKind.Rowing
+                ? "Best average split (activities >= 1 km)" : "Best average speed (activities >= 1 km)",
+            _ => null
+        };
+        if (activityKey is not null)
+            return key == activityKey ? new(sport, kind, key, "Activity records", null) : null;
+        var (targets, category) = kind switch
+        {
+            RecordKind.DistanceEffort => (DistanceTargets(sport), "Distance bests"),
+            RecordKind.TimedDistanceEffort => (TimedDistanceTargets(sport), "Timed distance bests"),
+            RecordKind.PowerCurve => (PowerTargets, "Power bests"),
+            _ => (Array.Empty<RecordTarget>(), "")
+        };
+        var target = targets.FirstOrDefault(item => item.Key == key);
+        return target.Key is null ? null : new(sport, kind, key, category, target.Target);
+    }
+
     public const int ComputationVersion = 7;
 
     private static readonly RecordTarget[] RowingDistances =

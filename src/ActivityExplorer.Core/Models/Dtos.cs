@@ -107,3 +107,20 @@ public sealed record RouteDetail(RouteSummary Summary, string? Description, IRea
 public sealed record PersonalRecord(
     Guid Id, Guid OwnerId, string OwnerName, SportKind Sport, RecordKind Kind, string Key,
     double Value, Guid ActivityId, string ActivityTitle, double CoveragePercent, DateTimeOffset ActivityDate);
+
+public sealed record RecordAttemptQuery(
+    SportKind Sport, RecordKind Kind, string Key, Guid? OwnerId = null,
+    RecordScope Scope = RecordScope.All, bool MultiplePerActivity = false, int Page = 1);
+
+public sealed record RecordBenchmark(SportKind Sport, RecordKind Kind, string Key, string Category, double? Target)
+{
+    public bool IsWholeActivity => Target is null;
+    public bool LowerIsBetter => Kind == RecordKind.DistanceEffort;
+}
+
+public sealed record RecordAttempt(
+    Guid ActivityId, string ActivityTitle, Guid OwnerId, string OwnerName, DateTimeOffset ActivityDate,
+    double Value, double CoveragePercent, double? StartSeconds, double? FinishSeconds,
+    double? StartPosition, double? FinishPosition);
+
+public sealed record RecordAttemptPage(RecordBenchmark Benchmark, PagedResult<RecordAttempt> Attempts);

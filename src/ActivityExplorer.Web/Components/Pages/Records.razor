@@ -7,7 +7,7 @@
 @using ActivityExplorer.Web.Components.Shared
 
 <PageTitle>Records - Activity Explorer</PageTitle>
-<PageHeader Title="Records" Summary="Compare your best results and open the activity behind each one.">
+<PageHeader Title="Records" Summary="Open a benchmark to compare attempts, or an activity name to see the source.">
     <Actions>
         <label class="scope-control" for="record-scope">
             <span>Record scope</span>
@@ -251,17 +251,9 @@ else
     private static bool IsActivityRecord(RecordKind kind) =>
         kind is RecordKind.Distance or RecordKind.Duration or RecordKind.Elevation or RecordKind.AverageSpeed;
 
-    private static string Value(PersonalRecord record) => record.Kind switch
-    {
-        RecordKind.Distance or RecordKind.TimedDistanceEffort => Format.Distance(record.Value),
-        RecordKind.Duration or RecordKind.DistanceEffort => Format.Duration(record.Value),
-        RecordKind.Elevation => $"{record.Value:N0} m",
-        RecordKind.AverageSpeed => record.Sport == SportKind.Rowing ? Format.Speed(record.Value, record.Sport) : $"{record.Value * 3.6:N1} km/h",
-        RecordKind.PowerCurve => $"{record.Value:N0} W",
-        _ => $"{record.Value:N1}"
-    };
+    private static string Value(PersonalRecord record) => RecordDisplay.Value(record.Sport, record.Kind, record.Value);
 
-    private static RenderFragment RecordTable(IReadOnlyList<PersonalRecord> records, string caption) => @<div class="records-table-wrap">
+    private RenderFragment RecordTable(IReadOnlyList<PersonalRecord> records, string caption) => @<div class="records-table-wrap">
         <table class="records-table">
             <caption class="visually-hidden">@caption</caption>
             <colgroup><col class="benchmark-column" /><col class="result-column" /><col class="profile-column" /><col class="date-column" /><col class="coverage-column" /></colgroup>
@@ -271,8 +263,11 @@ else
             {
                 <tr>
                     <th scope="row" data-label="Benchmark">
-                        <a href="@($"/activities/{record.ActivityId}")" aria-label="@($"{record.Key}: {Value(record)}, from {record.ActivityTitle}")">
-                            <strong>@record.Key</strong><small>@record.ActivityTitle</small>
+                        <a class="benchmark-link" href="@RecordDisplay.AttemptsUrl(record.Sport, record.Kind, record.Key, _scope, ProfileState.SelectedOwnerId)" aria-label="@($"{record.Key} attempts for {record.Sport}")">
+                            <strong>@record.Key</strong>
+                        </a>
+                        <a class="activity-link" href="@($"/activities/{record.ActivityId}")">
+                            <small>@record.ActivityTitle</small>
                         </a>
                     </th>
                     <td data-label="Result"><strong>@Value(record)</strong></td>
