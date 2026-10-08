@@ -46,14 +46,10 @@ public sealed class SegmentMatcher : ISegmentMatcher
             var startRun = startRuns[startRunIndex];
             if (startRun.LastIndex < searchFrom) continue;
 
-            var nextStart = startRunIndex + 1 < startRuns.Count
-                ? startRuns[startRunIndex + 1].FirstIndex
-                : int.MaxValue;
-            var candidates = new List<AlignmentCandidate>();
+            AlignmentCandidate? accepted = null;
             foreach (var endRun in endRuns)
             {
                 if (endRun.LastIndex <= Math.Max(startRun.FirstIndex, searchFrom)) continue;
-                if (endRun.FirstIndex >= nextStart) break;
                 var endpoints = SelectClosestOrderedEndpoints(
                     activityGps,
                     startRun,
@@ -71,18 +67,20 @@ public sealed class SegmentMatcher : ISegmentMatcher
                     toleranceMeters,
                     cancellationToken);
                 if (candidate.CoveragePercent + 1e-9 < RequiredCoverage * 100) continue;
-                if (candidate.EndGpsIndex < nextStart) candidates.Add(candidate);
+                accepted = candidate;
+                // A return to the start can also be the finish of a loop. Stop at the
+                // first valid finish run so later laps cannot replace this traversal.
+                break;
             }
 
-            if (candidates.Count == 0) continue;
-            candidates.Sort(CompareCandidates);
-            var accepted = candidates[0];
+            if (accepted is null) continue;
             matches.Add(new SegmentMatch(
                 activityGps[accepted.StartGpsIndex].SourceIndex,
                 activityGps[accepted.EndGpsIndex].SourceIndex,
                 accepted.CoveragePercent,
                 accepted.MeanDistanceMeters));
-            searchFrom = accepted.EndGpsIndex + 1;
+            // Consecutive laps may share their finish/start sample, but no interval.
+            searchFrom = accepted.EndGpsIndex;
         }
 
         return Task.FromResult<IReadOnlyList<SegmentMatch>>(matches);
@@ -186,8 +184,7 @@ public sealed class SegmentMatcher : ISegmentMatcher
                 endpoints.StartGpsIndex,
                 endpoints.EndGpsIndex,
                 0,
-                double.MaxValue,
-                endpoints.StartDistanceMeters + endpoints.EndDistanceMeters);
+                double.MaxValue);
 
         var candidateSamples = candidatePath.SampleNormalized(segmentSamples.Count, cancellationToken);
         var matched = 0;
@@ -204,20 +201,7 @@ public sealed class SegmentMatcher : ISegmentMatcher
             endpoints.StartGpsIndex,
             endpoints.EndGpsIndex,
             matched * 100d / segmentSamples.Count,
-            distanceSum / segmentSamples.Count,
-            endpoints.StartDistanceMeters + endpoints.EndDistanceMeters);
-    }
-
-    private static int CompareCandidates(AlignmentCandidate left, AlignmentCandidate right)
-    {
-        var comparison = right.CoveragePercent.CompareTo(left.CoveragePercent);
-        if (comparison != 0) return comparison;
-        comparison = left.MeanDistanceMeters.CompareTo(right.MeanDistanceMeters);
-        if (comparison != 0) return comparison;
-        comparison = left.EndpointDistanceMeters.CompareTo(right.EndpointDistanceMeters);
-        if (comparison != 0) return comparison;
-        comparison = left.StartGpsIndex.CompareTo(right.StartGpsIndex);
-        return comparison != 0 ? comparison : left.EndGpsIndex.CompareTo(right.EndGpsIndex);
+            distanceSum / segmentSamples.Count);
     }
 
     internal static int AlignmentSampleCount(double totalDistanceMeters)
@@ -260,8 +244,7 @@ public sealed class SegmentMatcher : ISegmentMatcher
         int StartGpsIndex,
         int EndGpsIndex,
         double CoveragePercent,
-        double MeanDistanceMeters,
-        double EndpointDistanceMeters);
+        double MeanDistanceMeters);
 
     private sealed class MeasuredPath
     {

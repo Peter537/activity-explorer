@@ -6,8 +6,12 @@
         <ol>
             <li>Set the start and end by distance.</li>
             <li>Check the highlighted path and elevation.</li>
-            <li>Confirm its direction, name, and GPS tolerance.</li>
+            <li>@(AllowReverseDirection ? "Confirm its direction, name, and GPS tolerance." : "Keep the parent direction and choose a name and GPS tolerance.")</li>
         </ol>
+        @if (RequireProperSubpath)
+        {
+            <p>Select less than the full segment. Its history will also include matching passes outside this parent.</p>
+        }
         <details class="segment-creator-tips">
             <summary>Tips for accurate matching</summary>
             <ul>
@@ -34,8 +38,11 @@
         <div class="segment-creator-form">
             <label class="segment-name"><span>Name</span><input maxlength="240" required @bind="_name" @bind:event="oninput" /></label>
             <label><span>Tolerance (m)</span><input type="number" min="10" max="200" @bind="_tolerance" /></label>
-            <label class="checkbox-field"><input type="checkbox" @bind="_reverseDirection" /><span>Reverse direction after trimming</span></label>
-            <button class="button primary" disabled="@(!CanCreate || Busy)" @onclick="SubmitAsync">@(Busy ? "Creating segment..." : "Create segment")</button>
+            @if (AllowReverseDirection)
+            {
+                <label class="checkbox-field"><input type="checkbox" @bind="_reverseDirection" /><span>Reverse direction after trimming</span></label>
+            }
+            <button class="button primary" disabled="@(!CanCreate || Busy)" @onclick="SubmitAsync">@(Busy ? "Creating segment..." : SubmitLabel)</button>
         </div>
     </div>
 </section>
@@ -47,6 +54,10 @@
     [Parameter] public string InitialName { get; set; } = string.Empty;
     [Parameter] public bool Busy { get; set; }
     [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public bool AllowReverseDirection { get; set; } = true;
+    [Parameter] public bool RequireProperSubpath { get; set; }
+    [Parameter] public string SubmitLabel { get; set; } = "Create segment";
+    [Parameter] public double InitialTolerance { get; set; } = 30;
     [Parameter] public EventCallback<SegmentCreatorSubmission> OnCreate { get; set; }
 
     private Guid _initializedSourceId;
@@ -59,7 +70,8 @@
     private bool _reverseDirection;
     private bool CanCreate => Points.Count >= 2 && !string.IsNullOrWhiteSpace(_name) &&
                               _tolerance is >= 10 and <= 200 && _startIndex >= 0 &&
-                              _endIndex < Points.Count && _endIndex - _startIndex >= 1;
+                              _endIndex < Points.Count && _endIndex - _startIndex >= 1 &&
+                              (!RequireProperSubpath || _startIndex > 0 || _endIndex < Points.Count - 1);
     private string MapLabel => string.IsNullOrWhiteSpace(SourceLabel)
         ? "Path map with selected segment"
         : $"{char.ToUpperInvariant(SourceLabel[0])}{SourceLabel[1..]} map with selected segment";
@@ -71,7 +83,7 @@
         _initializedPoints = Points;
         _analysis = new TrackPathAnalysis(Points);
         _name = InitialName;
-        _tolerance = 30;
+        _tolerance = InitialTolerance;
         _startIndex = 0;
         _endIndex = Math.Max(0, Points.Count - 1);
         _reverseDirection = false;

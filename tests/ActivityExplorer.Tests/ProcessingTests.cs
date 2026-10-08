@@ -80,6 +80,45 @@ public sealed class ProcessingTests
     }
 
     [Fact]
+    public async Task Segment_matcher_retains_closed_laps_with_a_shared_boundary()
+    {
+        var loop = ClosedLoop();
+        var activity = loop.Concat(loop.Skip(1)).ToArray();
+        var matches = await new SegmentMatcher().MatchAsync(activity, loop, 30);
+        Assert.Collection(matches,
+            first => { Assert.Equal(0, first.StartIndex); Assert.Equal(80, first.EndIndex); },
+            second => { Assert.Equal(80, second.StartIndex); Assert.Equal(160, second.EndIndex); });
+        Assert.All(matches, match => Assert.Equal(100, match.CoveragePercent, 8));
+
+        var doubleLap = Assert.Single(await new SegmentMatcher().MatchAsync(activity, activity, 30));
+        Assert.Equal(0, doubleLap.StartIndex);
+        Assert.Equal(160, doubleLap.EndIndex);
+    }
+
+    [Fact]
+    public async Task Segment_matcher_accepts_nearly_closed_loops_but_rejects_partial_and_reversed_loops()
+    {
+        var loop = ClosedLoop();
+        var matcher = new SegmentMatcher();
+        var nearLoop = loop.ToArray();
+        nearLoop[^1] = nearLoop[^1] with { Latitude = nearLoop[^1].Latitude + 0.00002 };
+        Assert.Single(await matcher.MatchAsync(nearLoop, loop, 30));
+        Assert.Empty(await matcher.MatchAsync(loop.Take(65).ToArray(), loop, 30));
+        Assert.Empty(await matcher.MatchAsync(loop.Reverse().ToArray(), loop, 30));
+
+        var missingGps = loop.Take(40).Concat([loop[40] with { Latitude = null, Longitude = null }])
+            .Concat(loop.Skip(40)).ToArray();
+        var match = Assert.Single(await matcher.MatchAsync(missingGps, loop, 30));
+        Assert.Equal(0, match.StartIndex);
+        Assert.Equal(81, match.EndIndex);
+    }
+
+    private static TrackPoint[] ClosedLoop() => Enumerable.Range(0, 81)
+        .Select(index => Point(new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero).AddSeconds(index),
+            1 + 0.001 * Math.Sin(2 * Math.PI * index / 80),
+            -30 + 0.001 * Math.Cos(2 * Math.PI * index / 80))).ToArray();
+
+    [Fact]
     public async Task Segment_matcher_keeps_a_continuous_pass_when_a_later_return_is_closer()
     {
         var start = new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero);

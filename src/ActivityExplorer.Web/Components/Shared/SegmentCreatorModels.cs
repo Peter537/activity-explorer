@@ -1,6 +1,9 @@
 using ActivityExplorer.Core.Domain;
+using ActivityExplorer.Core.Models;
 
 namespace ActivityExplorer.Web.Components.Shared;
+
+public sealed record SegmentMapSection(Guid Id, string Name, int Number, IReadOnlyList<SegmentPlacement> Placements);
 
 public sealed record SegmentCreatorSubmission(
     string Name,

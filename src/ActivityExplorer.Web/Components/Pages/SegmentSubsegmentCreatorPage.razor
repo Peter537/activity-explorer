@@ -1,0 +1,154 @@
+@page "/segments/{Id:guid}/subsegments/new"
+@inject ISegmentService Segments
+@inject NavigationManager Navigation
+
+<PageTitle>Add sub-segment - Activity Explorer</PageTitle>
+@if (!_loaded)
+{
+    <div class="loading" role="status">Loading segment...</div>
+}
+else if (_parent is null)
+{
+    <section class="empty-state"><h1>Segment unavailable</h1><p>@(_loadError ?? "This segment may have been deleted or the link is no longer valid.")</p><button class="button" @onclick="LoadAsync">Try again</button><a class="button" href="/segments">Back to segments</a></section>
+}
+else
+{
+    <PageHeader Title="Add sub-segment" Summary="@($"Inside {_parent.Summary.Name}")">
+        <Metadata><span>@_parent.Summary.Sport</span><span>@_parent.Summary.OwnerName</span></Metadata>
+        <Actions><a class="button" href="@ParentUrl">Back to parent segment</a></Actions>
+    </PageHeader>
+    <div class="button-row subsegment-mode" role="group" aria-label="Choose how to add a sub-segment">
+        <button type="button" class="@(!_useExisting ? "button primary" : "button")" disabled="@(_busy || _previewing)" aria-pressed="@(!_useExisting ? "true" : "false")" @onclick="() => SetMode(false)">Create from this segment</button>
+        <button type="button" class="@(_useExisting ? "button primary" : "button")" disabled="@(_busy || _previewing)" aria-pressed="@(_useExisting ? "true" : "false")" @onclick="() => SetMode(true)">Use existing segment</button>
+    </div>
+    @if (!_useExisting)
+    {
+        <SegmentCreatorWorkspace SourceId="Id" SourceLabel="segment" Points="_parent.Points"
+                                 Busy="_busy" ErrorMessage="@_message" InitialTolerance="_parent.Summary.ToleranceMeters"
+                                 AllowReverseDirection="false" RequireProperSubpath="true" SubmitLabel="Create sub-segment"
+                                 OnCreate="CreateAsync" />
+    }
+    else
+    {
+        <section class="panel existing-subsegment">
+            <h2>Attach an existing segment</h2>
+            <p>Choose a smaller segment in the same direction. Its existing history and other parent segments stay linked.</p>
+            <StatusMessage Message="@_message" IsError="true" />
+            @if (_candidates.Count == 0)
+            {
+                <p>No other segments are available for this profile and sport. Create a section from the parent instead.</p>
+            }
+            else
+            {
+                <label><span>Existing segment</span><select disabled="@(_busy || _previewing)" @bind="_existingId" @bind:after="PreviewAsync">
+                    <option value="">Choose a segment</option>
+                    @foreach (var candidate in _candidates)
+                    {
+                        <option value="@candidate.Id">@candidate.Name · @Format.Distance(candidate.DistanceMeters)</option>
+                    }
+                </select></label>
+                @if (_previewing) { <p role="status">Checking where this segment fits...</p> }
+                @if (_preview is not null)
+                {
+                    <p role="status">@_preview.Placements.Count occurrence@(_preview.Placements.Count == 1 ? "" : "s") inside this segment. All occurrences will be included.</p>
+                    <SegmentSectionStrip Sections="_sections" DistanceMeters="_parent.Summary.DistanceMeters" SelectedId="_preview.Child.Id" />
+                    <MapCanvas @key="_preview.Child.Id" InlinePoints="_parent.Points" Sections="_sections" SelectedSectionId="_preview.Child.Id"
+                               CssClass="detail-map" Label="Parent and existing sub-segment preview" />
+                    <button class="button primary" disabled="@_busy" @onclick="AttachAsync">@(_busy ? "Attaching segment..." : "Attach segment")</button>
+                }
+            }
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private SegmentDetail? _parent;
+    private IReadOnlyList<SegmentSummary> _candidates = [];
+    private IReadOnlyList<SegmentMapSection> _sections = [];
+    private SegmentAttachmentPreview? _preview;
+    private Guid? _existingId;
+    private bool _loaded;
+    private bool _busy;
+    private bool _previewing;
+    private bool _useExisting;
+    private string? _loadError;
+    private string? _message;
+    private int _loadVersion;
+    private string ParentUrl => $"/segments/{Id}";
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        _loaded = false;
+        _parent = null;
+        _loadError = null;
+        _message = null;
+        _preview = null;
+        _existingId = null;
+        try
+        {
+            var parent = await Segments.GetAsync(Id);
+            var segments = parent is null ? [] : await Segments.ListAsync(parent.Summary.OwnerId);
+            if (version != _loadVersion) return;
+            _parent = parent;
+            _candidates = parent is null ? [] : segments.Where(segment => segment.Id != Id &&
+                segment.Sport == parent.Summary.Sport && !parent.Children.Any(child => child.Summary.Id == segment.Id)).ToArray();
+        }
+        catch { if (version == _loadVersion) _loadError = "The parent segment could not be loaded. Try again."; }
+        finally { if (version == _loadVersion) _loaded = true; }
+    }
+
+    private void SetMode(bool existing) { _useExisting = existing; _message = null; }
+
+    private async Task PreviewAsync()
+    {
+        _preview = null;
+        _message = null;
+        if (!_existingId.HasValue) return;
+        var version = _loadVersion;
+        _previewing = true;
+        try
+        {
+            var preview = await Segments.PreviewAttachmentAsync(Id, _existingId.Value);
+            if (version != _loadVersion) return;
+            _preview = preview;
+            _sections = [new SegmentMapSection(preview.Child.Id, preview.Child.Name, 1, preview.Placements)];
+        }
+        catch (InvalidOperationException exception) { if (version == _loadVersion) _message = exception.Message; }
+        catch { if (version == _loadVersion) _message = "The segment could not be checked. Choose it again to retry."; }
+        finally { _previewing = false; }
+    }
+
+    private async Task CreateAsync(SegmentCreatorSubmission submission)
+    {
+        _busy = true;
+        _message = null;
+        try
+        {
+            var childId = await Segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(Id, submission.Name,
+                submission.StartIndex, submission.EndIndex, submission.ToleranceMeters));
+            Navigation.NavigateTo($"{ParentUrl}?section={childId}");
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException) { _message = exception.Message; }
+        catch { _message = "The sub-segment could not be created. Your selection was kept; try again."; }
+        finally { _busy = false; }
+    }
+
+    private async Task AttachAsync()
+    {
+        if (_preview is null) return;
+        _busy = true;
+        _message = null;
+        try
+        {
+            await Segments.AttachAsync(Id, _preview.Child.Id);
+            Navigation.NavigateTo($"{ParentUrl}?section={_preview.Child.Id}");
+        }
+        catch (InvalidOperationException exception) { _message = exception.Message; }
+        catch { _message = "The segment could not be attached. Try again."; }
+        finally { _busy = false; }
+    }
+}

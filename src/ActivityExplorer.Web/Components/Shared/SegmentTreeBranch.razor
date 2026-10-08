@@ -1,0 +1,51 @@
+@{
+    var segment = Segments[SegmentId];
+    var children = Children[SegmentId].Where(Segments.ContainsKey).OrderBy(id => Segments[id].Name).ThenBy(id => id).ToArray();
+}
+<li class="segment-branch">
+    <div class="segment-branch-summary">
+        <div class="segment-branch-name">
+            <a href="@($"/segments/{segment.Id}")">@segment.Name</a>
+            <small>@segment.Sport · @segment.OwnerName</small>
+            @if (ParentCounts.GetValueOrDefault(segment.Id) > 1)
+            {
+                <small>Shared in @ParentCounts[segment.Id] segments</small>
+            }
+            <small>@SourceLabel(segment) · @segment.ToleranceMeters.ToString("N0") m tolerance</small>
+        </div>
+        <dl class="segment-branch-metrics">
+            <div><dt>Distance</dt><dd>@Format.Distance(segment.DistanceMeters)</dd></div>
+            <div><dt>Efforts</dt><dd>@segment.EffortCount</dd></div>
+            <div><dt>Best</dt><dd>@(segment.BestElapsedSeconds.HasValue ? Format.Duration(segment.BestElapsedSeconds.Value) : "--")</dd></div>
+        </dl>
+    </div>
+    @if (children.Length > 0)
+    {
+        <details class="segment-branch-children">
+            <summary>@children.Length sub-segment@(children.Length == 1 ? "" : "s")<span class="visually-hidden"> in @segment.Name</span></summary>
+            <ul>
+                @foreach (var childId in children)
+                {
+                    <SegmentTreeBranch @key="childId" SegmentId="childId" Segments="Segments" Children="Children" ParentCounts="ParentCounts" />
+                }
+            </ul>
+        </details>
+    }
+</li>
+
+@code {
+    [Parameter, EditorRequired] public Guid SegmentId { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyDictionary<Guid, SegmentSummary> Segments { get; set; } = new Dictionary<Guid, SegmentSummary>();
+    [Parameter, EditorRequired] public ILookup<Guid, Guid> Children { get; set; } = Array.Empty<SegmentRelationship>().ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
+    [Parameter, EditorRequired] public IReadOnlyDictionary<Guid, int> ParentCounts { get; set; } = new Dictionary<Guid, int>();
+
+    private static string SourceLabel(SegmentSummary segment) => segment.SourceKind switch
+    {
+        SegmentSourceKind.ImportedFile => string.IsNullOrWhiteSpace(segment.SourceFormat) ? "Imported file" : $"Imported {segment.SourceFormat}",
+        SegmentSourceKind.Activity => "Created from activity",
+        SegmentSourceKind.Route => "Created from route",
+        SegmentSourceKind.Segment => "Created from segment",
+        SegmentSourceKind.Drawn => "Drawn locally",
+        _ => "Local definition"
+    };
+}

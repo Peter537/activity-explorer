@@ -4,12 +4,13 @@ A segment is a local, owner-scoped, directional, sport-specific path. It is not 
 
 ## Creating a segment
 
-Activity Explorer supports four local creation workflows:
+Activity Explorer supports five local creation workflows:
 
 1. On **Segments**, draw a path directly.
 2. On an activity detail, open the focused creator from the **Create segment** header action, then trim the activity visually by distance without exposing source point indices.
 3. On a route detail, use the embedded creator to trim the route by distance, inspect the highlighted map path and measured elevation profile, review live distance/ascent/descent/grade metrics, and optionally reverse it.
 4. On **Segments**, supply one GPX, FIT segment/course, TCX, KML, or GeoJSON path. Explicitly review the owner, sport, name, tolerance, trim indices, and direction before creating the segment.
+5. On a segment detail, select **Add sub-segment**, then **Create from this segment**. Trim a smaller portion with the existing distance controls. The section keeps its parent's profile, sport, and direction, and records the parent name as its creation provenance.
 
 Text path formats must contain exactly one directional line. FIT activity files are not accepted by the segment-path workflow; use the normal activity importer and select the required portion instead. MultiLineString or multi-track files must be reduced to one path before import.
 
@@ -21,22 +22,38 @@ The segment is then compared with historical activities for the same owner and s
 
 These are independent local definitions. Importing a generic path does not establish Strava identity, catalog parity, provider synchronization, or permission to reuse a third party's data. Supply only files you control or have permission to reuse.
 
+## Sub-segments and shared history
+
+Any segment can contain smaller sections, including flat stretches, descents, climbs, and whole laps. To track a complete familiar route, create a segment using its full path, then add the sections you want to compare.
+
+**Add sub-segment** also offers **Use existing segment**. Choose a segment from the same profile and sport, review the highlighted occurrences, and select **Attach segment**. Its path must follow a smaller, continuous portion of the parent in the same direction, within the child's matching tolerance. The application rejects self-links, duplicate links, full-path aliases, and cycles. It does not attach contained segments automatically.
+
+Sections may overlap, belong to several parents, and contain further sections. The **Segments** library shows expandable groups; shared children appear under each parent and open the same detail page. Each detail page lists its immediate children and links back to its parents. Removing a section from one parent removes only that relationship, preserving its definition, effort history, and other links.
+
+The numbered distance strips and map markers show every matching occurrence along the parent. Selecting a section emphasizes it without moving the map. Section positions remain available when elevation was not recorded; they are separate from the elevation profile's grade colors.
+
+Every segment continues to match independently against activity history, including activities that never complete any of its parents. The parent's breakdown uses only child efforts from the selected parent effort's activity whose complete recorded point interval lies inside that parent pass. Shared boundary points are included. Repeated passes appear separately in traversal order and link to their exact child effort. Results outside that interval are excluded; missing results show **No matching pass in this effort** rather than another pass or a zero time. Distance, grade, and personal best in each row describe the child's independent definition and history.
+
+Relationships store no duplicate tracks or efforts. Creating a child saves its definition, initial efforts, and parent link together. Existing databases gain an empty relationship table at startup, with no automatic grouping or recalculation. Activity deletion or transfer preserves relationships between saved definitions while updating affected efforts; profile deletion removes that profile's relationships.
+
 ## Matching pipeline
 
 The implementation follows these stages:
 
 1. Use bounding boxes expanded by tolerance to remove impossible activities.
 2. Retain original stream indices while rejecting candidates without enough usable GPS points.
-3. Group chronological samples near the segment's start and end into proximity runs and consider only ordered start-to-end slices.
+3. Group chronological samples near the segment's start and end into proximity runs and consider ordered start-to-end slices, including finishes after a return to the start.
 4. Resample the segment and each continuous candidate slice at shared distance-relative positions, approximately every 10 metres. Alignment is capped at 50,001 samples; definitions longer than 500 km use evenly spaced normalized samples within that fixed analysis budget.
 5. Compare aligned samples in path order so a later nearby return cannot supply an isolated point to an earlier pass.
 6. Require at least 95% of aligned samples to fall within the configured tolerance; coverage is that aligned-sample percentage.
 7. Reject passes containing a GPS timestamp gap over 30 seconds.
-8. Continue after a match to retain repeated passes in the same activity.
+8. Accept the first finish run with a qualifying continuous path, then continue from its endpoint to retain repeated passes in the same activity. Consecutive laps may share one finish/start sample, but not a time interval.
 
 The default matching tolerance is 30 metres and applies to both endpoint proximity and aligned path samples. A segment stores an advanced per-segment override for noisy environments.
 
 Reverse-direction travel does not match. The file/drawing order defines start to finish; the explicit reverse option changes the stored order before matching. A nearby parallel road should fail continuous path-alignment checks even if start and end points are close. Loops and switchbacks depend on ordered traversal of one candidate slice, not only geometry intersection or independently nearest points.
+
+Closed loops retain their saved start, finish, and direction. A return near the start must still complete the full ordered path to count; an incomplete or reversed lap does not qualify. A definition containing two laps requires both laps, while a one-lap definition produces separate efforts for successive complete laps.
 
 ## Effort metrics
 
@@ -48,7 +65,7 @@ Heart rate, cadence, power, temperature, and respiration averages are timestamp-
 
 An effort also stores moving time, coverage, start time, source stream indices, recorded distance, calculation version, and its linked activity. The moving-time threshold, coverage calculation, matching geometry, and maximum metrics are independent of the fixed-distance average speed.
 
-Per-owner ranks are recalculated from elapsed time. The inline segment explorer shows the directional path and a grade-colored definition profile, a sortable comparison table, and the selected pass highlighted with start/end points. The profile derives local grade over a disclosed 50 metre distance window, shifts that window at path boundaries, and uses the available span for shorter definitions. Downhill, flat, gentle, moderate, steep, and very steep colors are advisory display categories; exact percentages remain available through pointer, keyboard, and tabular inspection. Inspecting the profile marks the corresponding definition point on the map without moving the viewport.
+Per-owner ranks are recalculated from elapsed time. The inline segment explorer shows the directional path and a grade-colored definition profile, a sortable comparison table, and the selected pass's recorded path highlighted on the map. The profile derives local grade over a disclosed 50 metre distance window, shifts that window at path boundaries, and uses the available span for shorter definitions. Downhill, flat, gentle, moderate, steep, and very steep colors are advisory display categories; exact percentages remain available through pointer, keyboard, and tabular inspection. Inspecting the profile marks the corresponding definition point on the map without moving the viewport.
 
 Local grade is calculated only within contiguous recorded elevation samples. Missing elevation remains a visible gap and is never interpolated across; the whole profile retains the truthful unavailable state when no drawable elevation sequence exists. Rendering uses at most 800 representative samples across all visible runs while retaining path endpoints, important extrema, and representative grade transitions within that budget. The complete stored definition is not downsampled. These local values are ephemeral presentation data and do not replace the persisted whole-segment average grade.
 
@@ -65,5 +82,7 @@ Increasing tolerance can recover a noisy match but also increases false positive
 Effort calculation version 1 used arithmetic sample averages and did not persist recorded distance. Version 2 uses the canonical and timestamp-weighted rules above. The additive startup schema upgrade marks pre-existing rows as version 1 and does not recalculate them. Segment detail presents an accessible legacy notice until the user explicitly selects **Recompute efforts**.
 
 Segment recomputation is deterministic for the same stored streams and definition. It atomically upserts matches by activity and matched start index, updates metrics and ranks, removes matches that no longer qualify, and preserves the IDs of retained efforts so an inspected row remains selected. It never changes immutable source files.
+
+**Recompute efforts** recalculates only the current segment. Parent and child histories remain independent; imports continue to recompute all segments for the profile. Existing loop definitions can pick up previously missed laps through manual recomputation or the next import.
 
 When diagnosing a missing match, confirm owner/sport and direction, inspect timestamp gaps and start/end geometry, increase tolerance gradually, then recompute and review the effort table.

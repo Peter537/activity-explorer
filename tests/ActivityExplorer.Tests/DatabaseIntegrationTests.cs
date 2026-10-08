@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace ActivityExplorer.Tests;
 
-public sealed class DatabaseIntegrationTests
+public sealed partial class DatabaseIntegrationTests
 {
     [Fact]
     public async Task Sport_activity_counts_include_uncalculated_activities_and_respect_profiles()
@@ -27,7 +27,7 @@ public sealed class DatabaseIntegrationTests
         await setup.SeedActivityAsync(second, "Other ride", SportKind.Cycling);
         var storage = CreateStorageServices(setup);
         var service = new ActivityQueryService(
-            setup.Factory, new StatisticsService(setup.Factory), new SegmentService(setup.Factory, new SegmentMatcher()),
+            setup.Factory, new StatisticsService(setup.Factory), new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock()),
             storage.Originals, storage.FileOperations, storage.OwnerLock, NullLogger<ActivityQueryService>.Instance);
 
         var counts = await service.GetSportActivityCountsAsync(first);
@@ -112,7 +112,7 @@ public sealed class DatabaseIntegrationTests
         await setup.SeedActivityAsync(first, "First ride", SportKind.Cycling);
         await setup.SeedActivityAsync(second, "Second run", SportKind.Running);
         var statistics = new StatisticsService(setup.Factory);
-        var segmentService = new SegmentService(setup.Factory, new SegmentMatcher());
+        var segmentService = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
         var storage = CreateStorageServices(setup);
         var service = new ActivityQueryService(
             setup.Factory, statistics, segmentService, storage.Originals, storage.FileOperations, storage.OwnerLock,
@@ -135,7 +135,7 @@ public sealed class DatabaseIntegrationTests
         var service = new ActivityQueryService(
             setup.Factory,
             new StatisticsService(setup.Factory),
-            new SegmentService(setup.Factory, new SegmentMatcher()),
+            new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock()),
             storage.Originals,
             storage.FileOperations,
             storage.OwnerLock,
@@ -307,10 +307,12 @@ public sealed class DatabaseIntegrationTests
         var statistics = new StatisticsService(setup.Factory);
         await statistics.RecomputeAsync(firstOwner);
         await statistics.RecomputeAsync(secondOwner);
+        var segmentService = new SegmentService(setup.Factory, new SegmentMatcher(), storage.OwnerLock);
+        var childSegmentId = await segmentService.CreateSubsegmentAsync(new CreateSubsegmentRequest(segmentId, "Retained section", 1, 5));
         var service = new ActivityQueryService(
             setup.Factory,
             statistics,
-            new SegmentService(setup.Factory, new SegmentMatcher()),
+            segmentService,
             storage.Originals,
             storage.FileOperations,
             storage.OwnerLock,
@@ -330,6 +332,8 @@ public sealed class DatabaseIntegrationTests
         Assert.Null((await verification.Segments.SingleAsync(segment => segment.Id == segmentId)).SourceActivityId);
         var verifiedEffort = await verification.SegmentEfforts.SingleAsync(effort => effort.Id == retainedEffortId);
         Assert.Equal(1, verifiedEffort.Rank);
+        Assert.Equal(childSegmentId, Assert.Single((await segmentService.GetAsync(segmentId))!.Children).Summary.Id);
+        Assert.All((await segmentService.GetAsync(childSegmentId))!.Efforts, effort => Assert.Equal(retainFirst, effort.ActivityId));
         Assert.Empty(await verification.ActivityLaps.ToArrayAsync());
         Assert.Empty(await verification.ActivityMetrics.ToArrayAsync());
         Assert.All(await verification.StatisticSnapshots.ToArrayAsync(), snapshot => Assert.Equal(retainFirst, snapshot.ActivityId));
@@ -348,11 +352,12 @@ public sealed class DatabaseIntegrationTests
         var activityId = await setup.SeedActivityAsync(sourceOwner, "Transfer me", SportKind.Cycling);
         var storage = CreateStorageServices(setup, paths);
         var routes = new RouteService(setup.Factory, storage.Originals, storage.FileOperations, storage.OwnerLock);
-        var segments = new SegmentService(setup.Factory, new SegmentMatcher());
+        var segments = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
         var routeId = await routes.CreateFromActivityAsync(
             new CreateRouteRequest(sourceOwner, activityId, "Source route", null));
         var segmentId = await segments.CreateFromActivityAsync(
             new CreateSegmentRequest(sourceOwner, activityId, "Source segment", 2, 20));
+        var childSegmentId = await segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(segmentId, "Source section", 3, 12));
 
         var sourceBytes = System.Text.Encoding.UTF8.GetBytes("synthetic transfer source");
         var sourceHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(sourceBytes));
@@ -441,6 +446,8 @@ public sealed class DatabaseIntegrationTests
         Assert.Null((await verification.Routes.SingleAsync(x => x.Id == routeId)).SourceActivityId);
         Assert.Equal(sourceOwner, (await verification.Segments.SingleAsync(x => x.Id == segmentId)).OwnerId);
         Assert.Null((await verification.Segments.SingleAsync(x => x.Id == segmentId)).SourceActivityId);
+        Assert.Equal(childSegmentId, Assert.Single((await segments.GetAsync(segmentId))!.Children).Summary.Id);
+        Assert.Empty((await segments.GetAsync(childSegmentId))!.Efforts);
     }
 
 
@@ -502,7 +509,7 @@ public sealed class DatabaseIntegrationTests
             .Select((point, index) => point with { Timestamp = start.AddSeconds(index) })
             .ToArray();
         var activity = await setup.SeedActivityAsync(owner, "Continuous source", SportKind.Cycling, activityPoints);
-        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+        var service = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
 
         var segmentId = await service.CreateFromActivityAsync(
             new CreateSegmentRequest(owner, activity, "Continuous climb", 2, 52, 30));
@@ -574,7 +581,7 @@ public sealed class DatabaseIntegrationTests
         Assert.True(faster.Average(point => point.SpeedMetersPerSecond) < slower.Average(point => point.SpeedMetersPerSecond));
         await setup.SeedActivityAsync(owner, "Faster pass", SportKind.Cycling, faster);
         await setup.SeedActivityAsync(owner, "Slower pass", SportKind.Cycling, slower);
-        var service = new SegmentService(setup.Factory, new WholeStreamSegmentMatcher());
+        var service = new SegmentService(setup.Factory, new WholeStreamSegmentMatcher(), new OwnerMutationLock());
 
         var segmentId = await service.CreateAsync(new CreateSegmentPathRequest(
             owner,
@@ -610,7 +617,7 @@ public sealed class DatabaseIntegrationTests
             new TrackPoint(start.AddSeconds(3), 55, 12.002, null, 40, 5, 130, 85, 200, 15)
         };
         var activity = await setup.SeedActivityAsync(owner, "Intermittent GPS", SportKind.Cycling, points);
-        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+        var service = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
 
         var segmentId = await service.CreateFromActivityAsync(
             new CreateSegmentRequest(owner, activity, "Gap tolerant climb", 0, 3, 30));
@@ -633,7 +640,7 @@ public sealed class DatabaseIntegrationTests
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Atomic segment athlete");
         var activity = await setup.SeedActivityAsync(owner, "Atomic source", SportKind.Cycling, TestSupport.Track(60));
-        var service = new SegmentService(setup.Factory, new ThrowingSegmentMatcher());
+        var service = new SegmentService(setup.Factory, new ThrowingSegmentMatcher(), new OwnerMutationLock());
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateFromActivityAsync(
             new CreateSegmentRequest(owner, activity, "Must not persist", 5, 30, 30)));
@@ -649,7 +656,7 @@ public sealed class DatabaseIntegrationTests
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Directional segment athlete");
         var activity = await setup.SeedActivityAsync(owner, "Forward only", SportKind.Cycling, TestSupport.Track(60));
-        var service = new SegmentService(setup.Factory, new SegmentMatcher());
+        var service = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
 
         var segmentId = await service.CreateFromActivityAsync(
             new CreateSegmentRequest(owner, activity, "Reverse direction", 10, 35, 30, ReverseDirection: true));
@@ -899,12 +906,14 @@ public sealed class DatabaseIntegrationTests
         }
 
         var statistics = new StatisticsService(setup.Factory);
-        var segments = new SegmentService(setup.Factory, new SegmentMatcher());
+        var segments = new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock());
         var storage = CreateStorageServices(setup, paths);
         var processor = new ImportProcessor(
             setup.Factory, [importer], paths, storage.Originals, storage.FileOperations, storage.OwnerLock,
             statistics, segments, NullLogger<ImportProcessor>.Instance);
 
+        var parentSegmentId = await segments.CreateAsync(new CreateSegmentPathRequest(owner, "Imported path", SportKind.Cycling, TestSupport.Track(30)));
+        var childSegmentId = await segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(parentSegmentId, "Imported section", 5, 20));
         await processor.ProcessAsync(await AddBatchAsync(SourceKind.GarminArchive));
         await processor.ProcessAsync(await AddBatchAsync(SourceKind.StravaArchive));
 
@@ -914,6 +923,9 @@ public sealed class DatabaseIntegrationTests
         Assert.Equal("Strava description", activity.Description);
         Assert.Equal("strava-42", activity.StravaId);
         Assert.Equal(2, activity.SourceFiles.Count);
+        var section = Assert.Single((await segments.GetAsync(parentSegmentId))!.Children);
+        Assert.Equal(childSegmentId, section.Summary.Id);
+        Assert.Equal(activity.Id, Assert.Single(section.Efforts).ActivityId);
     }
 
     [Fact]
@@ -987,7 +999,7 @@ public sealed class DatabaseIntegrationTests
             storage.FileOperations,
             storage.OwnerLock,
             new StatisticsService(setup.Factory),
-            new SegmentService(setup.Factory, new SegmentMatcher()),
+            new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock()),
             NullLogger<ImportProcessor>.Instance);
 
         await processor.ProcessAsync(await AddBatchAsync(CreateGarminArchive(), SourceKind.GarminArchive));

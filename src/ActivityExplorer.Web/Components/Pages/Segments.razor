@@ -50,19 +50,22 @@ else
 else if (_segments.Count == 0) { <section class="empty-state"><h2>No segments yet</h2><p>Import or draw one above, create one from a route, or select part of an activity.</p><a class="button" href="/activities">Browse activities</a></section> }
 else
 {
-    <section class="card-grid">
-    @foreach (var segment in _segments)
-    {
-        <a class="entity-card" href="@($"/segments/{segment.Id}")">
-            <span class="eyebrow">@segment.Sport - @segment.OwnerName</span><h2>@segment.Name</h2>
-            <div class="entity-metrics"><span><strong>@Format.Distance(segment.DistanceMeters)</strong><small>distance</small></span><span><strong>@segment.EffortCount</strong><small>efforts</small></span><span><strong>@(segment.BestElapsedSeconds.HasValue ? Format.Duration(segment.BestElapsedSeconds.Value) : "--")</strong><small>best</small></span></div>
-            <small>@SourceLabel(segment) · Match tolerance: @segment.ToleranceMeters.ToString("N0") m</small>
-        </a>
-    }
+    <section class="panel segment-library" aria-labelledby="saved-segments-heading">
+        <h2 id="saved-segments-heading">Saved segments</h2>
+        <ul class="segment-library-roots">
+            @foreach (var segment in _segments.Where(segment => !_parentCounts.ContainsKey(segment.Id)))
+            {
+                <SegmentTreeBranch @key="segment.Id" SegmentId="segment.Id" Segments="_segmentsById" Children="_children" ParentCounts="_parentCounts" />
+            }
+        </ul>
     </section>
 }
 @code {
     private IReadOnlyList<SegmentSummary>? _segments;
+    private IReadOnlyDictionary<Guid, SegmentSummary> _segmentsById = new Dictionary<Guid, SegmentSummary>();
+    private IReadOnlyDictionary<Guid, int> _parentCounts = new Dictionary<Guid, int>();
+    private ILookup<Guid, Guid> _children = Array.Empty<SegmentRelationship>().ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
+    private int _loadVersion;
     private IReadOnlyList<TrackPoint> _drawn = [];
     private const string ImportInputId = "segment-path-file";
     private MapCanvas? _drawMap;
@@ -94,7 +97,19 @@ else
     }
 
     private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
-    private async Task Load() => _segments = await SegmentService.ListAsync(ProfileState.SelectedOwnerId);
+    private async Task Load()
+    {
+        var version = ++_loadVersion;
+        var ownerId = ProfileState.SelectedOwnerId;
+        var segments = await SegmentService.ListAsync(ownerId);
+        var links = await SegmentService.ListRelationshipsAsync(ownerId);
+        if (version != _loadVersion) return;
+        _segments = segments;
+        _segmentsById = segments.ToDictionary(segment => segment.Id);
+        var visibleLinks = links.Where(link => _segmentsById.ContainsKey(link.ParentSegmentId) && _segmentsById.ContainsKey(link.ChildSegmentId)).ToArray();
+        _children = visibleLinks.ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
+        _parentCounts = visibleLinks.GroupBy(link => link.ChildSegmentId).ToDictionary(group => group.Key, group => group.Count());
+    }
     private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
     private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }
     private async Task Clear() { if (_drawMap is not null) await _drawMap.ClearAsync(); }
@@ -142,17 +157,6 @@ else
         }
         finally { _importing = false; }
     }
-
-    private static string SourceLabel(SegmentSummary segment) => segment.SourceKind switch
-    {
-        SegmentSourceKind.ImportedFile => string.IsNullOrWhiteSpace(segment.SourceFormat)
-            ? "Imported file"
-            : $"Imported {segment.SourceFormat}",
-        SegmentSourceKind.Activity => "Created from activity",
-        SegmentSourceKind.Route => "Created from route",
-        SegmentSourceKind.Drawn => "Drawn locally",
-        _ => "Local definition"
-    };
 
     private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
     public void Dispose() => ProfileState.Changed -= Changed;

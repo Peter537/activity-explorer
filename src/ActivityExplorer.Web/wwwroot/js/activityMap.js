@@ -131,6 +131,63 @@ window.activityExplorerMap = (() => {
         refreshInspectionLayer(entry);
     }
 
+    function refreshSectionLayers(entry) {
+        if (!entry.map.isStyleLoaded()) {
+            if (!entry.sectionsPending) {
+                entry.sectionsPending = true;
+                entry.map.once("idle", () => {
+                    entry.sectionsPending = false;
+                    refreshSectionLayers(entry);
+                });
+            }
+            return;
+        }
+        const features = [];
+        const coordinates = entry.options.inlineCoordinates || [];
+        const markers = entry.sectionMarkers ||= new Map();
+        const retained = new Set();
+        for (const section of entry.options.sections || []) {
+            const selected = section.id === entry.options.selectedSectionId;
+            section.placements.forEach((placement, occurrence) => {
+                const path = coordinates.slice(placement.startIndex, placement.endIndex + 1);
+                if (path.length < 2) return;
+                features.push({ type: "Feature", geometry: { type: "LineString", coordinates: path }, properties: { selected } });
+                const key = `${section.id}:${occurrence}`;
+                retained.add(key);
+                let marker = markers.get(key);
+                if (!marker) {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.textContent = String(section.number);
+                    button.setAttribute("aria-label", `Show ${section.name}, occurrence ${occurrence + 1}`);
+                    button.title = `${section.number}. ${section.name}`;
+                    button.addEventListener("click", () => entry.dotnet?.invokeMethodAsync("SelectSection", section.id));
+                    marker = new entry.maplibre.Marker({ element: button }).setLngLat(path[0]).addTo(entry.map);
+                    markers.set(key, marker);
+                }
+                const button = marker.getElement();
+                button.textContent = String(section.number);
+                button.title = `${section.number}. ${section.name}`;
+                button.setAttribute("aria-label", `Show ${section.name}, occurrence ${occurrence + 1}`);
+                button.classList.add("segment-section-marker");
+                button.classList.toggle("selected", selected);
+                button.setAttribute("aria-pressed", String(selected));
+            });
+        }
+        for (const [key, marker] of markers) {
+            if (!retained.has(key)) { marker.remove(); markers.delete(key); }
+        }
+        const data = { type: "FeatureCollection", features };
+        if (entry.map.getSource("subsegments")) entry.map.getSource("subsegments").setData(data);
+        else if (features.length) {
+            entry.map.addSource("subsegments", { type: "geojson", data });
+            entry.map.addLayer({ id: "subsegment-outline", type: "line", source: "subsegments", paint: { "line-color": "#ffffff", "line-width": 9 } });
+            entry.map.addLayer({ id: "subsegment-paths", type: "line", source: "subsegments", paint: { "line-color": "#17211d", "line-width": 4, "line-dasharray": [2, 1] } });
+            entry.map.addLayer({ id: "subsegment-active", type: "line", source: "subsegments", filter: ["==", ["get", "selected"], true], paint: { "line-color": "#246b59", "line-width": 6 } });
+        }
+        entry.map.getContainer().dataset.selectedSection = entry.options.selectedSectionId || "";
+    }
+
     function refreshTrackLayers(entry) {
         if (!entry.map.isStyleLoaded()) return;
         const coordinates = entry.options.inlineCoordinates || [];
@@ -176,6 +233,7 @@ window.activityExplorerMap = (() => {
                 paint: { "circle-radius": 7, "circle-color": "#c74632", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" }
             });
         }
+        refreshSectionLayers(entry);
         refreshInspectionLayer(entry);
     }
 
@@ -290,15 +348,24 @@ window.activityExplorerMap = (() => {
         refreshTrackLayers(entry);
     }
 
+    function updateSections(id, sections, selectedSectionId) {
+        const entry = maps.get(id);
+        if (!entry) return;
+        entry.options.sections = sections;
+        entry.options.selectedSectionId = selectedSectionId;
+        refreshSectionLayers(entry);
+    }
+
     function destroy(id) {
         const entry = maps.get(id);
         if (entry) {
             if (entry.inspectionGroup && entry.inspectionHandler)
                 entry.inspectionGroup.removeEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
+            for (const marker of entry.sectionMarkers?.values() || []) marker.remove();
             entry.map.remove();
             maps.delete(id);
         }
     }
 
-    return { create, addCenterPoint, undo, clear, updateSelection, destroy };
+    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, destroy };
 })();

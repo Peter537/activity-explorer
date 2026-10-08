@@ -6,6 +6,26 @@ namespace ActivityExplorer.Tests;
 public sealed class DatabaseSchemaCompatibilityTests
 {
     [Fact]
+    public async Task Adds_segment_links_idempotently_and_cascades_only_relationships()
+    {
+        var directory = TestSupport.NewDirectory();
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(directory, "legacy-links.db")}").Options;
+        await using var db = new ExplorerDbContext(options);
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE \"Segments\" (\"Id\" TEXT NOT NULL PRIMARY KEY)");
+        await db.Database.ExecuteSqlRawAsync("INSERT INTO \"Segments\" VALUES ('parent'), ('child'), ('other')");
+        await DatabaseInitializer.EnsureSegmentLinksAsync(db);
+        await db.Database.ExecuteSqlRawAsync("INSERT INTO \"SegmentLinks\" VALUES ('parent', 'child'), ('other', 'child')");
+        await DatabaseInitializer.EnsureSegmentLinksAsync(db);
+        Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"SegmentLinks\""));
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Segments\" WHERE \"Id\" = 'parent'");
+        Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"Segments\""));
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"SegmentLinks\""));
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Segments\" WHERE \"Id\" = 'child'");
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"SegmentLinks\""));
+    }
+
+    [Fact]
     public async Task Adds_segment_provenance_columns_to_an_existing_database_idempotently()
     {
         var directory = TestSupport.NewDirectory();

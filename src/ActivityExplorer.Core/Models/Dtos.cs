@@ -96,7 +96,15 @@ public sealed record SegmentSummary(
 
 public sealed record SegmentDetail(
     SegmentSummary Summary, IReadOnlyList<TrackPoint> Points, IReadOnlyList<SegmentEffortSummary> Efforts,
-    Guid? SelectedEffortId, IReadOnlyList<TrackPoint> SelectedEffortPoints);
+    Guid? SelectedEffortId, IReadOnlyList<TrackPoint> SelectedEffortPoints,
+    IReadOnlyList<SegmentSummary> Parents, IReadOnlyList<SubsegmentDetail> Children);
+public sealed record SegmentRelationship(Guid ParentSegmentId, Guid ChildSegmentId);
+public sealed record SegmentPlacement(int StartIndex, int EndIndex, double StartDistanceMeters, double EndDistanceMeters);
+public sealed record SubsegmentDetail(
+    SegmentSummary Summary, IReadOnlyList<SegmentPlacement> Placements, IReadOnlyList<SegmentEffortSummary> Efforts);
+public sealed record SegmentAttachmentPreview(SegmentSummary Child, IReadOnlyList<SegmentPlacement> Placements);
+public sealed record CreateSubsegmentRequest(
+    Guid ParentSegmentId, string Name, int StartPointIndex, int EndPointIndex, double ToleranceMeters = 30);
 public sealed record CreateRouteRequest(Guid OwnerId, Guid ActivityId, string Name, string? Description);
 public sealed record CreateRoutePathRequest(
     Guid OwnerId, string Name, string? Description, SportKind Sport,

@@ -16,6 +16,7 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
     public DbSet<Gear> Gears => Set<Gear>();
     public DbSet<Route> Routes => Set<Route>();
     public DbSet<Segment> Segments => Set<Segment>();
+    public DbSet<SegmentLink> SegmentLinks => Set<SegmentLink>();
     public DbSet<SegmentEffort> SegmentEfforts => Set<SegmentEffort>();
     public DbSet<StatisticSnapshot> StatisticSnapshots => Set<StatisticSnapshot>();
     public DbSet<WatchedFolder> WatchedFolders => Set<WatchedFolder>();
@@ -79,6 +80,11 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
         modelBuilder.Entity<ActivityMetric>().HasIndex(x => new { x.ActivityId, x.Key, x.Origin }).IsUnique();
         modelBuilder.Entity<SegmentEffort>().HasIndex(x => new { x.SegmentId, x.ActivityId, x.StartPointIndex }).IsUnique();
         modelBuilder.Entity<SegmentEffort>().HasIndex(x => new { x.SegmentId, x.ElapsedSeconds });
+        modelBuilder.Entity<SegmentLink>().HasKey(x => new { x.ParentSegmentId, x.ChildSegmentId });
+        modelBuilder.Entity<SegmentLink>().HasOne(x => x.ParentSegment).WithMany()
+            .HasForeignKey(x => x.ParentSegmentId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<SegmentLink>().HasOne(x => x.ChildSegment).WithMany()
+            .HasForeignKey(x => x.ChildSegmentId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<StatisticSnapshot>().HasIndex(x => new { x.OwnerId, x.Scope, x.Sport, x.Kind, x.Key }).IsUnique();
         modelBuilder.Entity<WatchedFolder>().HasIndex(x => new { x.OwnerId, x.Path }).IsUnique();
 

@@ -72,9 +72,11 @@ erDiagram
 
 `ApplicationSetting` persists the single global map mode. `FileOperationJournal` records prepared, database-committed, completed, rolled-back, and failed copy/quarantine operations with root-relative paths. Owner-scoped mutation locks serialize imports, transfers, and deletion for affected profiles.
 
+`SegmentLink` stores unique parent/child segment pairs with foreign keys that cascade relationship rows only. Relationship mutations use the same owner lock; attachment validates profile, sport, directional containment, and cycle avoidance. Section placements are derived from the ordered geometry matcher. Detail queries batch related summaries and select child efforts wholly inside the selected parent effort's activity-stream interval, without storing duplicate tracks or effort relationships.
+
 Segment-path uploads bypass the activity queue. `SegmentPathReader` accepts one GPX, FIT segment/course, TCX, KML, or GeoJSON line, exposes only geometry and normalized format, and rejects FIT activities or multiple independent paths. The endpoint applies the requested inclusive trim and optional reversal before calling `ISegmentService`. Only the local WKB path and minimal source kind/name/format provenance are stored; staged and original path files are not retained.
 
-The initializer creates the current schema when the database does not yet exist. A database already matching the current model opens unchanged, and the segment-provenance compatibility step idempotently adds `SourceKind`, `SourceName`, and `SourceFormat` to the immediately preceding schema. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. Other older development schemas still require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
+The initializer creates the current schema when the database does not yet exist. Additive compatibility steps idempotently add segment provenance, effort-metric columns, and the segment-link table to supported earlier schemas. Existing values remain intact, and startup does not group segments or recalculate their efforts. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. Other older development schemas still require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
 
 ## Activity transfer and deletion
 

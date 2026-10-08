@@ -220,7 +220,7 @@ public sealed class StorageLifecycleTests
             setup.FileOperations,
             new OwnerMutationLock(),
             new StatisticsService(setup.Factory),
-            new SegmentService(setup.Factory, new SegmentMatcher()),
+            new SegmentService(setup.Factory, new SegmentMatcher(), new OwnerMutationLock()),
             NullLogger<ImportProcessor>.Instance);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processor.ProcessAsync(batch.Id, cancellation.Token));

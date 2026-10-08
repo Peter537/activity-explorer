@@ -102,6 +102,11 @@ public interface ISegmentService
     Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(CreateSegmentPathRequest request, CancellationToken cancellationToken = default);
     Task RecomputeAsync(Guid segmentId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<SegmentRelationship>> ListRelationshipsAsync(Guid? ownerId, CancellationToken cancellationToken = default);
+    Task<Guid> CreateSubsegmentAsync(CreateSubsegmentRequest request, CancellationToken cancellationToken = default);
+    Task<SegmentAttachmentPreview> PreviewAttachmentAsync(Guid parentId, Guid childId, CancellationToken cancellationToken = default);
+    Task AttachAsync(Guid parentId, Guid childId, CancellationToken cancellationToken = default);
+    Task DetachAsync(Guid parentId, Guid childId, CancellationToken cancellationToken = default);
 }
 
 public interface IRouteService

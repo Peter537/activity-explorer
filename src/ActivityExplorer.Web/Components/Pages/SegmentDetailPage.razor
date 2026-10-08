@@ -1,5 +1,6 @@
 @page "/segments/{Id:guid}"
 @inject ISegmentService SegmentService
+@inject NavigationManager Navigation
 
 <PageTitle>@(_segment?.Summary.Name ?? (_loadError is not null ? "Segment unavailable" : _loaded ? "Segment not found" : "Segment")) - Activity Explorer</PageTitle>
 @if (!_loaded)
@@ -18,8 +19,17 @@ else
 {
     <PageHeader Title="@_segment.Summary.Name" Summary="@($"Directional: start to finish - {_segment.Summary.ToleranceMeters:N0} m matching tolerance")">
         <Metadata><span>@_segment.Summary.Sport</span><span>@_segment.Summary.OwnerName</span><span>@SourceLabel</span></Metadata>
-        <Actions><button class="button" disabled="@_recomputing" @onclick="Recompute">@(_recomputing ? "Recomputing efforts..." : "Recompute efforts")</button></Actions>
+        <Actions><a class="button primary" href="@($"/segments/{Id}/subsegments/new")">Add sub-segment</a><button class="button" disabled="@_recomputing" @onclick="Recompute">@(_recomputing ? "Recomputing efforts..." : "Recompute efforts")</button></Actions>
     </PageHeader>
+    @if (_segment.Parents.Count > 0)
+    {
+        <nav class="segment-parents" aria-label="Parent segments"><span>Part of</span>
+            @foreach (var parent in _segment.Parents)
+            {
+                <a href="@($"/segments/{parent.Id}")">@parent.Name</a>
+            }
+        </nav>
+    }
     @if (_segment.Summary.SourceKind == SegmentSourceKind.ImportedFile)
     {
         <div class="notice subtle">Imported provenance: @(_segment.Summary.SourceName ?? "user-supplied file")@if (!string.IsNullOrWhiteSpace(_segment.Summary.SourceFormat)) { <text> · @_segment.Summary.SourceFormat</text> }. Only local path geometry and this provenance label were retained.</div>
@@ -41,11 +51,62 @@ else
 
     <section id="@_definitionExplorerId" class="segment-definition-explorer">
         <SegmentDefinitionProfile Points="_segment.Points" InspectionGroupId="@_definitionExplorerId" />
+        <SegmentSectionStrip Sections="_mapSections" DistanceMeters="_segment.Summary.DistanceMeters" SelectedId="_selectedSectionId" SelectedIdChanged="SelectSection" />
         <section class="panel flush map-panel">
-            <MapCanvas @key="_segment.SelectedEffortId" InlinePoints="_segment.Points"
+            <MapCanvas @key="(Id, _segment.SelectedEffortId)" InlinePoints="_segment.Points"
                        HighlightPoints="_segment.SelectedEffortPoints" InspectionGroupId="@_definitionExplorerId"
+                       Sections="_mapSections" SelectedSectionId="_selectedSectionId" SelectedSectionIdChanged="SelectSection"
                        CssClass="detail-map" Label="Segment and selected effort map" />
         </section>
+    </section>
+
+    <section class="panel subsegment-breakdown" aria-labelledby="subsegments-heading">
+        <div class="panel-heading"><div><h2 id="subsegments-heading">Sub-segments</h2><p class="muted">Each section keeps its own history. Results below belong only to the selected parent effort.</p></div></div>
+        <StatusMessage Message="@_relationshipStatus" IsError="@_relationshipFailed" />
+        @if (_segment.Children.Count == 0)
+        {
+            <p>No sub-segments yet. <a href="@($"/segments/{Id}/subsegments/new")">Add a section from this path or attach an existing segment.</a></p>
+        }
+        else
+        {
+            <p class="muted">@(_segment.SelectedEffortId.HasValue ? $"Selected effort: {_segment.Efforts.First(effort => effort.Id == _segment.SelectedEffortId).StartTime.ToLocalTime():g}" : "No parent effort is available yet.")</p>
+            <table class="subsegment-table">
+                <thead><tr><th scope="col">Section</th><th scope="col">Distance / grade</th><th scope="col">Personal best</th><th scope="col">Selected effort</th></tr></thead>
+                <tbody>
+                    @foreach (var child in _segment.Children)
+                    {
+                        <tr class="@(child.Summary.Id == _selectedSectionId ? "active" : null)" data-subsegment-id="@child.Summary.Id">
+                            <th scope="row">
+                                <a href="@($"/segments/{child.Summary.Id}")">@child.Summary.Name</a>
+                                <div class="subsegment-actions"><button class="text-button" type="button" aria-pressed="@(child.Summary.Id == _selectedSectionId ? "true" : "false")" @onclick="() => SelectSection(child.Summary.Id)">Show on path</button>
+                                    <button class="text-button" type="button" disabled="@_removing" @onclick="() => RemoveSection(child.Summary.Id)">Remove from this segment<span class="visually-hidden">: @child.Summary.Name</span></button></div>
+                            </th>
+                            <td data-label="Distance / grade">@Format.Distance(child.Summary.DistanceMeters)<small>@Value(child.Summary.AverageGrade, "%", 1)</small></td>
+                            <td data-label="Personal best">@(child.Summary.BestElapsedSeconds.HasValue ? Format.Duration(child.Summary.BestElapsedSeconds.Value) : "--")</td>
+                            <td data-label="Selected effort">
+                                @if (child.Efforts.Count == 0)
+                                {
+                                    <span class="muted">No matching pass in this effort</span>
+                                }
+                                else
+                                {
+                                    <ol class="subsegment-passes">
+                                        @for (var pass = 0; pass < child.Efforts.Count; pass++)
+                                        {
+                                            var effort = child.Efforts[pass];
+                                            <li><a href="@($"/segments/{child.Summary.Id}?effort={effort.Id}")">Pass @(pass + 1) · @Format.Duration(effort.ElapsedSeconds)</a><small>@Format.Speed(effort.AverageSpeed, child.Summary.Sport)</small>
+                                                @if (!effort.MetricsCurrent) { <small>Legacy calculation</small> }
+                                            </li>
+                                        }
+                                    </ol>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <p class="muted compact-note">Removing a section here keeps the segment, its history, and its other parent links.</p>
+        }
     </section>
 
     <section class="panel">
@@ -67,7 +128,7 @@ else
                     {
                         <tr class="@(effort.Id == _segment.SelectedEffortId ? "selected" : null)">
                             <td>#@effort.Rank</td>
-                            <td><a href="@($"/segments/{Id}?effort={effort.Id}")">@effort.StartTime.ToLocalTime().ToString("g")</a></td>
+                            <td><a href="@EffortUrl(effort.Id)">@effort.StartTime.ToLocalTime().ToString("g")</a></td>
                             <td>@Format.Duration(effort.ElapsedSeconds)</td>
                             <td>@Format.Duration(effort.MovingSeconds)</td>
                             <td>@Format.Speed(effort.AverageSpeed, _segment.Summary.Sport)</td>
@@ -119,6 +180,7 @@ else
 @code {
     [Parameter] public Guid Id { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "effort")] public Guid? EffortId { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "section")] public Guid? SectionId { get; set; }
 
     private SegmentDetail? _segment;
     private string _sort = "rank";
@@ -129,12 +191,21 @@ else
     private string? _recomputeStatus;
     private bool _recomputeFailed;
     private readonly string _definitionExplorerId = $"segment-definition-{Guid.NewGuid():N}";
+    private IReadOnlyList<SegmentMapSection> _mapSections = [];
+    private Guid? _selectedSectionId;
+    private Guid? _loadedId;
+    private Guid? _loadedEffortId;
+    private int _loadVersion;
+    private bool _removing;
+    private string? _relationshipStatus;
+    private bool _relationshipFailed;
     private bool HasLegacyEfforts => _segment?.Efforts.Any(x => !x.MetricsCurrent) == true;
     private string SourceLabel => _segment?.Summary.SourceKind switch
     {
         SegmentSourceKind.ImportedFile => "Imported file",
         SegmentSourceKind.Activity => "Activity selection",
         SegmentSourceKind.Route => "Route selection",
+        SegmentSourceKind.Segment => "Segment selection",
         SegmentSourceKind.Drawn => "Drawn locally",
         _ => "Local definition"
     };
@@ -151,41 +222,103 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
+        if (_loaded && _loadedId == Id && _loadedEffortId == EffortId && _segment is not null)
+        {
+            UpdateSectionSelection();
+            return;
+        }
         _recomputeStatus = null;
         _recomputeFailed = false;
+        _relationshipStatus = null;
+        _relationshipFailed = false;
         await LoadAsync();
     }
 
 
     private async Task LoadAsync()
     {
+        var version = ++_loadVersion;
+        var id = Id;
+        var effortId = EffortId;
         _loaded = false;
         _loadError = null;
-        try { _segment = await SegmentService.GetAsync(Id, EffortId); }
+        try
+        {
+            var segment = await SegmentService.GetAsync(id, effortId);
+            if (version != _loadVersion) return;
+            ApplySegment(segment);
+            _loadedId = id;
+            _loadedEffortId = effortId;
+        }
         catch
         {
+            if (version != _loadVersion) return;
             _segment = null;
             _loadError = "The segment could not be loaded. Try again.";
         }
-        finally { _loaded = true; }
+        finally { if (version == _loadVersion) _loaded = true; }
     }
     private async Task Recompute()
     {
+        var version = _loadVersion;
+        var id = Id;
+        var effortId = EffortId;
         _recomputing = true;
         _recomputeStatus = null;
         _recomputeFailed = false;
         try
         {
-            await SegmentService.RecomputeAsync(Id);
-            _segment = await SegmentService.GetAsync(Id, EffortId);
+            await SegmentService.RecomputeAsync(id);
+            var segment = await SegmentService.GetAsync(id, effortId);
+            if (version != _loadVersion) return;
+            ApplySegment(segment);
             _recomputeStatus = "Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.";
         }
         catch
         {
+            if (version != _loadVersion) return;
             _recomputeFailed = true;
             _recomputeStatus = "Efforts could not be recomputed. Existing values were kept; try again.";
         }
         finally { _recomputing = false; }
+    }
+    private void ApplySegment(SegmentDetail? segment)
+    {
+        _segment = segment;
+        _mapSections = segment?.Children.Select((child, index) => new SegmentMapSection(child.Summary.Id, child.Summary.Name, index + 1, child.Placements)).ToArray() ?? [];
+        UpdateSectionSelection();
+    }
+
+    private void UpdateSectionSelection() => _selectedSectionId = _mapSections.Any(section => section.Id == SectionId) ? SectionId : null;
+
+    private void SelectSection(Guid sectionId) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("section", sectionId), replace: true);
+
+    private string EffortUrl(Guid effortId) => $"/segments/{Id}?effort={effortId}" + (_selectedSectionId.HasValue ? $"&section={_selectedSectionId}" : string.Empty);
+
+    private async Task RemoveSection(Guid childId)
+    {
+        var version = _loadVersion;
+        var id = Id;
+        var effortId = EffortId;
+        _removing = true;
+        _relationshipFailed = false;
+        _relationshipStatus = null;
+        try
+        {
+            await SegmentService.DetachAsync(id, childId);
+            var segment = await SegmentService.GetAsync(id, effortId);
+            if (version != _loadVersion) return;
+            ApplySegment(segment);
+            _relationshipStatus = "Section removed from this segment. Its history and other links were kept.";
+            if (SectionId == childId) Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("section", (Guid?)null), replace: true);
+        }
+        catch
+        {
+            if (version != _loadVersion) return;
+            _relationshipFailed = true;
+            _relationshipStatus = "The relationship could not be refreshed. Reload the page to check it before trying again.";
+        }
+        finally { _removing = false; }
     }
     private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
     private static string Value(double? value, string unit, int decimals = 0) =>

@@ -26,6 +26,9 @@
     [Parameter] public string? SegmentUrl { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? InlinePoints { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? HighlightPoints { get; set; }
+    [Parameter] public IReadOnlyList<SegmentMapSection> Sections { get; set; } = [];
+    [Parameter] public Guid? SelectedSectionId { get; set; }
+    [Parameter] public EventCallback<Guid> SelectedSectionIdChanged { get; set; }
     [Parameter] public int? SelectionStartIndex { get; set; }
     [Parameter] public int? SelectionEndIndex { get; set; }
     [Parameter] public bool SelectionReversed { get; set; }
@@ -40,6 +43,8 @@
     private int? _renderedSelectionStart;
     private int? _renderedSelectionEnd;
     private bool _renderedSelectionReversed;
+    private IReadOnlyList<SegmentMapSection>? _renderedSections;
+    private Guid? _renderedSectionId;
     private string _pointStatus = "No points added.";
     private MapPrivacyMode _mode = MapPrivacyMode.Blank;
 
@@ -61,6 +66,12 @@
                     SelectionReversed);
                 RememberSelection();
             }
+            if (_initialized && (!ReferenceEquals(_renderedSections, Sections) || _renderedSectionId != SelectedSectionId))
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateSections", _id, Sections, SelectedSectionId);
+                _renderedSections = Sections;
+                _renderedSectionId = SelectedSectionId;
+            }
             return;
         }
         var coordinates = InlinePoints?
@@ -71,7 +82,7 @@
             .Where(x => x.Longitude.HasValue && x.Latitude.HasValue)
             .Select(x => new[] { x.Longitude!.Value, x.Latitude!.Value })
             .ToArray();
-        if (Editable) _reference = DotNetObjectReference.Create(this);
+        _reference = DotNetObjectReference.Create(this);
         await JS.InvokeVoidAsync("activityExplorerMap.create", _id, new
         {
             activityUrl = ActivityUrl,
@@ -79,6 +90,8 @@
             segmentUrl = SegmentUrl,
             inlineCoordinates = coordinates,
             highlightCoordinates,
+            sections = Sections,
+            selectedSectionId = SelectedSectionId,
             selectionStartIndex = SelectionStartIndex,
             selectionEndIndex = SelectionEndIndex,
             selectionReversed = SelectionReversed,
@@ -93,8 +106,14 @@
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
         _initialized = true;
+        _renderedSections = Sections;
+        _renderedSectionId = SelectedSectionId;
         RememberSelection();
     }
+
+    [JSInvokable]
+    public Task SelectSection(Guid sectionId) => Sections.Any(section => section.Id == sectionId)
+        ? SelectedSectionIdChanged.InvokeAsync(sectionId) : Task.CompletedTask;
 
     [JSInvokable]
     public async Task UpdateDrawing(double[][] coordinates)

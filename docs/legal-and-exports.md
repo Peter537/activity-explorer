@@ -37,7 +37,7 @@ An official account export is different from automated API collection: the accou
 
 ## Local segments
 
-Activity Explorer does not import, mirror, or present Strava's proprietary segment catalog. It creates independent local segments from drawings, reviewed portions of local activities/routes, or user-supplied GPX, FIT segment/course, TCX, KML, and GeoJSON paths. The product wording is **Create from a file** or **Import as local segment**, not “Import Strava segments.” Efforts are calculated only from files assigned to that local owner profile.
+Activity Explorer does not import, mirror, or present Strava's proprietary segment catalog. It creates independent local segments from drawings, reviewed portions of local activities, routes, or segments, and user-supplied GPX, FIT segment/course, TCX, KML, and GeoJSON paths. The product wording is **Create from a file** or **Import as local segment**, not “Import Strava segments.” Efforts are calculated only from files assigned to that local owner profile. Linking a sub-segment to a parent does not change that scope or establish a provider identity.
 
 Generic format support does not decide ownership or permission. A creator-supplied original path, an exported activity the user controls, or an independently created route is the preferred provenance. A FIT Segment file copied from a synchronized device may be technically readable, but Strava and Garmin do not document downstream extraction and permanent reuse; do not rely on that workflow without written clarification. No third-party sample segment data is committed to this repository.
 

@@ -17,6 +17,7 @@ public sealed class DatabaseInitializer(
         await db.Database.EnsureCreatedAsync(cancellationToken);
         await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
         await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
+        await EnsureSegmentLinksAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -86,6 +87,20 @@ public sealed class DatabaseInitializer(
         if (!existing.Contains("MetricComputationVersion"))
             await db.Database.ExecuteSqlRawAsync(
                 "ALTER TABLE \"SegmentEfforts\" ADD COLUMN \"MetricComputationVersion\" INTEGER NOT NULL DEFAULT 1", cancellationToken);
+    }
+
+    internal static async Task EnsureSegmentLinksAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "SegmentLinks" (
+                "ParentSegmentId" TEXT NOT NULL,
+                "ChildSegmentId" TEXT NOT NULL,
+                CONSTRAINT "PK_SegmentLinks" PRIMARY KEY ("ParentSegmentId", "ChildSegmentId"),
+                CONSTRAINT "FK_SegmentLinks_Segments_ParentSegmentId" FOREIGN KEY ("ParentSegmentId") REFERENCES "Segments" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_SegmentLinks_Segments_ChildSegmentId" FOREIGN KEY ("ChildSegmentId") REFERENCES "Segments" ("Id") ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS "IX_SegmentLinks_ChildSegmentId" ON "SegmentLinks" ("ChildSegmentId");
+            """, cancellationToken);
     }
 
     private async Task ReportUntrackedOriginalsAsync(ExplorerDbContext db, CancellationToken cancellationToken)

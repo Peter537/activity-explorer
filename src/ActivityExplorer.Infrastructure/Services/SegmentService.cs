@@ -7,9 +7,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed class SegmentService(
+public sealed partial class SegmentService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
-    ISegmentMatcher matcher) : ISegmentService
+    ISegmentMatcher matcher,
+    IOwnerMutationLock ownerMutationLock) : ISegmentService
 {
     public async Task<IReadOnlyList<SegmentSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default)
     {
@@ -72,13 +73,14 @@ public sealed class SegmentService(
         var positionedDefinitionPoints = definitionPoints
             .Select((point, index) => point with { DistanceMeters = definitionAnalysis.DistanceAt(index) })
             .ToArray();
+        var (parents, children) = await GetRelatedSegmentsAsync(db, segment, definitionPoints, selected, cancellationToken);
         return new SegmentDetail(
             new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner?.DisplayName ?? "Unknown profile", segment.Name,
                 segment.Sport, segment.DistanceMeters, segment.ToleranceMeters, efforts.Count,
                 efforts.Count == 0 ? null : efforts.Min(x => x.ElapsedSeconds), segment.AverageGradePercent,
                 segment.ElevationGainMeters, segment.ElevationLossMeters, segment.SourceKind, segment.SourceName, segment.SourceFormat),
             positionedDefinitionPoints,
-            efforts, selected?.Id, selectedPoints);
+            efforts, selected?.Id, selectedPoints, parents, children);
     }
 
     public async Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default)

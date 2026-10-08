@@ -1,0 +1,5 @@
+.subsegment-mode { margin-bottom: 20px; }
+.existing-subsegment { display: grid; gap: 16px; min-width: 0; }
+.existing-subsegment > p { margin-bottom: 0; }
+.existing-subsegment select { width: 100%; min-width: 0; }
+.existing-subsegment > button { justify-self: start; }

@@ -1,0 +1,38 @@
+@if (Sections.Count > 0)
+{
+    <section class="segment-section-strip" aria-label="Sub-segments along the path">
+        <h2>Sub-segments along the path</h2>
+        <p class="muted">Select a section to highlight every occurrence on the map. Positions are measured from the parent start.</p>
+        <ol class="section-position-list">
+            @foreach (var section in Sections)
+            {
+                <li class="@(section.Id == SelectedId ? "active" : null)">
+                    <button type="button" aria-pressed="@(section.Id == SelectedId ? "true" : "false")" @onclick="() => SelectedIdChanged.InvokeAsync(section.Id)">
+                        <span class="section-number">@section.Number</span> @section.Name
+                    </button>
+                    <svg class="section-distance-track" viewBox="0 0 1000 20" preserveAspectRatio="none" aria-hidden="true">
+                        <line x1="0" x2="1000" y1="18" y2="18" vector-effect="non-scaling-stroke"></line>
+                        @foreach (var placement in section.Placements)
+                        {
+                            <rect x="@Invariant(Position(placement.StartDistanceMeters))" y="3" height="12"
+                                  width="@Invariant(Math.Max(1, Position(placement.EndDistanceMeters) - Position(placement.StartDistanceMeters)))"
+                                  vector-effect="non-scaling-stroke"></rect>
+                        }
+                    </svg>
+                    <small>@string.Join(" · ", section.Placements.Select(placement => $"{Format.Distance(placement.StartDistanceMeters)}–{Format.Distance(placement.EndDistanceMeters)}"))</small>
+                </li>
+            }
+        </ol>
+        <div class="section-distance-axis" aria-hidden="true"><span>0 m</span><span>@Format.Distance(DistanceMeters)</span></div>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<SegmentMapSection> Sections { get; set; } = [];
+    [Parameter] public double DistanceMeters { get; set; }
+    [Parameter] public Guid? SelectedId { get; set; }
+    [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
+
+    private double Position(double meters) => Math.Clamp(meters / Math.Max(DistanceMeters, 1) * 1000, 0, 1000);
+    private static string Invariant(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
+}

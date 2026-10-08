@@ -219,6 +219,14 @@ public sealed class Segment
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 
+public sealed class SegmentLink
+{
+    public Guid ParentSegmentId { get; set; }
+    public Segment? ParentSegment { get; set; }
+    public Guid ChildSegmentId { get; set; }
+    public Segment? ChildSegment { get; set; }
+}
+
 public sealed class ApplicationSetting
 {
     [Key, MaxLength(100)] public string Key { get; set; } = string.Empty;

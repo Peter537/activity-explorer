@@ -1,0 +1,14 @@
+.segment-branch { list-style: none; border-top: 1px solid var(--line); padding: 16px 0; min-width: 0; }
+.segment-branch-summary { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.segment-branch-name { min-width: 0; flex: 1 1 220px; overflow-wrap: anywhere; }
+.segment-branch-name > a { font-weight: 700; font-size: 1.1rem; }
+.segment-branch-metrics { display: flex; gap: 24px; flex-wrap: wrap; margin: 0; }
+.segment-branch-metrics dt { font-size: .8rem; color: var(--muted); }
+.segment-branch-metrics dd { margin: 0; font-weight: 650; }
+.segment-branch-children { margin-top: 10px; }
+.segment-branch-children > summary { width: fit-content; cursor: pointer; padding: 6px 4px; color: var(--green); }
+.segment-branch-children > ul { list-style: none; margin: 12px 0 0; padding-left: 16px; border-left: 2px solid var(--line); }
+@media (max-width: 767px) {
+    .segment-branch-children > ul { padding-left: 10px; }
+    .segment-branch-metrics { gap: 16px; }
+}
