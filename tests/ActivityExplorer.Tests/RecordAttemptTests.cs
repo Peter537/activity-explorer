@@ -217,6 +217,8 @@ public sealed class RecordAttemptTests
             Assert.True(result.Benchmark.IsWholeActivity);
             Assert.Equal(kind == RecordKind.AverageSpeed ? 1 : 2, result.Attempts.Total);
             Assert.All(result.Attempts.Items, item => Assert.Null(item.StartPosition));
+            Assert.All(result.Attempts.Items, item => Assert.Null(item.Range));
+            Assert.All(result.Attempts.Items, item => Assert.Null(item.StreamFingerprint));
         }
         Assert.Null(await service.GetAttemptsAsync(new(SportKind.Rowing, RecordKind.Elevation, "Most elevation gain")));
         Assert.DoesNotContain(counter.Commands, command => command.Contains("ActivityStreams", StringComparison.Ordinal));

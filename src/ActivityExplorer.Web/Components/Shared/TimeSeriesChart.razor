@@ -1,4 +1,7 @@
-<div class="chart-panel time-series-chart" data-unit="@Unit">
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div @ref="_element" class="chart-panel time-series-chart @(RangeSelectionEnabled ? "range-selecting" : null)" data-unit="@Unit">
     <div class="chart-heading">
         <div><strong>@Title</strong><small>@Summary</small></div>
         <span>@Unit</span>
@@ -19,6 +22,7 @@
             </div>
             <div class="chart-canvas">
                 <svg class="chart-plot" viewBox="0 0 800 180" preserveAspectRatio="none"
+                     tabindex="@(RangeSelectionEnabled ? "0" : null)"
                      role="img" aria-label="@($"{Title} chart. {Summary}")">
                     <g aria-hidden="true">
                         @foreach (var tick in _valueScale.Ticks)
@@ -36,6 +40,17 @@
                         var coordinate = Coordinate(_series.Samples[0]);
                         <circle class="chart-single-point" cx="@coordinate.X" cy="@coordinate.Y" r="4"></circle>
                     }
+                    @foreach (var segment in _selectionSegments)
+                    {
+                        <polyline class="chart-range-line" points="@segment" aria-hidden="true"></polyline>
+                    }
+                    @foreach (var endpoint in _selectionEndpoints)
+                    {
+                        var coordinate = Coordinate(endpoint.X, endpoint.Value);
+                        <circle class="chart-range-endpoint" cx="@coordinate.X" cy="@coordinate.Y" r="5"
+                                data-source-position="@RoundTrip(endpoint.SourcePosition)" aria-hidden="true"></circle>
+                    }
+                    <g class="chart-range-preview" aria-hidden="true"></g>
                     <rect class="chart-hit-area" x="0" y="0" width="800" height="180" fill="transparent"></rect>
                     <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
                     <circle class="chart-marker" cx="0" cy="0" r="4"></circle>
@@ -44,6 +59,7 @@
                         var coordinate = Coordinate(sample);
                         <circle class="chart-sample" cx="@coordinate.X" cy="@coordinate.Y" r="0"
                                 data-axis="@Invariant(sample.X)" data-value="@Invariant(sample.Value)"
+                                data-source-position="@sample.SourceIndex"
                                 data-axis-label="@FormatAxis(sample.X)" data-value-label="@FormatValue(sample.Value)"></circle>
                     }
                 </svg>
@@ -91,12 +107,31 @@
     [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
     [Parameter, EditorRequired] public Func<TrackPoint, double?> Selector { get; set; } = _ => null;
     [Parameter] public ChartAxisKind Axis { get; set; } = ChartAxisKind.ElapsedTime;
+    [Parameter] public ActivityRange? Selection { get; set; }
+    [Parameter] public bool RangeSelectionEnabled { get; set; }
+    [Parameter] public ActivityRange? SelectionSection { get; set; }
+    [Parameter] public string? RangeStreamIdentity { get; set; }
+    [Parameter] public EventCallback<ActivityRange> SelectionChanged { get; set; }
     private readonly string _inspectorHelpId = $"chart-help-{Guid.NewGuid():N}";
     private ChartSeriesData _series = new([], null, null, null, 0, 0);
     private ChartScaleGeometry _valueScale = ChartScaleBuilder.Build(0, 0);
     private IReadOnlyList<ChartAxisTick> _axisTicks = [];
     private IReadOnlyList<string> _segments = [];
     private int _selectedIndex;
+    private ElementReference _element;
+    private DotNetObjectReference<TimeSeriesChart>? _rangeReference;
+    private IReadOnlyList<ChartRangeSample> _rangeSamples = [];
+    private IReadOnlyList<ChartRangeSample> _axisSamples = [];
+    private IReadOnlyList<ChartRangeSample> _previewSamples = [];
+    private IReadOnlyList<string> _selectionSegments = [];
+    private IReadOnlyList<ChartRangeSample> _selectionEndpoints = [];
+    private IReadOnlyList<TrackPoint>? _rangePoints;
+    private ChartAxisKind _rangeAxis;
+    private bool _rangeBindingDirty;
+    private bool _renderedRangeEnabled;
+    private ActivityRange? _renderedSection;
+    private ActivityRange? _renderedSelection;
+    private string? _renderedStreamIdentity;
 
     protected override void OnParametersSet()
     {
@@ -104,7 +139,7 @@
         if (_series.Minimum.HasValue && _series.Maximum.HasValue)
         {
             _valueScale = ChartScaleBuilder.Build(_series.Minimum.Value, _series.Maximum.Value);
-            _axisTicks = ChartAxisLabels.BuildSeriesTicks(_series.AxisMaximum, Axis);
+            _axisTicks = ChartAxisLabels.BuildSeriesTicks(_series.AxisMaximum, Axis, minimum: _series.AxisMinimum);
             var displaySeries = _series with { AxisMaximum = _axisTicks[^1].Value };
             _segments = ChartSeriesBuilder.ToSvgSegments(
                 displaySeries,
@@ -119,6 +154,115 @@
             _axisTicks = [];
         }
         _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_series.Samples.Count - 1, 0));
+        if (!ReferenceEquals(_rangePoints, Points) || _rangeAxis != Axis)
+        {
+            _rangeSamples = ChartSeriesBuilder.BuildRangeSamples(Points, Selector, Axis);
+            _axisSamples = ChartSeriesBuilder.BuildRangeSamples(Points, _ => 0, Axis);
+            _rangePoints = Points;
+            _rangeAxis = Axis;
+            _rangeBindingDirty = true;
+        }
+        var retained = _series.Samples.Select(sample => sample.SourceIndex).ToHashSet();
+        var preview = new List<ChartRangeSample>();
+        var startsNew = true;
+        foreach (var sample in _rangeSamples)
+        {
+            startsNew |= sample.StartsNewSegment;
+            if (!retained.Contains((int)sample.SourcePosition)) continue;
+            preview.Add(sample with { StartsNewSegment = startsNew });
+            startsNew = false;
+        }
+        _previewSamples = preview;
+        _selectionSegments = [];
+        _selectionEndpoints = [];
+        if (Selection is not null)
+        {
+            var start = Selection.Start.UpperIndex - Selection.Start.LowerIndex > 1
+                ? Selection.Start.UpperIndex : Selection.Start.Position;
+            var end = Selection.End.UpperIndex - Selection.End.LowerIndex > 1
+                ? Selection.End.LowerIndex : Selection.End.Position;
+            var selected = ChartSeriesBuilder.ClipRangeSamples(_rangeSamples, start, end);
+            _selectionSegments = SelectionSegments(selected);
+            _selectionEndpoints = selected.Where(sample =>
+                (Selection.Start.UpperIndex - Selection.Start.LowerIndex <= 1 && sample.SourcePosition == Selection.Start.Position) ||
+                (Selection.End.UpperIndex - Selection.End.LowerIndex <= 1 && sample.SourcePosition == Selection.End.Position)).ToArray();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!RangeSelectionEnabled && _rangeReference is null) return;
+        if (!_rangeBindingDirty && _renderedRangeEnabled == RangeSelectionEnabled && _renderedSection == SelectionSection &&
+            _renderedStreamIdentity == RangeStreamIdentity && _renderedSelection == Selection) return;
+        _rangeReference ??= DotNetObjectReference.Create(this);
+        var points = Points;
+        var axis = Axis;
+        var enabled = RangeSelectionEnabled;
+        var section = SelectionSection;
+        var selection = Selection;
+        var streamIdentity = RangeStreamIdentity;
+        await JS.InvokeVoidAsync("activityCharts.bindRange", _element, _rangeReference, new
+        {
+            enabled = RangeSelectionEnabled,
+            streamIdentity = RangeStreamIdentity ?? _inspectorHelpId,
+            axis = (int)Axis,
+            start = SelectionSection?.Start.Position ?? 0,
+            end = SelectionSection?.End.Position ?? Math.Max(0, Points.Count - 1),
+            samples = RangeSelectionEnabled ? _previewSamples.Select(sample => new
+            {
+                position = sample.SourcePosition,
+                x = CoordinateX(sample.X),
+                y = _valueScale.Project(sample.Value, 180),
+                startsNewSegment = sample.StartsNewSegment
+            }).ToArray() : null
+        });
+        if (!ReferenceEquals(points, Points) || axis != Axis || enabled != RangeSelectionEnabled ||
+            section != SelectionSection || streamIdentity != RangeStreamIdentity || selection != Selection) return;
+        _rangeBindingDirty = false;
+        _renderedRangeEnabled = RangeSelectionEnabled;
+        _renderedSection = SelectionSection;
+        _renderedSelection = Selection;
+        _renderedStreamIdentity = RangeStreamIdentity;
+    }
+
+    [JSInvokable]
+    public double[][] GetRangeAxis(string streamIdentity, int axis) =>
+        streamIdentity == (RangeStreamIdentity ?? _inspectorHelpId) && axis == (int)Axis
+            ? _axisSamples.Select(sample => new[] { sample.SourcePosition, CoordinateX(sample.X), sample.StartsNewSegment ? 1d : 0d }).ToArray()
+            : [];
+
+    [JSInvokable]
+    public Task CommitRange(double start, double end)
+    {
+        if (!RangeSelectionEnabled || !double.IsFinite(start) || !double.IsFinite(end) || start >= end ||
+            start < (SelectionSection?.Start.Position ?? 0) || end > (SelectionSection?.End.Position ?? Points.Count - 1))
+            return Task.CompletedTask;
+        var first = ActivityRangeBoundary.FromPosition(Points, start);
+        var last = ActivityRangeBoundary.FromPosition(Points, end);
+        return first is not null && last is not null
+            ? SelectionChanged.InvokeAsync(new(first, last))
+            : Task.CompletedTask;
+    }
+
+    private IReadOnlyList<string> SelectionSegments(IReadOnlyList<ChartRangeSample> samples)
+    {
+        var paths = new List<string>();
+        var current = new List<string>();
+        var stride = Math.Max(1, (int)Math.Ceiling(samples.Count / 600d));
+        for (var index = 0; index < samples.Count; index++)
+        {
+            var sample = samples[index];
+            if (sample.StartsNewSegment)
+            {
+                if (current.Count > 1) paths.Add(string.Join(" ", current));
+                current.Clear();
+            }
+            if (index % stride != 0 && index != samples.Count - 1 && !sample.StartsNewSegment && !samples[index + 1].StartsNewSegment) continue;
+            var coordinate = Coordinate(sample.X, sample.Value);
+            current.Add($"{coordinate.X},{coordinate.Y}");
+        }
+        if (current.Count > 1) paths.Add(string.Join(" ", current));
+        return paths;
     }
 
     private double? DisplayAverage => SummaryAverage is double value && double.IsFinite(value)
@@ -151,14 +295,29 @@
         ? $"{minimum:N1}\u2013{maximum:N1}"
         : $"{minimum:N1}\u2013{maximum:N1} {Unit}";
 
-    private (string X, string Y) Coordinate(ChartSample sample)
+    private (string X, string Y) Coordinate(ChartSample sample) => Coordinate(sample.X, sample.Value);
+
+    private double CoordinateX(double value)
     {
         var axisMaximum = _axisTicks.Count == 0 ? _series.AxisMaximum : _axisTicks[^1].Value;
-        var x = 800d * Math.Clamp(sample.X / Math.Max(axisMaximum, 1e-9), 0, 1);
-        var y = _valueScale.Project(sample.Value, 180);
-        return (Invariant(x), Invariant(y));
+        return 800d * Math.Clamp((value - _series.AxisMinimum) / Math.Max(axisMaximum - _series.AxisMinimum, 1e-9), 0, 1);
     }
+
+    private (string X, string Y) Coordinate(double x, double value) =>
+        (Invariant(CoordinateX(x)), Invariant(_valueScale.Project(value, 180)));
 
     private static string Invariant(double value) =>
         value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string RoundTrip(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_rangeReference is not null)
+        {
+            try { await JS.InvokeVoidAsync("activityCharts.unbindRange", _element); }
+            catch (JSDisconnectedException) { }
+            _rangeReference.Dispose();
+        }
+    }
 }

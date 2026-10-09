@@ -201,7 +201,7 @@ public sealed partial class BrowserRegressionTests
             await chart.GetByRole(AriaRole.Slider).PressAsync("ArrowRight");
             await Assertions.Expect(chart.Locator(".chart-exact-output")).Not.ToHaveTextAsync(originalInspection ?? "");
             await page.GetByText("View chronological attempts", new() { Exact = true }).ClickAsync();
-            await page.Locator(".history-table tbody tr").Last.GetByRole(AriaRole.Link).ClickAsync();
+            await page.Locator(".history-table tbody tr").Last.Locator("th a").ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(origin + $"/activities/{seed.LastActivity}");
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Progress ride 61", Exact = true })).ToBeVisibleAsync();
             await page.GoBackAsync(new() { WaitUntil = WaitUntilState.NetworkIdle });

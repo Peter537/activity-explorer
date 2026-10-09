@@ -1,10 +1,12 @@
 using ActivityExplorer.Core.Domain;
+using ActivityExplorer.Core.Models;
 
 namespace ActivityExplorer.Infrastructure.Processing;
 
 internal sealed record EffortWindow(
     double Value, double CoveragePercent, double StartPosition, double FinishPosition,
-    DateTimeOffset StartTime, DateTimeOffset FinishTime, double StreamStartSeconds, double StreamFinishSeconds);
+    DateTimeOffset StartTime, DateTimeOffset FinishTime, double StreamStartSeconds, double StreamFinishSeconds,
+    SourceBoundary StartBoundary, SourceBoundary FinishBoundary);
 
 internal static partial class BestEffortCalculator
 {
@@ -140,7 +142,16 @@ internal static partial class BestEffortCalculator
             if (value <= 0 || !double.IsFinite(value)) return null;
             return new EffortWindow(value, kind == RecordKind.PowerCurve ? duration / target * 100 : 100,
                 Interpolate(positions, begin), Interpolate(positions, finish),
-                Origin.AddSeconds(begin), Origin.AddSeconds(finish), begin, finish);
+                Origin.AddSeconds(begin), Origin.AddSeconds(finish), begin, finish, Boundary(begin), Boundary(finish));
+        }
+
+        private SourceBoundary Boundary(double time)
+        {
+            var index = Array.BinarySearch(Times, time);
+            if (index >= 0) return new((int)positions[index], (int)positions[index], 0, Origin.AddSeconds(time));
+            index = Math.Clamp(~index - 1, 0, Times.Length - 2);
+            return new((int)positions[index], (int)positions[index + 1],
+                (time - Times[index]) / (Times[index + 1] - Times[index]), Origin.AddSeconds(time));
         }
 
         private double Interpolate(double[] data, double time)

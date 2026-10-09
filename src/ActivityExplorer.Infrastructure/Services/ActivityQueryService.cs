@@ -108,7 +108,8 @@ public sealed partial class ActivityQueryService(
                 activity.AerobicTrainingEffect, activity.AnaerobicTrainingEffect, activity.TrainingLoad),
             activity.Metrics.OrderBy(x => x.Label)
                 .Select(x => new ActivityMetricSummary(x.Id, x.Key, x.Label, x.NumericValue, x.TextValue, x.Unit, x.Origin, x.UpdatedAtUtc))
-                .ToArray());
+                .ToArray(),
+            activity.Stream is null ? null : TrackCodec.Fingerprint(activity.Stream));
     }
 
     public async Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(

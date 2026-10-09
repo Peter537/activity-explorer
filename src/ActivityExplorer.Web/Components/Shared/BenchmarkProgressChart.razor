@@ -51,7 +51,7 @@
                 <output class="chart-exact-output" aria-live="polite">
                     <span>Attempt @(_selectedIndex + 1) of @Series.Points.Count</span>
                     <strong>@SelectedText</strong>
-                    <a href="@($"/activities/{Series.Points[_selectedIndex].Attempt.ActivityId}")">Open selected activity</a>
+                    <a class="attempt-range-link" href="@ActivityRangeUrl.ForAttempt(Series.Points[_selectedIndex].Attempt)">@(Series.Points[_selectedIndex].Attempt.Range is null ? "Open selected activity" : "Inspect selected attempt")</a>
                 </output>
             </div>
         }
@@ -67,7 +67,7 @@
                 {
                     <tr>
                         <td data-label="Date">@LocalDate(point.Attempt.ActivityDate)</td>
-                        <td data-label="Result">@Value(point.Attempt.Value)</td>
+                        <td data-label="Result"><a class="attempt-range-link" href="@ActivityRangeUrl.ForAttempt(point.Attempt)">@Value(point.Attempt.Value)</a></td>
                         <td data-label="Best so far">@Value(point.BestSoFar)</td>
                         <th scope="row" data-label="Activity"><a href="@($"/activities/{point.Attempt.ActivityId}")">@point.Attempt.ActivityTitle</a></th>
                         <td data-label="Coverage">@point.Attempt.CoveragePercent.ToString("N0")%</td>

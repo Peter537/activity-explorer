@@ -42,6 +42,8 @@ The browser matrix also verifies:
 - Import history starts collapsed, opens with 10 entries, reveals 10 more cumulatively, and remains readable with warning states and long expandable summaries;
 - missing detail IDs show a recovery state instead of permanent loading;
 - activity section jumps stay on the current detail route; detailed streams render unit-labelled axes and gridlines, switch between elapsed time and distance, synchronize nearest-retained-sample pointer values across populated charts, retain independent keyboard sliders and data tables, and keep 20-pixel card spacing at 375, 768, 1280, and 1920 pixels;
+- exact benchmark links retain fractional source boundaries across axes, refresh, section jumps, and Back/Forward; explicit range mode supports drag, two-tap selection, cancellation, keyboard sliders and sample nudges while committing one history entry per action; a dense stream proves selection uses full source positions despite chart downsampling;
+- recording sections handle overlapping reset axes without changing the selected interval; indoor streams, missing readings, malformed links, and replaced streams retain a usable whole-activity view; map projections keep original source identity, split gaps, highlight valid fractional boundaries without refitting, and preserve segment-creator integer selection; range layouts cover 320–1920 pixels and 200% text, with synthetic captures under `artifacts/range-ui/`;
 - the route segment creator links distance-snapped keyboard controls, endpoint nudges, map selection, elevation highlighting, live directional metrics, exact trimmed/reversed persistence, missing-elevation fallback, and responsive reflow at 375, 768, 1121, 1280, and 1920 pixels;
 - the activity segment entry opens a focused creator with a blank required name, hides source indices, maps visual GPS endpoints back to the exact activity stream, preserves reversal and provenance, and recovers from missing elevation, insufficient GPS, and missing activities at the same responsive widths;
 - segment detail renders the persisted definition elevation against derived path distance at 375, 768, 1121, 1280, and 1920 pixels, colors it by gap-aware 50 metre local grade, exposes exact distance/elevation/grade values to pointer and keyboard users, links each inspection change to one non-refitting map-marker update, retains the truthful missing-elevation fallback, and applies the shared axis and inspection behavior to a selected effort;
@@ -52,6 +54,8 @@ The browser matrix also verifies:
 - blank map mode makes no third-party request and non-editable maps render lines without editable point markers.
 
 ## Covered behavior
+
+Range analysis tests cover fractional clipping, filtered-power endpoint brackets, activity-start versus sample-start offsets, timestamp resets, uneven sampling, recorded zeros, missing sensors, the 30-second continuity boundary, longer gaps, recorded-distance resets, missing elevation, GPS fallback, and indoor recordings. Sensor averages use trapezoidal time weighting with explicit covered seconds and completeness; no sample-mean fallback is accepted. SQLite tests verify stream fingerprints across metadata edits, owner transfers, payload replacement, and deletion, while whole-activity benchmarks retain their summary-only query path. URL tests reject malformed, nonfinite, reversed, and incompatible ranges and preserve invariant round-trip precision. Chart tests preserve signed elapsed offsets, discontinuity geometry, source-based selection, and independent sampling budgets.
 
 Progress calculations test equal-length preceding periods, unequal month lengths, partial years, leap-day clamping, calendar limits, and unavailable percentages for zero baselines. SQLite fixtures reconcile dashboard, trend, calendar, and activity-list membership across owner-local dates, DST, sports, empty dates, and zero-movement activities. Query interception checks that summaries and metadata use one transaction without stream or geometry reads. Fresh reads reflect timezone changes, transfers, edits, imports, and deletions. Benchmark history tests cover full results beyond 50 attempts, higher/lower improvements, owner isolation, period resets, scope eligibility, mid-query cancellation, overlapping read snapshots, corrupt-payload failures, and chronological geometry without thinning.
 
@@ -85,6 +89,8 @@ Coverage includes:
 All fixtures are synthetic. Never commit real exports, locations, names, device identifiers, credentials, tokens, or health data.
 
 ## Manual smoke test
+
+For a repeatable range preview, set `ACTIVITY_EXPLORER_RANGE_PREVIEW_DATA` to an empty isolated directory and run the Release test with `--filter-method '*Range_preview_fixture*'`. The fixture writes fictional dense, indoor, and reset recordings plus `synthetic-fixture.json` with their IDs. Clear the fixture environment variable afterward, point `ACTIVITY_EXPLORER_DATA` at that directory, and launch the app on loopback. Check a benchmark result link, range controls, reset-section selection, keyboard focus, and stale-link recovery. Stop the owned preview process after inspection; keep synthetic screenshots under `artifacts/range-ui/`.
 
 Use an isolated root and loopback port:
 

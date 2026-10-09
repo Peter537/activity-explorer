@@ -232,21 +232,24 @@ internal static class ChartAxisLabels
         double maximum,
         ChartAxisKind axis,
         double width = 800,
-        int tickCount = 3)
+        int tickCount = 3,
+        double minimum = 0)
     {
         tickCount = Math.Max(2, tickCount);
         maximum = double.IsFinite(maximum) ? Math.Max(0, maximum) : 0;
-        if (maximum == 0) maximum = 1;
-        var step = maximum / (tickCount - 1);
+        minimum = double.IsFinite(minimum) ? Math.Min(0, minimum) : 0;
+        if (maximum == minimum) maximum = minimum + 1;
+        var span = maximum - minimum;
+        var step = span / (tickCount - 1);
         return Enumerable.Range(0, tickCount)
             .Select(index =>
             {
                 var fraction = index / (double)(tickCount - 1);
-                var value = maximum * fraction;
+                var value = minimum + span * fraction;
                 return new ChartAxisTick(
                     value,
                     width * fraction,
-                    FormatPosition(value, axis, maximum, step));
+                    FormatPosition(value, axis, Math.Max(Math.Abs(minimum), Math.Abs(maximum)), step));
             })
             .ToArray();
     }
@@ -276,12 +279,13 @@ internal static class ChartAxisLabels
     public static string FormatPosition(double value, ChartAxisKind axis)
     {
         if (axis == ChartAxisKind.Distance)
-            return value >= 1000 ? $"{value / 1000:N2} km" : $"{value:N0} m";
+            return Math.Abs(value) >= 1000 ? $"{value / 1000:N2} km" : $"{value:N0} m";
 
-        var duration = TimeSpan.FromSeconds(Math.Max(0, value));
+        var sign = value < 0 ? "−" : "";
+        var duration = TimeSpan.FromSeconds(Math.Abs(value));
         return duration.TotalHours >= 1
-            ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
-            : $"{duration.Minutes}:{duration.Seconds:00}";
+            ? $"{sign}{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
+            : $"{sign}{duration.Minutes}:{duration.Seconds:00}";
     }
 
     private static string FormatPosition(
@@ -297,7 +301,7 @@ internal static class ChartAxisLabels
             return $"{value.ToString($"N{decimals}", CultureInfo.CurrentCulture)} m";
 
         var secondsPattern = decimals == 0 ? "00" : $"00.{new string('0', decimals)}";
-        return $"0:{value.ToString(secondsPattern, CultureInfo.CurrentCulture)}";
+        return $"{(value < 0 ? "−" : "")}0:{Math.Abs(value).ToString(secondsPattern, CultureInfo.CurrentCulture)}";
     }
 
     private static int FractionDigits(double step)

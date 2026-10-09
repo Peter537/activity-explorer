@@ -1,0 +1,73 @@
+<section class="activity-range-control" aria-label="Selected activity range" data-range-start="@Invariant(Range.Start.Position)" data-range-end="@Invariant(Range.End.Position)">
+    <div class="range-endpoints">
+        <div>
+            <label for="@(_id + "-start")">Range start</label>
+            <input id="@(_id + "-start")" type="range" min="0" max="@Invariant(Points.Count - 1)" step="any"
+                   value="@Invariant(Range.Start.Position)" aria-valuetext="@Describe(Range.Start)" @onchange="StartChanged" />
+            <output>@Describe(Range.Start)</output>
+            <div class="button-row">
+                <button class="button" disabled="@(Range.Start.Position <= 0)" aria-label="Move range start backward" @onclick="() => Move(true, Previous(Range.Start.Position))">Back</button>
+                <button class="button" disabled="@(Next(Range.Start.Position) >= Range.End.Position)" aria-label="Move range start forward" @onclick="() => Move(true, Next(Range.Start.Position))">Forward</button>
+            </div>
+        </div>
+        <div>
+            <label for="@(_id + "-end")">Range end</label>
+            <input id="@(_id + "-end")" type="range" min="0" max="@Invariant(Points.Count - 1)" step="any"
+                   value="@Invariant(Range.End.Position)" aria-valuetext="@Describe(Range.End)" @onchange="EndChanged" />
+            <output>@Describe(Range.End)</output>
+            <div class="button-row">
+                <button class="button" disabled="@(Previous(Range.End.Position) <= Range.Start.Position)" aria-label="Move range end backward" @onclick="() => Move(false, Previous(Range.End.Position))">Back</button>
+                <button class="button" disabled="@(Range.End.Position >= Points.Count - 1)" aria-label="Move range end forward" @onclick="() => Move(false, Next(Range.End.Position))">Forward</button>
+            </div>
+        </div>
+    </div>
+    <p class="muted compact-note">Back and Forward move to the adjacent recorded sample. The original fractional boundaries stay exact until adjusted.</p>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TrackPoint> Points { get; set; } = [];
+    [Parameter, EditorRequired] public ActivityRange Range { get; set; } = default!;
+    [Parameter] public EventCallback<ActivityRange> RangeChanged { get; set; }
+    private readonly string _id = "range-" + Guid.NewGuid().ToString("N");
+
+    private Task StartChanged(ChangeEventArgs args) => Change(true, args);
+    private Task EndChanged(ChangeEventArgs args) => Change(false, args);
+    private Task Change(bool start, ChangeEventArgs args) =>
+        double.TryParse(args.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var position)
+            ? Move(start, position) : Task.CompletedTask;
+
+    private async Task Move(bool start, double position)
+    {
+        if (!double.IsFinite(position)) return;
+        position = Math.Clamp(position, 0, Points.Count - 1);
+        if (start && position >= Range.End.Position) position = Math.Max(0, Previous(Range.End.Position));
+        if (!start && position <= Range.Start.Position) position = Math.Min(Points.Count - 1, Next(Range.Start.Position));
+        var boundary = ActivityRangeBoundary.FromPosition(Points, position);
+        if (boundary is null) return;
+        var range = start ? Range with { Start = boundary } : Range with { End = boundary };
+        if (range.Start.Position < range.End.Position) await RangeChanged.InvokeAsync(range);
+    }
+
+    private string Describe(SourceBoundary boundary)
+    {
+        var labels = new List<string>();
+        var origin = Points.FirstOrDefault(point => point.Timestamp.HasValue)?.Timestamp;
+        if (boundary.Timestamp.HasValue && origin.HasValue)
+        {
+            var seconds = (boundary.Timestamp.Value - origin.Value).TotalSeconds;
+            labels.Add((seconds < 0 ? "−" : "") + Format.Duration(Math.Abs(seconds)) + " from first timestamp");
+        }
+        var resolved = ActivityRangeBoundary.Resolve(Points, boundary);
+        if (resolved.UpperIndex - resolved.LowerIndex <= 1 &&
+            Points[resolved.LowerIndex].DistanceMeters is { } before &&
+            Points[resolved.UpperIndex].DistanceMeters is { } after &&
+            double.IsFinite(before) && double.IsFinite(after) && after >= before)
+            labels.Add(Format.Distance(before + (after - before) * resolved.Fraction));
+        labels.Add($"{boundary.Position * 100 / Math.Max(Points.Count - 1, 1):N1}% through recording");
+        return string.Join(" · ", labels);
+    }
+
+    private static double Previous(double value) => Math.Ceiling(value) - 1;
+    private static double Next(double value) => Math.Floor(value) + 1;
+    private static string Invariant(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+}

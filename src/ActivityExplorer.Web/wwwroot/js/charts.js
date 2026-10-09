@@ -1,5 +1,7 @@
 window.activityCharts = (() => {
     const bindings = new Map();
+    const rangeBindings = new Map();
+    const rangeStates = new WeakMap();
 
     function number(value) {
         if (value === null || value === undefined || value === "") return null;
@@ -111,6 +113,7 @@ window.activityCharts = (() => {
 
         const synchronized = root.classList.contains("synchronized-charts");
         const onPointerMove = event => {
+            if (event.target.closest?.(".range-selecting")) return;
             const svg = event.target.closest?.(".chart-plot");
             if (!svg || !root.contains(svg)) return;
             const sourceChart = svg.closest(".time-series-chart, .spark-chart");
@@ -194,6 +197,9 @@ window.activityCharts = (() => {
     }
 
     function bindAll() {
+        for (const chart of rangeBindings.keys()) {
+            if (!document.contains(chart)) unbindRange(chart);
+        }
         for (const root of bindings.keys()) {
             if (!document.contains(root)) unbind(root);
         }
@@ -240,5 +246,233 @@ window.activityCharts = (() => {
     });
     bindAll();
 
-    return { bindAll };
+    function rangeGroup(chart) {
+        return chart.closest(".synchronized-charts") || chart;
+    }
+
+    function rangeState(group) {
+        if (!rangeStates.has(group)) rangeStates.set(group, { anchor: null, gesture: null, axisKey: null, axisPromise: null, revision: 0 });
+        return rangeStates.get(group);
+    }
+
+    function clearRangePreview(group) {
+        group.querySelectorAll(".chart-range-preview").forEach(preview => preview.replaceChildren());
+    }
+
+    function cancelRange(group) {
+        const state = rangeState(group);
+        state.anchor = null;
+        state.gesture = null;
+        state.revision++;
+        clearRangePreview(group);
+    }
+
+    function interpolateRange(before, after, position, startsNewSegment) {
+        const fraction = (position - before.position) / (after.position - before.position);
+        return {
+            position,
+            x: before.x * (1 - fraction) + after.x * fraction,
+            y: before.y * (1 - fraction) + after.y * fraction,
+            startsNewSegment
+        };
+    }
+
+    function clippedRange(samples, start, end) {
+        const result = [];
+        let previous = null;
+        for (const sample of samples) {
+            if (previous && !sample.startsNewSegment && previous.position < start && sample.position > start)
+                result.push(interpolateRange(previous, sample, start, true));
+            if (sample.position >= start && sample.position <= end)
+                result.push({ ...sample, startsNewSegment: !result.length || sample.startsNewSegment });
+            if (previous && !sample.startsNewSegment && previous.position < end && sample.position > end)
+                result.push(interpolateRange(previous, sample, end, !result.length));
+            if (sample.position > end) break;
+            previous = sample;
+        }
+        return result;
+    }
+
+    function rangeHit(binding, svg, event) {
+        const rect = svg.getBoundingClientRect();
+        const xScale = rect.width / 800;
+        const x = event.clientX - rect.left;
+        let best = null;
+        let bestDistance = Infinity;
+        let previous = null;
+        for (const sample of binding.available) {
+            const dx = sample.x * xScale - x;
+            const distance = dx * dx;
+            if (distance < bestDistance) {
+                best = sample.position;
+                bestDistance = distance;
+            }
+            if (previous && !sample.startsNewSegment) {
+                const edgeX = (sample.x - previous.x) * xScale;
+                const length = edgeX * edgeX;
+                if (length > 0) {
+                    const fraction = Math.max(0, Math.min(1,
+                        ((x - previous.x * xScale) * edgeX) / length));
+                    const projectedX = previous.x * xScale + fraction * edgeX;
+                    const edgeDistance = (projectedX - x) ** 2;
+                    if (edgeDistance < bestDistance) {
+                        best = previous.position + fraction * (sample.position - previous.position);
+                        bestDistance = edgeDistance;
+                    }
+                }
+            }
+            previous = sample;
+        }
+        return best;
+    }
+
+    function previewRange(group, first, last) {
+        const start = Math.min(first, last);
+        const end = Math.max(first, last);
+        for (const [chart, binding] of rangeBindings) {
+            if (rangeGroup(chart) !== group || !binding.options.enabled) continue;
+            const preview = chart.querySelector(".chart-range-preview");
+            if (!preview) continue;
+            const samples = clippedRange(binding.options.samples || [], start, end);
+            const stride = Math.max(1, Math.ceil(samples.length / 600));
+            const commands = [];
+            for (let index = 0; index < samples.length; index++) {
+                const sample = samples[index];
+                if (index % stride && index !== samples.length - 1 && !sample.startsNewSegment && !samples[index + 1].startsNewSegment) continue;
+                commands.push(`${sample.startsNewSegment ? "M" : "L"}${sample.x},${sample.y}`);
+            }
+            const nodes = [];
+            if (commands.length) {
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.classList.add("chart-range-preview-line");
+                path.setAttribute("d", commands.join(" "));
+                nodes.push(path);
+            }
+            samples.filter(sample => sample.position === start || sample.position === end).forEach(sample => {
+                const endpoint = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                endpoint.classList.add("chart-range-preview-endpoint");
+                endpoint.setAttribute("cx", String(sample.x));
+                endpoint.setAttribute("cy", String(sample.y));
+                endpoint.setAttribute("r", "5");
+                nodes.push(endpoint);
+            });
+            preview.replaceChildren(...nodes);
+        }
+    }
+
+    function unbindRange(chart, preserveAxis = false) {
+        const binding = rangeBindings.get(chart);
+        if (!binding) return;
+        const group = rangeGroup(chart);
+        cancelRange(group);
+        for (const [name, handler] of Object.entries(binding.handlers)) chart.removeEventListener(name, handler);
+        rangeBindings.delete(chart);
+        delete chart.dataset.rangeReady;
+        if (!preserveAxis && !Array.from(rangeBindings.keys()).some(candidate => rangeGroup(candidate) === group)) {
+            const state = rangeState(group);
+            state.axisKey = null;
+            state.axisPromise = null;
+        }
+    }
+
+    function bindRange(chart, reference, options) {
+        unbindRange(chart, options.enabled);
+        if (!options.enabled) return;
+        const binding = { reference, options, available: [], handlers: {} };
+        const group = rangeGroup(chart);
+        clear(group);
+        const shared = rangeState(group);
+        const axisKey = `${options.streamIdentity}:${options.axis}`;
+        if (shared.axisKey !== axisKey || !shared.axisPromise) {
+            cancelRange(group);
+            for (const [otherChart, otherBinding] of rangeBindings) {
+                if (rangeGroup(otherChart) !== group) continue;
+                otherBinding.available = [];
+                delete otherChart.dataset.rangeReady;
+            }
+            shared.axisKey = axisKey;
+            shared.axisPromise = reference.invokeMethodAsync("GetRangeAxis", options.streamIdentity, options.axis)
+                .then(rows => rows.map(row => ({ position: row[0], x: row[1], y: 0, startsNewSegment: row[2] === 1 })));
+        }
+        const plot = event => {
+            const svg = event.target.closest?.(".chart-plot");
+            return svg && chart.contains(svg) ? svg : null;
+        };
+        binding.handlers.pointerdown = event => {
+            const svg = plot(event);
+            if (!svg || !event.isPrimary || event.button !== 0) return;
+            const position = rangeHit(binding, svg, event);
+            if (position === null) return;
+            const state = rangeState(group);
+            state.revision++;
+            state.gesture = {
+                pointerId: event.pointerId,
+                touch: event.pointerType === "touch",
+                anchor: state.anchor ?? position,
+                hadAnchor: state.anchor !== null,
+                x: event.clientX,
+                y: event.clientY,
+                moved: false
+            };
+            svg.setPointerCapture(event.pointerId);
+            svg.focus({ preventScroll: true });
+            previewRange(group, state.gesture.anchor, position);
+            if (event.pointerType !== "touch") event.preventDefault();
+        };
+        binding.handlers.pointermove = event => {
+            const svg = plot(event);
+            const state = rangeState(group);
+            if (!svg || (!state.gesture && state.anchor === null)) return;
+            if (state.gesture && state.gesture.pointerId !== event.pointerId) return;
+            const position = rangeHit(binding, svg, event);
+            if (position === null) return;
+            if (state.gesture) {
+                state.gesture.moved ||= Math.hypot(event.clientX - state.gesture.x, event.clientY - state.gesture.y) >= 5;
+                if (state.gesture.touch && state.gesture.moved) { clearRangePreview(group); return; }
+                previewRange(group, state.gesture.anchor, position);
+            } else previewRange(group, state.anchor, position);
+        };
+        binding.handlers.pointerup = event => {
+            const state = rangeState(group);
+            const gesture = state.gesture;
+            const svg = plot(event);
+            if (!gesture || gesture.pointerId !== event.pointerId || !svg) return;
+            const position = rangeHit(binding, svg, event);
+            state.gesture = null;
+            if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+            if (gesture.touch && gesture.moved) { cancelRange(group); return; }
+            if (position === null) { cancelRange(group); return; }
+            if (!gesture.moved && !gesture.hadAnchor) {
+                state.anchor = gesture.anchor;
+                previewRange(group, state.anchor, state.anchor);
+                return;
+            }
+            const start = Math.min(gesture.anchor, position);
+            const end = Math.max(gesture.anchor, position);
+            if (start === end) { cancelRange(group); return; }
+            state.anchor = null;
+            previewRange(group, start, end);
+            const revision = state.revision;
+            reference.invokeMethodAsync("CommitRange", start, end).then(() => {
+                if (rangeBindings.get(chart) === binding && state.revision === revision) clearRangePreview(group);
+            }).catch(() => {
+                if (rangeBindings.get(chart) === binding && state.revision === revision) cancelRange(group);
+            });
+        };
+        binding.handlers.pointercancel = () => cancelRange(group);
+        binding.handlers.keydown = event => {
+            if (event.key === "Escape") { cancelRange(group); event.preventDefault(); }
+        };
+        for (const [name, handler] of Object.entries(binding.handlers)) chart.addEventListener(name, handler);
+        rangeBindings.set(chart, binding);
+        return shared.axisPromise.then(samples => {
+            if (rangeBindings.get(chart) !== binding || shared.axisKey !== axisKey || !document.contains(chart)) return;
+            binding.available = clippedRange(samples, options.start, options.end);
+            chart.dataset.rangeReady = "true";
+        }).catch(() => {
+            if (rangeBindings.get(chart) === binding) unbindRange(chart);
+        });
+    }
+
+    return { bindAll, bindRange, unbindRange };
 })();

@@ -3,6 +3,8 @@
 @inject IRouteService Routes
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
+@inject IActivityRangeAnalyzer RangeAnalyzer
+@implements IDisposable
 @using ActivityExplorer.Web.Components.Shared
 
 <PageTitle>@(_activity?.Summary.Title ?? (_loaded ? "Activity not found" : "Activity")) - Activity Explorer</PageTitle>
@@ -78,28 +80,59 @@ else
     }
     @if (HasMap)
     {
-        <section id="activity-map" class="panel flush map-panel"><MapCanvas InlinePoints="_activity.Points" CssClass="detail-map" Label="Activity track map" /></section>
+        <section id="activity-map" class="panel flush map-panel"><MapCanvas @key="(Id, _activity.StreamFingerprint)" ActivityTrack="_fullMapProjection" ActivitySelection="_rangeAnalysis?.Map" CssClass="detail-map" Label="Activity track map" /></section>
     }
     <div id="activity-streams" class="panel-heading chart-controls">
         <div><h2>Detailed streams</h2><p class="muted">Move across any chart to compare every recorded stream at the same point.</p></div>
         <div class="button-row">
-            <button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button>
-            <button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button>
+            <button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => SetAxis(ChartAxisKind.ElapsedTime)">Elapsed time</button>
+            <button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => SetAxis(ChartAxisKind.Distance)">Distance</button>
         </div>
     </div>
+    <div class="range-toolbar">
+        <button class="button" disabled="@(_activity.Points.Count < 2)" aria-pressed="@(_selectingRange ? "true" : "false")" @onclick="ToggleRangeSelection">@(_selectingRange ? "Finish selecting" : "Select range")</button>
+        @if (_range is not null)
+        {
+            <button class="button" @onclick="ClearRange">Clear selection</button>
+        }
+        @if (_overlappingSections)
+        {
+            <label><span>Recording section</span><select value="@_sectionId" @onchange="SectionChanged">
+                @foreach (var section in _sections)
+                {
+                    <option value="@section.Id">Section @(section.Id + 1) · @SectionDescription(section)</option>
+                }
+            </select></label>
+        }
+        @if (_selectingRange)
+        {
+            <p class="muted">Drag along a chart, or tap its start and end. Use the endpoint controls to span recording sections.</p>
+        }
+    </div>
+    @if (_rangeError is not null)
+    {
+        <p class="notice range-error" role="status">@_rangeError The whole activity is still available.</p>
+    }
+    @if (_range is not null)
+    {
+        <div class="panel range-panel">
+            <ActivityRangeControl Points="_activity.Points" Range="_range" RangeChanged="ChangeRange" />
+            <ActivityRangeSummary Analysis="_rangeAnalysis" Sport="_activity.Summary.Sport" Busy="_rangeBusy" />
+        </div>
+    }
     <section class="chart-grid synchronized-charts" data-axis-kind="@(_axis == ChartAxisKind.Distance ? "distance" : "time")">
         @if (!IsRowing || HasElevation)
         {
-            <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" />
+            <TimeSeriesChart Title="Elevation" Unit="m" Points="_activity.Points" Selector="@(point => point.ElevationMeters)" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
         }
         <TimeSeriesChart Title="@Format.SpeedLabel(_activity.Summary.Sport)"
                          Unit="@Format.SpeedUnit(_activity.Summary.Sport)"
-                         Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" />
-        <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" />
-        <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" />
-        <TimeSeriesChart Title="@Format.CadenceLabel(_activity.Summary.Sport)" Unit="@Format.CadenceUnit(_activity.Summary.Sport)" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" />
-        <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" />
-        <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" />
+                         Points="_activity.Points" Selector="SpeedOrPace" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
+        <TimeSeriesChart Title="Heart rate" Unit="bpm" Points="_activity.Points" Selector="@(point => point.HeartRate)" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
+        <TimeSeriesChart Title="Power" Unit="W" Points="_activity.Points" Selector="@(point => point.PowerWatts)" Axis="_axis" EmptyMessage="Not recorded in the source" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
+        <TimeSeriesChart Title="@Format.CadenceLabel(_activity.Summary.Sport)" Unit="@Format.CadenceUnit(_activity.Summary.Sport)" Points="_activity.Points" Selector="@(point => point.Cadence)" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
+        <TimeSeriesChart Title="Respiration" Unit="brpm" Points="_activity.Points" Selector="@(point => point.RespirationRate)" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
+        <TimeSeriesChart Title="Temperature" Unit="deg C" Points="_activity.Points" Selector="@(point => point.TemperatureCelsius)" Axis="_axis" Selection="_range" RangeSelectionEnabled="_selectingRange" SelectionSection="SelectedSection" SelectionChanged="ChangeRange" RangeStreamIdentity="@_activity.StreamFingerprint" />
     </section>
     <section id="activity-details" class="detail-groups">
         <article class="panel"><h2>Timing</h2><dl class="detail-list"><dt>Timer time</dt><dd>@DurationOrDash(_activity.Rich.TimerSeconds)</dd><dt>Moving time</dt><dd>@Format.Duration(_activity.Summary.MovingSeconds) <small>@MovingLabel</small></dd><dt>Elapsed time</dt><dd>@Format.Duration(_activity.ElapsedSeconds)</dd></dl></article>
@@ -187,6 +220,10 @@ else
 
 @code {
     [Parameter] public Guid Id { get; set; }
+    [SupplyParameterFromQuery(Name = "range")] public string? QueryRange { get; set; }
+    [SupplyParameterFromQuery(Name = "stream")] public string? QueryStream { get; set; }
+    [SupplyParameterFromQuery(Name = "axis")] public string? QueryAxis { get; set; }
+    [SupplyParameterFromQuery(Name = "section")] public string? QuerySection { get; set; }
     private ActivityDetail? _activity;
     private bool _editing;
     private bool _loaded;
@@ -201,27 +238,172 @@ else
     private bool _deleteConfirming;
     private bool _deleteBusy;
     private string? _deleteMessage;
+    private ActivityRange? _range;
+    private ActivityRangeAnalysis? _rangeAnalysis;
+    private ActivityMapProjection? _fullMapProjection;
+    private IReadOnlyList<ActivityRangeSection> _sections = [];
+    private int _sectionId;
+    private bool _overlappingSections;
+    private bool _selectingRange;
+    private bool _rangeBusy;
+    private string? _rangeError;
+    private Guid? _loadedId;
+    private CancellationTokenSource? _loadCancellation;
+    private CancellationTokenSource? _rangeCancellation;
+    private bool _disposed;
 
 
 
-    protected override async Task OnParametersSetAsync() => await LoadAsync();
-    private async Task LoadAsync()
+    protected override Task OnParametersSetAsync() => LoadActivityAsync(false);
+    private Task LoadAsync() => LoadActivityAsync(true);
+    private async Task LoadActivityAsync(bool force)
     {
+        if (!force && _loaded && _loadedId == Id)
+        {
+            await ApplyRangeQueryAsync();
+            return;
+        }
+        _loadCancellation?.Cancel();
+        _rangeCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _loadCancellation = cancellation;
+        var activityId = Id;
         _loaded = false;
         _loadError = null;
+        _range = null;
+        _rangeAnalysis = null;
+        _selectingRange = false;
         try
         {
-            _activity = await Activities.GetAsync(Id);
+            var activity = await Activities.GetAsync(activityId, cancellation.Token);
+            var projection = activity is null ? null : await Task.Run(() => RangeAnalyzer.ProjectMap(activity.Points, cancellationToken: cancellation.Token), cancellation.Token);
+            if (cancellation.IsCancellationRequested || _disposed) return;
+            _activity = activity;
+            _fullMapProjection = projection;
+            _loadedId = activityId;
+            _loaded = true;
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { return; }
         catch
         {
+            if (cancellation.IsCancellationRequested || _disposed) return;
             _activity = null;
             _loadError = "The activity could not be loaded. Try again.";
+            _loaded = true;
+            _loadedId = activityId;
         }
-        finally { _loaded = true; }
+        finally
+        {
+            if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null;
+        }
         if (_activity is null) return;
         _title = _activity.Summary.Title; _description = _activity.Description; _gear = _activity.GearName ?? "";
         _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title;
+        await ApplyRangeQueryAsync();
+    }
+
+    private async Task ApplyRangeQueryAsync()
+    {
+        _rangeCancellation?.Cancel();
+        if (_activity is null) return;
+        _axis = string.Equals(QueryAxis, "distance", StringComparison.Ordinal) ? ChartAxisKind.Distance : ChartAxisKind.ElapsedTime;
+        _rangeError = null;
+        ActivityRange? range = null;
+        if (QueryRange is not null || QueryStream is not null)
+        {
+            if (!ActivityRangeUrl.TryParse(QueryRange, out range)) _rangeError = "The selected range link is malformed.";
+            else if (string.IsNullOrEmpty(QueryStream) || QueryStream != _activity.StreamFingerprint)
+                _rangeError = "The recorded stream has changed or its identity is missing. Open a fresh attempt link or select a new range.";
+            else _rangeError = ActivityRangeBoundary.Validate(_activity.Points, range!);
+        }
+        _range = _rangeError is null && range is not null
+            ? new ActivityRange(ActivityRangeBoundary.Resolve(_activity.Points, range.Start), ActivityRangeBoundary.Resolve(_activity.Points, range.End))
+            : null;
+        ConfigureSections();
+        if (_range is null)
+        {
+            _rangeAnalysis = null;
+            _rangeBusy = false;
+            _selectingRange = false;
+            return;
+        }
+        if (_rangeAnalysis?.Range == _range) return;
+        _rangeAnalysis = null;
+        _rangeBusy = true;
+        using var cancellation = new CancellationTokenSource();
+        _rangeCancellation = cancellation;
+        var points = _activity.Points;
+        var selection = _range;
+        try
+        {
+            var analysis = await Task.Run(() => RangeAnalyzer.Analyze(points, selection, cancellation.Token), cancellation.Token);
+            if (!cancellation.IsCancellationRequested && !_disposed) _rangeAnalysis = analysis;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (ArgumentException)
+        {
+            if (!cancellation.IsCancellationRequested)
+            {
+                _rangeError = "The selected range cannot be resolved against this recording.";
+                _range = null;
+                _rangeAnalysis = null;
+                _selectingRange = false;
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_rangeCancellation, cancellation))
+            {
+                _rangeCancellation = null;
+                _rangeBusy = false;
+            }
+        }
+    }
+
+    private void ConfigureSections()
+    {
+        _sections = ActivityRangeProjection.BuildSections(_activity!.Points, _axis);
+        _overlappingSections = ActivityRangeProjection.HasOverlappingSections(_sections);
+        _sectionId = int.TryParse(QuerySection, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && _sections.Any(section => section.Id == id)
+            ? id : _sections.FirstOrDefault(section => _range is not null && section.StartPosition <= _range.Start.Position && section.EndPosition >= _range.Start.Position)?.Id ?? 0;
+    }
+
+    private ActivityRange? SelectedSection
+    {
+        get
+        {
+            if (!_overlappingSections || _activity is null) return null;
+            var section = _sections.FirstOrDefault(section => section.Id == _sectionId);
+            return section is null ? null : new ActivityRange(ActivityRangeBoundary.FromPosition(_activity.Points, section.StartPosition)!, ActivityRangeBoundary.FromPosition(_activity.Points, section.EndPosition)!);
+        }
+    }
+
+    private string SectionDescription(ActivityRangeSection section) =>
+        $"{ChartAxisLabels.FormatPosition(section.AxisMinimum, _axis)}–{ChartAxisLabels.FormatPosition(section.AxisMaximum, _axis)}";
+
+    private void SetAxis(ChartAxisKind axis)
+    {
+        Navigation.NavigateTo(ActivityRangeUrl.Build(Id, _range, _activity?.StreamFingerprint, axis));
+    }
+
+    private void SectionChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var section))
+            Navigation.NavigateTo(ActivityRangeUrl.Build(Id, _range, _activity?.StreamFingerprint, _axis, section));
+    }
+
+    private void ToggleRangeSelection()
+    {
+        _selectingRange = !_selectingRange;
+        if (_selectingRange && _range is null && _activity?.Points.Count >= 2)
+            ChangeRange(new(ActivityRangeBoundary.FromPosition(_activity.Points, 0)!, ActivityRangeBoundary.FromPosition(_activity.Points, _activity.Points.Count - 1)!));
+    }
+
+    private void ChangeRange(ActivityRange range) => Navigation.NavigateTo(ActivityRangeUrl.Build(Id, range, _activity?.StreamFingerprint, _axis, _overlappingSections ? _sectionId : null));
+    private void ClearRange()
+    {
+        _selectingRange = false;
+        Navigation.NavigateTo(ActivityRangeUrl.Build(Id, null, null, _axis));
     }
 
     private double? SpeedOrPace(TrackPoint point) => Format.SpeedOrPace(point.SpeedMetersPerSecond, _activity!.Summary.Sport);
@@ -232,7 +414,7 @@ else
     private string AxisButton(ChartAxisKind axis) => _axis == axis ? "button primary" : "button";
     private bool HasMap => _activity?.Points.Any(point => point.Latitude.HasValue && point.Longitude.HasValue) == true;
     private bool CanCreateSegment => _activity?.Points.Count(point => point.Latitude.HasValue && point.Longitude.HasValue) >= 2;
-    private string ActivityUrl(string fragment) => $"/activities/{Id}#{fragment}";
+    private string ActivityUrl(string fragment) => $"/activities/{Id}{new Uri(Navigation.Uri).Query}#{fragment}";
     private string DurationOrDash(double? seconds) => seconds.HasValue ? Format.Duration(seconds.Value) : "--";
     private static string Value(double? value, string unit, int decimals) =>
         value.HasValue ? $"{value.Value.ToString($"N{decimals}")}{(string.IsNullOrWhiteSpace(unit) ? "" : $" {unit}")}" : "--";
@@ -335,5 +517,12 @@ else
     {
         var id = await Routes.CreateFromActivityAsync(new CreateRouteRequest(_activity!.Summary.OwnerId, Id, _routeName, null));
         Navigation.NavigateTo($"/routes/{id}");
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _loadCancellation?.Cancel();
+        _rangeCancellation?.Cancel();
     }
 }

@@ -44,6 +44,12 @@ Comparisons resolve calendar dates before converting them to UTC boundaries. Pre
 
 Benchmark progress uses `IStatisticsService.GetHistoryAsync` and shares qualifying-attempt evaluation with the strongest-first view. The selected benchmark and reporting dates filter candidate activities before batched stream reads in one consistent, deferred SQLite read snapshot. A replacement request can read while a cancelled calculation unwinds, without reserving SQLite's single writer. Each owner receives a chronological best-per-activity series and a running best reset at the beginning of the selected period. Whole-activity benchmarks stay summary-only. Cancellation and failures discard partial results, and UI load generations prevent stale profile/filter responses from replacing current results.
 
+## Activity range inspection
+
+Core's `ActivityRange` identifies endpoints through original source brackets, interpolation fractions, and timestamps. Stream-backed `RecordAttempt` and `ActivityDetail` DTOs include a SHA-256 fingerprint of the stream schema and compressed payload; summary-only benchmarks still avoid payload reads. Benchmark ordering, eligibility, and values retain their existing algorithms. Additional endpoint metadata preserves filtered-sample interpolation without treating its numeric position as an adjacent raw-sample interpolation.
+
+`IActivityRangeAnalyzer` calculates full-source metrics and gap-separated map projections in Infrastructure. It reports available contributions, covered seconds, completeness, and distance method without persistence or external requests. The Web layer owns versioned URL serialization, validation recovery, and the selected interval. Query-only navigation reuses the loaded activity; superseded loads and calculations are cancelled. Chart hit testing uses source-axis data independently of downsampling, and chart/map highlights use supported source edges. The activity map projection is separate from the segment creator's existing integer index contract.
+
 ## Badge calculation
 
 `IBadgeService` reads profile settings and activity summaries in one consistent SQLite read transaction, then passes plain DTOs to the pure `BadgeEvaluator`. `BadgeCatalog` defines stable family/tier identifiers, targets, recurrence, points, requirements, and local vector artwork keys. Calendar groups and shared contributions are reused across tiers; streams are not loaded. Results, evidence, points, and levels are calculated on demand without an award table, background worker, or cross-request cache.

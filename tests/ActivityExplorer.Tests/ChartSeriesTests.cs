@@ -13,6 +13,90 @@ public sealed class ChartSeriesTests
     private static readonly JsonSerializerOptions LegacyJsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void Range_geometry_uses_full_source_positions_and_exact_fractional_endpoints()
+    {
+        var points = TestSupport.Track(1_000).Select((point, index) => point with { HeartRate = 100 + index }).ToArray();
+        var display = ChartSeriesBuilder.Build(points, point => point.HeartRate, ChartAxisKind.ElapsedTime, maximumSamples: 40);
+        var full = ChartSeriesBuilder.BuildRangeSamples(points, point => point.HeartRate, ChartAxisKind.ElapsedTime);
+        var selected = ChartSeriesBuilder.ClipRangeSamples(full, 321.25, 328.75);
+
+        Assert.True(display.Samples.Count < full.Count);
+        Assert.Equal(1_000, full.Count);
+        Assert.Equal(321.25, selected[0].SourcePosition);
+        Assert.Equal(421.25, selected[0].Value);
+        Assert.Equal(328.75, selected[^1].SourcePosition);
+        Assert.Equal(428.75, selected[^1].Value);
+        Assert.True(selected[0].StartsNewSegment);
+        Assert.All(selected.Skip(1), sample => Assert.False(sample.StartsNewSegment));
+        Assert.Equal(321.25, selected[0].X);
+
+        var distance = ChartSeriesBuilder.ClipRangeSamples(
+            ChartSeriesBuilder.BuildRangeSamples(points, point => point.HeartRate, ChartAxisKind.Distance), 321.25, 328.75);
+        Assert.Equal(selected.Select(sample => sample.SourcePosition), distance.Select(sample => sample.SourcePosition));
+    }
+
+    [Fact]
+    public void Range_geometry_does_not_interpolate_missing_sensors_or_recording_discontinuities()
+    {
+        var points = TestSupport.Track(8).ToArray();
+        points[2] = points[2] with { HeartRate = null };
+        points[5] = points[5] with { Timestamp = points[4].Timestamp!.Value.AddSeconds(31) };
+        var samples = ChartSeriesBuilder.BuildRangeSamples(points, point => point.HeartRate, ChartAxisKind.ElapsedTime);
+        var selected = ChartSeriesBuilder.ClipRangeSamples(samples, 1.5, 5.5);
+
+        Assert.Equal(new[] { 3d, 4, 5 }, selected.Select(sample => sample.SourcePosition));
+        Assert.True(selected[0].StartsNewSegment);
+        Assert.False(selected[1].StartsNewSegment);
+        Assert.True(selected[2].StartsNewSegment);
+        Assert.Empty(ChartSeriesBuilder.ClipRangeSamples(samples, double.NaN, 3));
+        Assert.Empty(ChartSeriesBuilder.ClipRangeSamples(samples, 4, 3));
+
+        var untimed = points.Take(2).Select(point => point with { Timestamp = null }).ToArray();
+        var untimedRange = ChartSeriesBuilder.BuildRangeSamples(untimed, point => point.HeartRate, ChartAxisKind.Distance);
+        Assert.All(untimedRange, sample => Assert.True(sample.StartsNewSegment));
+        Assert.Empty(ChartSeriesBuilder.ClipRangeSamples(untimedRange, 0.25, 0.75));
+    }
+
+    [Fact]
+    public void Reset_axes_keep_signed_time_and_identify_overlapping_source_sections()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var points = new[] { 0, 10, -5, 5 }.Select((seconds, index) =>
+            new Core.Domain.TrackPoint(start.AddSeconds(seconds), null, null, index * 10, null, null, 100 + index, null, null, null)).ToArray();
+        var sections = ActivityRangeProjection.BuildSections(points, ChartAxisKind.ElapsedTime);
+        Assert.Equal(2, sections.Count);
+        Assert.Equal(new ActivityRangeSection(0, 0, 1, 0, 10), sections[0]);
+        Assert.Equal(new ActivityRangeSection(1, 2, 3, -5, 5), sections[1]);
+        Assert.True(ActivityRangeProjection.HasOverlappingSections(sections));
+        Assert.False(ActivityRangeProjection.HasOverlappingSections(
+            ActivityRangeProjection.BuildSections(points, ChartAxisKind.Distance)));
+
+        var series = ChartSeriesBuilder.Build(points, point => point.HeartRate, ChartAxisKind.ElapsedTime);
+        Assert.Equal(-5, series.AxisMinimum);
+        Assert.Equal(new[] { 0d, 10, -5, 5 }, series.Samples.Select(sample => sample.X));
+        Assert.Equal(2, ChartSeriesBuilder.ToSvgSegments(series).Count);
+        var selected = ChartSeriesBuilder.ClipRangeSamples(
+            ChartSeriesBuilder.BuildRangeSamples(points, point => point.HeartRate, ChartAxisKind.ElapsedTime), 2.25, 2.75);
+        Assert.Equal(-2.5, selected[0].X);
+        Assert.Equal(2.5, selected[^1].X);
+        Assert.Equal("−0:05", ChartAxisLabels.FormatPosition(-5, ChartAxisKind.ElapsedTime));
+        Assert.Equal(new[] { -5d, 2.5, 10 }, ChartAxisLabels.BuildSeriesTicks(10, ChartAxisKind.ElapsedTime, minimum: -5).Select(tick => tick.Value));
+    }
+
+    [Fact]
+    public void Axis_sections_ignore_sensor_gaps_and_preserve_missing_axis_and_distance_resets()
+    {
+        var points = TestSupport.Track(7).ToArray();
+        points[1] = points[1] with { HeartRate = null };
+        points[2] = points[2] with { DistanceMeters = null };
+        points[5] = points[5] with { DistanceMeters = 0 };
+        var sections = ActivityRangeProjection.BuildSections(points, ChartAxisKind.Distance);
+        Assert.Equal(new[] { (0d, 1d), (3d, 4d), (5d, 6d) }, sections.Select(section => (section.StartPosition, section.EndPosition)));
+        Assert.Single(ActivityRangeProjection.BuildSections(points, ChartAxisKind.ElapsedTime));
+        Assert.True(ActivityRangeProjection.HasOverlappingSections(sections));
+    }
+
+    [Fact]
     public void Benchmark_progress_uses_real_time_spacing_and_stepwise_best_without_dropping_attempts()
     {
         var benchmark = new RecordBenchmark(Core.Domain.SportKind.Cycling, Core.Domain.RecordKind.Distance, "Longest distance", "Activity records", null);

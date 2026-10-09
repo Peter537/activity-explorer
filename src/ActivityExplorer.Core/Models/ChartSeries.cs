@@ -13,7 +13,10 @@ public sealed record ChartSeriesData(
     double? Maximum,
     double? Average,
     double CoveragePercent,
-    double AxisMaximum);
+    double AxisMaximum,
+    double AxisMinimum = 0);
+
+public sealed record ChartRangeSample(double SourcePosition, double X, double Value, bool StartsNewSegment);
 
 public static class ChartSeriesBuilder
 {
@@ -30,20 +33,20 @@ public static class ChartSeriesBuilder
         for (var index = 0; index < points.Count; index++)
         {
             var value = selector(points[index]);
-            var x = AxisValue(points[index], firstTime, axis);
+            var x = ActivityRangeProjection.AxisValue(points[index], firstTime, axis);
             if (value.HasValue && x.HasValue && double.IsFinite(value.Value) && double.IsFinite(x.Value))
                 raw.Add((index, x.Value, value.Value));
         }
 
         if (raw.Count == 0)
-            return new ChartSeriesData([], null, null, null, 0, AxisMaximum(points, firstTime, axis));
+            return new ChartSeriesData([], null, null, null, 0, AxisMaximum(points, firstTime, axis), AxisMinimum(points, firstTime, axis));
 
         var selected = Downsample(raw, Math.Max(20, maximumSamples));
         var samples = new List<ChartSample>(selected.Count);
         (int Index, double X, double Value)? previous = null;
         foreach (var item in selected)
         {
-            var startsNew = previous is null || HasGap(points, selector, previous.Value.Index, item.Index, gapSeconds);
+            var startsNew = previous is null || HasGap(points, selector, previous.Value.Index, item.Index, gapSeconds, axis);
             samples.Add(new ChartSample(item.Index, item.X, item.Value, startsNew));
             previous = item;
         }
@@ -55,7 +58,8 @@ public static class ChartSeriesBuilder
             values.Max(),
             values.Average(),
             raw.Count * 100d / points.Count,
-            Math.Max(AxisMaximum(points, firstTime, axis), raw.Max(x => x.X)));
+            Math.Max(AxisMaximum(points, firstTime, axis), raw.Max(x => x.X)),
+            AxisMinimum(points, firstTime, axis));
     }
 
     public static IReadOnlyList<string> ToSvgSegments(
@@ -80,7 +84,7 @@ public static class ChartSeriesBuilder
         var scaledMaximum = maximum / valueScale;
         var scaledSpan = scaledMaximum - scaledMinimum;
         if (hasValueRange && (!double.IsFinite(scaledSpan) || scaledSpan <= 0)) return [];
-        var axisSpan = Math.Max(series.AxisMaximum, 1e-9);
+        var axisSpan = Math.Max(series.AxisMaximum - series.AxisMinimum, 1e-9);
         var plotHeight = height - verticalPadding * 2;
         var result = new List<string>();
         var current = new List<string>();
@@ -96,7 +100,7 @@ public static class ChartSeriesBuilder
                 current.Clear();
             }
 
-            var x = width * Math.Clamp(sample.X / axisSpan, 0, 1);
+            var x = width * Math.Clamp((sample.X - series.AxisMinimum) / axisSpan, 0, 1);
             var valueFraction = hasValueRange
                 ? (sample.Value / valueScale - scaledMinimum) / scaledSpan
                 : 0.5;
@@ -133,30 +137,77 @@ public static class ChartSeriesBuilder
         Func<TrackPoint, double?> selector,
         int previous,
         int current,
-        double gapSeconds)
+        double gapSeconds,
+        ChartAxisKind axis)
     {
         for (var index = previous + 1; index <= current; index++)
         {
             var value = selector(points[index]);
             if (!value.HasValue || !double.IsFinite(value.Value)) return true;
-            var before = points[index - 1].Timestamp;
-            var after = points[index].Timestamp;
-            if (before.HasValue && after.HasValue && (after.Value - before.Value).TotalSeconds > gapSeconds)
-                return true;
+            if (axis == ChartAxisKind.Distance &&
+                (points[index].DistanceMeters is not double distance || !double.IsFinite(distance))) return true;
+            if (!ActivityRangeProjection.CanInterpolate(points[index - 1], points[index], gapSeconds)) return true;
         }
         return false;
     }
 
-    private static double? AxisValue(TrackPoint point, DateTimeOffset? firstTime, ChartAxisKind axis) =>
-        axis == ChartAxisKind.Distance
-            ? point.DistanceMeters
-            : point.Timestamp.HasValue && firstTime.HasValue
-                ? Math.Max(0, (point.Timestamp.Value - firstTime.Value).TotalSeconds)
-                : null;
-
     private static double AxisMaximum(IReadOnlyList<TrackPoint> points, DateTimeOffset? firstTime, ChartAxisKind axis)
     {
-        var values = points.Select(point => AxisValue(point, firstTime, axis)).Where(x => x.HasValue).Select(x => x!.Value);
+        var values = points.Select(point => ActivityRangeProjection.AxisValue(point, firstTime, axis)).Where(x => x.HasValue).Select(x => x!.Value);
         return values.DefaultIfEmpty(0).Max();
+    }
+
+    private static double AxisMinimum(IReadOnlyList<TrackPoint> points, DateTimeOffset? firstTime, ChartAxisKind axis) =>
+        Math.Min(0, points.Select(point => ActivityRangeProjection.AxisValue(point, firstTime, axis))
+            .Where(value => value.HasValue).Select(value => value!.Value).DefaultIfEmpty(0).Min());
+
+    public static IReadOnlyList<ChartRangeSample> BuildRangeSamples(
+        IReadOnlyList<TrackPoint> points,
+        Func<TrackPoint, double?> selector,
+        ChartAxisKind axis,
+        double gapSeconds = 30)
+    {
+        var values = ActivityRangeProjection.AxisValues(points, axis);
+        var samples = new List<ChartRangeSample>();
+        var previousIndex = -2;
+        for (var index = 0; index < points.Count; index++)
+        {
+            var value = selector(points[index]);
+            if (values[index] is not double x || value is not double y || !double.IsFinite(y)) continue;
+            var startsNew = previousIndex != index - 1 ||
+                            !ActivityRangeProjection.CanInterpolate(points[index - 1], points[index], gapSeconds, requireTiming: true);
+            samples.Add(new(index, x, y, startsNew));
+            previousIndex = index;
+        }
+        return samples;
+    }
+
+    public static IReadOnlyList<ChartRangeSample> ClipRangeSamples(
+        IReadOnlyList<ChartRangeSample> samples,
+        double startPosition,
+        double endPosition)
+    {
+        if (!double.IsFinite(startPosition) || !double.IsFinite(endPosition) || startPosition > endPosition) return [];
+        var result = new List<ChartRangeSample>();
+        ChartRangeSample? previous = null;
+        foreach (var sample in samples)
+        {
+            if (previous is not null && !sample.StartsNewSegment && previous.SourcePosition < startPosition && sample.SourcePosition > startPosition)
+                result.Add(Interpolate(previous, sample, startPosition, true));
+            if (sample.SourcePosition >= startPosition && sample.SourcePosition <= endPosition)
+                result.Add(sample with { StartsNewSegment = result.Count == 0 || sample.StartsNewSegment });
+            if (previous is not null && !sample.StartsNewSegment && previous.SourcePosition < endPosition && sample.SourcePosition > endPosition && endPosition >= startPosition)
+                result.Add(Interpolate(previous, sample, endPosition, result.Count == 0));
+            if (sample.SourcePosition > endPosition) break;
+            previous = sample;
+        }
+        return result;
+    }
+
+    private static ChartRangeSample Interpolate(ChartRangeSample before, ChartRangeSample after, double position, bool startsNew)
+    {
+        var fraction = (position - before.SourcePosition) / (after.SourcePosition - before.SourcePosition);
+        return new(position, before.X * (1 - fraction) + after.X * fraction,
+            before.Value * (1 - fraction) + after.Value * fraction, startsNew);
     }
 }

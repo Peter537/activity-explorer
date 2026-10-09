@@ -48,6 +48,22 @@ Choose **Elapsed time** or **Distance** to change the shared horizontal axis. A 
 
 Open **Inspect exact values** on one chart to step through that chart with a keyboard-operable slider or to open its data table. This inspector is intentionally independent: it does not move the other charts. Pointer comparison is the synchronized path; the slider and table provide a stable per-chart alternative for keyboard and assistive-technology users.
 
+## Selecting an activity range
+
+On an activity, choose **Select range** to start with the complete recording. Drag across a chart with a mouse or pen, or tap the start and end on touch. The two endpoint sliders and Back/Forward buttons provide keyboard control; the buttons move to adjacent recorded samples. **Finish selecting** restores ordinary point inspection while keeping the selected range. **Clear selection** removes it. Full-activity charts, summary cards, and map context remain visible.
+
+The selected interval follows original source positions, including fractional boundaries, rather than the smaller displayed sample set. Switching between elapsed time and distance preserves it. The URL retains the range, stream identity, axis, and recording section, so refresh and Back/Forward restore the same selection. Section-jump links preserve these parameters. Invalid or replaced-stream links show an explanation and leave the whole activity available.
+
+When a clock or distance counter restarts and chart positions overlap, **Recording section** chooses the source section targeted by chart gestures. The endpoint controls can span sections. Elapsed values are relative to the first timestamped sample; negative values are retained when a clock resets to before that origin. Missing positions and discontinuities break the line instead of connecting unrelated samples. Changing sections does not move an existing selection.
+
+**Range summary** uses the complete source stream. Known duration sums positive adjacent timestamp differences, including long gaps; missing or non-increasing timestamps make it partial. Other contributions require adjacent timestamps more than zero and at most 30 seconds apart. Boundaries interpolate only on supported source edges. Sensor averages use trapezoidal time weighting, include recorded zeros, and never fall back to a sample mean. Coverage shows supported seconds and, when total elapsed duration is known, their percentage of that duration.
+
+Distance uses the recorded counter when present; GPS is a labelled fallback for streams without recorded distance. Missing counter values and resets are excluded instead of being repaired from GPS. Ascent and descent sum valid adjacent elevation changes. Speed or pace divides supported distance by the duration of those same edges; incomplete coverage is labelled **Covered-time average**. Unavailable readings remain distinct from zero.
+
+Some power benchmarks interpolate between filtered source samples. Exact source brackets and timestamps are retained. A bracket is resolved to adjacent raw samples only when every timestamp inside it is present and strictly increasing; otherwise ambiguous boundary contributions and map portions remain unavailable. These range rules deliberately differ from benchmark qualification and averaging. The exact benchmark result remains unchanged in attempt history.
+
+The map highlights only valid selected GPS runs and endpoints. It never connects missing coordinates or timing gaps, and selection changes preserve the viewport. Indoor activities retain range inspection without a map.
+
 ## Segment definition elevation profile
 
 The segment definition profile keeps its more detailed presentation: distance on the horizontal axis, elevation on the vertical axis, labelled gridlines, and a grade-colored area. Pointer or keyboard inspection reports exact distance, elevation, and local grade and marks the corresponding definition point on the map. The legend explains the grade bands, while the data table remains available without relying on color or pointer input.

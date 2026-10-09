@@ -22,6 +22,7 @@ var maximumUploadBytes = builder.Configuration.GetValue("Imports:MaxUploadBytes"
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = checked(maximumUploadBytes + 1024 * 1024));
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddActivityExplorer();
+builder.Services.AddSingleton<IActivityRangeAnalyzer, ActivityExplorer.Infrastructure.Services.ActivityRangeAnalyzer>();
 var keyPaths = new AppDataPaths();
 keyPaths.EnsureCreated();
 var keyDirectory = Path.Combine(keyPaths.Root, "keys");

@@ -1,0 +1,38 @@
+<section class="activity-range-summary" aria-labelledby="range-summary-title" aria-busy="@(Busy ? "true" : "false")">
+    <h3 id="range-summary-title">Range summary</h3>
+    @if (Busy)
+    {
+        <p role="status">Calculating selected range…</p>
+    }
+    else if (Analysis is not null)
+    {
+        <dl class="range-metrics" aria-live="polite">
+            <div><dt>@(Analysis.DurationComplete ? "Elapsed duration" : "Known duration · partial")</dt><dd>@Duration(Analysis.DurationSeconds)</dd></div>
+            <div><dt>@(Analysis.UsesGpsDistance ? "GPS distance" : "Recorded distance")@Partial(Analysis.Distance)</dt><dd>@Distance(Analysis.Distance.Value)<small>@Coverage(Analysis.Distance)</small></dd></div>
+            <div><dt>@(Analysis.Distance.IsComplete ? "Elapsed average" : "Covered-time average") @(Sport == SportKind.Cycling ? "speed" : "pace")</dt><dd>@Format.Speed(Analysis.AverageSpeedMetersPerSecond, Sport)</dd></div>
+            <div><dt>@("Ascent / descent" + Partial(Analysis.ElevationGain))</dt><dd>@Metres(Analysis.ElevationGain.Value) / @Metres(Analysis.ElevationLoss.Value)<small>@Coverage(Analysis.ElevationGain)</small></dd></div>
+            <div><dt>Heart rate · time-weighted</dt><dd>@Value(Analysis.HeartRate.Value, "bpm")<small>@Coverage(Analysis.HeartRate)</small></dd></div>
+            <div><dt>Power · time-weighted</dt><dd>@Value(Analysis.Power.Value, "W")<small>@Coverage(Analysis.Power)</small></dd></div>
+            <div><dt>@Format.CadenceLabel(Sport) · time-weighted</dt><dd>@Value(Analysis.Cadence.Value, Format.CadenceUnit(Sport))<small>@Coverage(Analysis.Cadence)</small></dd></div>
+        </dl>
+        @if (!Analysis.DurationComplete || !Analysis.Distance.IsComplete || Analysis.HasAmbiguousBoundaries)
+        {
+            <p class="range-gap-notice" role="status">Some data is unavailable. Totals include only supported contributions; gaps and ambiguous boundaries are excluded.</p>
+        }
+        <p class="muted compact-note">Calculated from adjacent recorded samples up to 30 seconds apart. Range averages and coverage can differ from benchmark results and qualification.</p>
+    }
+</section>
+
+@code {
+    [Parameter] public ActivityRangeAnalysis? Analysis { get; set; }
+    [Parameter] public SportKind Sport { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    private static string Partial(RangeMetric metric) => metric.Value.HasValue && !metric.IsComplete ? " · partial" : "";
+    private static string Duration(double? value) => value.HasValue ? Format.Duration(value.Value) : "Unavailable";
+    private static string Distance(double? value) => value.HasValue ? Format.Distance(value.Value) : "Not recorded";
+    private static string Metres(double? value) => Value(value, "m");
+    private static string Value(double? value, string unit) => value.HasValue ? $"{value.Value:N1} {unit}" : "Not recorded";
+    private static string Coverage(RangeMetric metric) => metric.Value.HasValue
+        ? $"{Format.Duration(metric.CoveredSeconds)} covered" + (metric.CoveragePercent.HasValue ? $" · {metric.CoveragePercent.Value:N1}%" : " · percentage unavailable") + Partial(metric)
+        : "No supported sample interval";
+}

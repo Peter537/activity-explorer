@@ -33,6 +33,8 @@
     [Parameter] public string? SegmentUrl { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? InlinePoints { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? HighlightPoints { get; set; }
+    [Parameter] public ActivityMapProjection? ActivityTrack { get; set; }
+    [Parameter] public ActivityMapProjection? ActivitySelection { get; set; }
     [Parameter] public IReadOnlyList<SegmentMapSection> Sections { get; set; } = [];
     [Parameter] public Guid? SelectedSectionId { get; set; }
     [Parameter] public EventCallback<Guid> SelectedSectionIdChanged { get; set; }
@@ -48,9 +50,12 @@
     private readonly string _id = $"map-{Guid.NewGuid():N}";
     private DotNetObjectReference<MapCanvas>? _reference;
     private bool _initialized;
+    private bool _disposed;
     private int? _renderedSelectionStart;
     private int? _renderedSelectionEnd;
     private bool _renderedSelectionReversed;
+    private ActivityMapProjection? _renderedActivityTrack;
+    private ActivityMapProjection? _renderedActivitySelection;
     private IReadOnlyList<SegmentMapSection>? _renderedSections;
     private Guid? _renderedSectionId;
     private string _pointStatus = "No points added.";
@@ -62,26 +67,46 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_disposed) return;
+        var activityTrack = ActivityTrack;
+        var activitySelection = ActivitySelection;
+        var sections = Sections;
+        var sectionId = SelectedSectionId;
+        var selectionStart = SelectionStartIndex;
+        var selectionEnd = SelectionEndIndex;
+        var selectionReversed = SelectionReversed;
         if (!firstRender)
         {
-            if (_initialized && (_renderedSelectionStart != SelectionStartIndex ||
-                                 _renderedSelectionEnd != SelectionEndIndex ||
-                                 _renderedSelectionReversed != SelectionReversed))
+            if (_initialized && !ReferenceEquals(_renderedActivityTrack, activityTrack))
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateActivity", _id, activityTrack, activitySelection);
+                _renderedActivityTrack = activityTrack;
+                _renderedActivitySelection = activitySelection;
+            }
+            else if (_initialized && !ReferenceEquals(_renderedActivitySelection, activitySelection))
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateActivitySelection", _id, activitySelection);
+                _renderedActivitySelection = activitySelection;
+            }
+            if (_initialized && (_renderedSelectionStart != selectionStart ||
+                                 _renderedSelectionEnd != selectionEnd ||
+                                 _renderedSelectionReversed != selectionReversed))
             {
                 await JS.InvokeVoidAsync(
                     "activityExplorerMap.updateSelection",
                     _id,
-                    SelectionStartIndex,
-                    SelectionEndIndex,
-                    SelectionReversed);
-                RememberSelection();
+                    selectionStart,
+                    selectionEnd,
+                    selectionReversed);
+                RememberSelection(selectionStart, selectionEnd, selectionReversed);
             }
-            if (_initialized && (!ReferenceEquals(_renderedSections, Sections) || _renderedSectionId != SelectedSectionId))
+            if (_initialized && (!ReferenceEquals(_renderedSections, sections) || _renderedSectionId != sectionId))
             {
-                await JS.InvokeVoidAsync("activityExplorerMap.updateSections", _id, Sections, SelectedSectionId);
-                _renderedSections = Sections;
-                _renderedSectionId = SelectedSectionId;
+                await JS.InvokeVoidAsync("activityExplorerMap.updateSections", _id, sections, sectionId);
+                _renderedSections = sections;
+                _renderedSectionId = sectionId;
             }
+            if (_initialized && !_disposed && HasPendingUpdates) await InvokeAsync(StateHasChanged);
             return;
         }
         var coordinates = InlinePoints?
@@ -100,11 +125,13 @@
             segmentUrl = SegmentUrl,
             inlineCoordinates = coordinates,
             highlightCoordinates,
-            sections = Sections,
-            selectedSectionId = SelectedSectionId,
-            selectionStartIndex = SelectionStartIndex,
-            selectionEndIndex = SelectionEndIndex,
-            selectionReversed = SelectionReversed,
+            activityTrack,
+            activitySelection,
+            sections,
+            selectedSectionId = sectionId,
+            selectionStartIndex = selectionStart,
+            selectionEndIndex = selectionEnd,
+            selectionReversed,
             showSelectionEndpoints = ShowSelectionEndpoints,
             inspectionGroupId = InspectionGroupId,
             blankBaseMap = _mode != MapPrivacyMode.OpenFreeMap,
@@ -116,10 +143,19 @@
             reportLoadStatus = ShowLoadStatus,
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
+        if (_disposed)
+        {
+            try { await JS.InvokeVoidAsync("activityExplorerMap.destroy", _id); }
+            catch (JSDisconnectedException) { }
+            return;
+        }
         _initialized = true;
-        _renderedSections = Sections;
-        _renderedSectionId = SelectedSectionId;
-        RememberSelection();
+        _renderedSections = sections;
+        _renderedSectionId = sectionId;
+        _renderedActivityTrack = activityTrack;
+        _renderedActivitySelection = activitySelection;
+        RememberSelection(selectionStart, selectionEnd, selectionReversed);
+        if (HasPendingUpdates) await InvokeAsync(StateHasChanged);
     }
 
     [JSInvokable]
@@ -156,15 +192,22 @@
     public ValueTask UndoAsync() => JS.InvokeVoidAsync("activityExplorerMap.undo", _id);
     public ValueTask ClearAsync() => JS.InvokeVoidAsync("activityExplorerMap.clear", _id);
 
-    private void RememberSelection()
+    private bool HasPendingUpdates => !ReferenceEquals(_renderedActivityTrack, ActivityTrack) ||
+        !ReferenceEquals(_renderedActivitySelection, ActivitySelection) ||
+        !ReferenceEquals(_renderedSections, Sections) || _renderedSectionId != SelectedSectionId ||
+        _renderedSelectionStart != SelectionStartIndex || _renderedSelectionEnd != SelectionEndIndex ||
+        _renderedSelectionReversed != SelectionReversed;
+
+    private void RememberSelection(int? start, int? end, bool reversed)
     {
-        _renderedSelectionStart = SelectionStartIndex;
-        _renderedSelectionEnd = SelectionEndIndex;
-        _renderedSelectionReversed = SelectionReversed;
+        _renderedSelectionStart = start;
+        _renderedSelectionEnd = end;
+        _renderedSelectionReversed = reversed;
     }
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
         if (_initialized)
         {
             try { await JS.InvokeVoidAsync("activityExplorerMap.destroy", _id); }

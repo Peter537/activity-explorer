@@ -37,7 +37,7 @@ public sealed record ActivityDetail(
     double? AverageCadence, double? MaxPower, double? Kilojoules,
     IReadOnlyList<TrackPoint> Points, IReadOnlyList<LapCandidate> Laps,
     IReadOnlyList<SourceFileSummary> Sources, IReadOnlyList<SegmentEffortSummary> SegmentEfforts,
-    ActivityRichSummary Rich, IReadOnlyList<ActivityMetricSummary> Metrics);
+    ActivityRichSummary Rich, IReadOnlyList<ActivityMetricSummary> Metrics, string? StreamFingerprint = null);
 
 public sealed record ActivityRichSummary(
     double? TimerSeconds, MovingTimeSource MovingTimeSource,
@@ -135,7 +135,7 @@ public sealed record RecordBenchmark(SportKind Sport, RecordKind Kind, string Ke
 public sealed record RecordAttempt(
     Guid ActivityId, string ActivityTitle, Guid OwnerId, string OwnerName, DateTimeOffset ActivityDate,
     double Value, double CoveragePercent, double? StartSeconds, double? FinishSeconds,
-    double? StartPosition, double? FinishPosition);
+    double? StartPosition, double? FinishPosition, string? StreamFingerprint = null, ActivityRange? Range = null);
 
 public sealed record RecordAttemptPage(RecordBenchmark Benchmark, PagedResult<RecordAttempt> Attempts,
     IReadOnlyList<ResolvedOwnerPeriod>? Periods = null);

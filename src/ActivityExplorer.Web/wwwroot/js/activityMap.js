@@ -71,7 +71,32 @@ window.activityExplorerMap = (() => {
         return entry.options.highlightCoordinates || [];
     }
 
+    function projectionCoordinates(projection) {
+        return (projection?.runs || []).flatMap(run => run.map(point => [point.longitude, point.latitude]));
+    }
+
+    function projectionLines(projection) {
+        return {
+            type: "FeatureCollection",
+            features: (projection?.runs || []).filter(run => run.length > 1).map(run => ({
+                type: "Feature",
+                geometry: { type: "LineString", coordinates: run.map(point => [point.longitude, point.latitude]) },
+                properties: { sourcePositions: run.map(point => point.sourcePosition) }
+            }))
+        };
+    }
+
     function selectionEndpoints(entry) {
+        if (entry.options.activityTrack) {
+            const selection = entry.options.activitySelection;
+            return [["start", selection?.start], ["end", selection?.end]]
+                .filter(([, point]) => point)
+                .map(([kind, point]) => ({
+                    type: "Feature",
+                    geometry: { type: "Point", coordinates: [point.longitude, point.latitude] },
+                    properties: { kind, sourcePosition: point.sourcePosition }
+                }));
+        }
         if (!entry.options.showSelectionEndpoints) return [];
         const coordinates = entry.options.inlineCoordinates || [];
         const start = entry.options.selectionStartIndex;
@@ -87,20 +112,33 @@ window.activityExplorerMap = (() => {
     function inspectionFeature(entry) {
         const coordinates = entry.options.inlineCoordinates || [];
         const index = entry.options.inspectionIndex;
-        if (!Number.isInteger(index) || index < 0 || index >= coordinates.length)
+        const coordinate = entry.options.activityTrack
+            ? entry.activityCoordinates?.get(index)
+            : Number.isInteger(index) && index >= 0 && index < coordinates.length ? coordinates[index] : null;
+        if (!coordinate)
             return { type: "FeatureCollection", features: [] };
         return {
             type: "FeatureCollection",
             features: [{
                 type: "Feature",
-                geometry: { type: "Point", coordinates: coordinates[index] },
+                geometry: { type: "Point", coordinates: coordinate },
                 properties: {}
             }]
         };
     }
 
     function refreshInspectionLayer(entry) {
-        if (!entry.map.isStyleLoaded() || !entry.options.inspectionGroupId) return;
+        if (entry.disposed || !entry.options.inspectionGroupId) return;
+        if (!entry.map.isStyleLoaded()) {
+            if (!entry.inspectionPending) {
+                entry.inspectionPending = true;
+                entry.map.once("idle", () => {
+                    entry.inspectionPending = false;
+                    refreshInspectionLayer(entry);
+                });
+            }
+            return;
+        }
         const data = inspectionFeature(entry);
         if (entry.map.getSource("inspection-point")) entry.map.getSource("inspection-point").setData(data);
         else {
@@ -135,6 +173,7 @@ window.activityExplorerMap = (() => {
     }
 
     function refreshSectionLayers(entry) {
+        if (entry.disposed) return;
         if (!entry.map.isStyleLoaded()) {
             if (!entry.sectionsPending) {
                 entry.sectionsPending = true;
@@ -191,21 +230,39 @@ window.activityExplorerMap = (() => {
         entry.map.getContainer().dataset.selectedSection = entry.options.selectedSectionId || "";
     }
 
-    function refreshTrackLayers(entry) {
-        if (!entry.map.isStyleLoaded()) return;
-        const coordinates = entry.options.inlineCoordinates || [];
-        const lineData = coordinates.length > 1
-            ? { type: "Feature", geometry: { type: "LineString", coordinates }, properties: {} }
-            : { type: "FeatureCollection", features: [] };
-        if (entry.map.getSource("inline")) entry.map.getSource("inline").setData(lineData);
-        else {
-            entry.map.addSource("inline", { type: "geojson", data: lineData });
-            entry.map.addLayer({
-                id: "inline", type: "line", source: "inline",
-                paint: { "line-color": "#246b59", "line-width": 4, "line-opacity": Number.isInteger(entry.options.selectionStartIndex) ? 0.38 : 0.95 }
-            });
+    function refreshTrackLayers(entry, selectionOnly = false) {
+        if (entry.disposed) return;
+        if (!entry.map.isStyleLoaded()) {
+            entry.trackPendingFull = entry.trackPendingFull || !selectionOnly;
+            if (!entry.trackPending) {
+                entry.trackPending = true;
+                entry.map.once("idle", () => {
+                    entry.trackPending = false;
+                    const onlySelection = !entry.trackPendingFull;
+                    entry.trackPendingFull = false;
+                    refreshTrackLayers(entry, onlySelection);
+                });
+            }
+            return;
         }
-        if (entry.options.editable) {
+        const coordinates = entry.options.inlineCoordinates || [];
+        const hasSelection = entry.options.activityTrack
+            ? !!entry.options.activitySelection : Number.isInteger(entry.options.selectionStartIndex);
+        if (!selectionOnly || !entry.map.getSource("inline")) {
+            const lineData = entry.options.activityTrack ? projectionLines(entry.options.activityTrack) : coordinates.length > 1
+                ? { type: "Feature", geometry: { type: "LineString", coordinates }, properties: {} }
+                : { type: "FeatureCollection", features: [] };
+            if (entry.map.getSource("inline")) entry.map.getSource("inline").setData(lineData);
+            else {
+                entry.map.addSource("inline", { type: "geojson", data: lineData });
+                entry.map.addLayer({
+                    id: "inline", type: "line", source: "inline",
+                    paint: { "line-color": "#246b59", "line-width": 4, "line-opacity": hasSelection ? 0.38 : 0.95 }
+                });
+            }
+        }
+        entry.map.setPaintProperty("inline", "line-opacity", hasSelection ? 0.38 : 0.95);
+        if (entry.options.editable && !selectionOnly) {
             const pointData = { type: "Feature", geometry: { type: "MultiPoint", coordinates }, properties: {} };
             if (entry.map.getSource("draw-points")) entry.map.getSource("draw-points").setData(pointData);
             else {
@@ -214,7 +271,7 @@ window.activityExplorerMap = (() => {
             }
         }
         const highlight = selectedCoordinates(entry);
-        const highlightData = highlight.length > 1
+        const highlightData = entry.options.activityTrack ? projectionLines(entry.options.activitySelection) : highlight.length > 1
             ? { type: "Feature", geometry: { type: "LineString", coordinates: highlight }, properties: {} }
             : { type: "FeatureCollection", features: [] };
         if (entry.map.getSource("selected-effort")) entry.map.getSource("selected-effort").setData(highlightData);
@@ -236,11 +293,12 @@ window.activityExplorerMap = (() => {
                 paint: { "circle-radius": 7, "circle-color": "#c74632", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" }
             });
         }
-        refreshSectionLayers(entry);
+        if (!selectionOnly) refreshSectionLayers(entry);
         refreshInspectionLayer(entry);
     }
 
     async function refresh(entry) {
+        if (entry.disposed) return;
         entry.request?.abort();
         const request = new AbortController();
         entry.request = request;
@@ -274,6 +332,7 @@ window.activityExplorerMap = (() => {
 
     async function create(id, options, dotnet) {
         const maplibregl = await mapLibrePromise;
+        if (!document.getElementById(id)) return;
         const map = new maplibregl.Map({
             container: id,
             style: options.blankBaseMap ? blankStyle() : options.styleUrl,
@@ -286,6 +345,7 @@ window.activityExplorerMap = (() => {
         if (options.describedBy) canvas.setAttribute("aria-describedby", options.describedBy);
 
         const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap };
+        indexActivityCoordinates(entry);
         maps.set(id, entry);
         if (options.inspectionGroupId) {
             const group = document.getElementById(options.inspectionGroupId);
@@ -302,9 +362,11 @@ window.activityExplorerMap = (() => {
         }));
         map.on("load", async () => {
             await refresh(entry);
+            if (entry.disposed) return;
             ["activities", "routes", "segments"].forEach(layer => { if (map.getLayer(layer)) popup(entry, layer); });
-            if (options.inlineCoordinates?.length > 1) {
-                const bounds = options.inlineCoordinates.reduce((value, coordinate) => value.extend(coordinate), new maplibregl.LngLatBounds(options.inlineCoordinates[0], options.inlineCoordinates[0]));
+            const fitCoordinates = options.activityTrack ? projectionCoordinates(options.activityTrack) : options.inlineCoordinates;
+            if (fitCoordinates?.length) {
+                const bounds = fitCoordinates.reduce((value, coordinate) => value.extend(coordinate), new maplibregl.LngLatBounds(fitCoordinates[0], fitCoordinates[0]));
                 map.fitBounds(bounds, { padding: 48, maxZoom: 15, duration: 0 });
             }
             if (options.editable) {
@@ -368,9 +430,34 @@ window.activityExplorerMap = (() => {
         refreshSectionLayers(entry);
     }
 
+    function indexActivityCoordinates(entry) {
+        entry.activityCoordinates = new Map();
+        for (const run of entry.options.activityTrack?.runs || [])
+            for (const point of run)
+                if (Number.isInteger(point.sourcePosition))
+                    entry.activityCoordinates.set(point.sourcePosition, [point.longitude, point.latitude]);
+    }
+
+    function updateActivity(id, track, selection) {
+        const entry = maps.get(id);
+        if (!entry) return;
+        entry.options.activityTrack = track;
+        entry.options.activitySelection = selection;
+        indexActivityCoordinates(entry);
+        refreshTrackLayers(entry);
+    }
+
+    function updateActivitySelection(id, selection) {
+        const entry = maps.get(id);
+        if (!entry) return;
+        entry.options.activitySelection = selection;
+        refreshTrackLayers(entry, true);
+    }
+
     function destroy(id) {
         const entry = maps.get(id);
         if (entry) {
+            entry.disposed = true;
             entry.request?.abort();
             if (entry.inspectionGroup && entry.inspectionHandler)
                 entry.inspectionGroup.removeEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
@@ -382,5 +469,5 @@ window.activityExplorerMap = (() => {
 
     function reload(id) { const entry = maps.get(id); if (entry) return refresh(entry); }
 
-    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, destroy, reload };
+    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, updateActivity, updateActivitySelection, destroy, reload };
 })();

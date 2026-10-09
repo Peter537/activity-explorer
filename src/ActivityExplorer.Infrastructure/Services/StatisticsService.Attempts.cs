@@ -108,24 +108,26 @@ public sealed partial class StatisticsService
                 }
                 else if (activity.Stream is not null)
                 {
+                    var fingerprint = TrackCodec.Fingerprint(activity.Stream);
                     // Stream evaluation is CPU-bound; let the Blazor circuit render progress and process cancellation.
                     var windows = await Task.Run(() => BestEffortCalculator.Attempts(TrackCodec.Decode(activity.Stream.CompressedPayload),
                         query.Sport, query.Kind, benchmark.Target!.Value, multiple, cancellationToken), cancellationToken);
-                    foreach (var window in windows) Add(activity, window.Value, window.CoveragePercent, window);
+                    foreach (var window in windows) Add(activity, window.Value, window.CoveragePercent, window, fingerprint);
                 }
             }
         }
         await transaction.CommitAsync(cancellationToken);
         return periods;
 
-        void Add(Activity activity, double value, double coverage, EffortWindow? window)
+        void Add(Activity activity, double value, double coverage, EffortWindow? window, string? fingerprint = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var attempt = new RecordAttempt(activity.Id, activity.Title, activity.OwnerId, activity.Owner!.DisplayName,
                 activity.StartTimeUtc, value, coverage,
                 window is null ? null : (window.StartTime - activity.StartTimeUtc).TotalSeconds,
                 window is null ? null : (window.FinishTime - activity.StartTimeUtc).TotalSeconds,
-                window?.StartPosition, window?.FinishPosition);
+                window?.StartPosition, window?.FinishPosition, fingerprint,
+                window is null ? null : new(window.StartBoundary, window.FinishBoundary));
             add(attempt);
         }
     }

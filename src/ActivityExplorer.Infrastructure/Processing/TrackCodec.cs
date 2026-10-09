@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using ActivityExplorer.Core.Domain;
 
@@ -7,6 +9,12 @@ namespace ActivityExplorer.Infrastructure.Processing;
 public static class TrackCodec
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+
+    public static string Fingerprint(ActivityStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return string.Create(CultureInfo.InvariantCulture, $"v{stream.SchemaVersion}-{Convert.ToHexString(SHA256.HashData(stream.CompressedPayload))}");
+    }
 
     public static byte[] Encode(IReadOnlyList<TrackPoint> points)
     {

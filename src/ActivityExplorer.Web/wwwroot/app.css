@@ -406,6 +406,29 @@ textarea { min-height: 105px; resize: vertical; }
 }
 .chart-controls { margin-top: 8px; }
 .chart-controls p { margin: 0; }
+.range-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 18px; }
+.range-toolbar p { flex-basis: 100%; margin: 0; }
+.range-toolbar label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.range-toolbar select { max-width: 100%; }
+.range-panel { margin-bottom: 20px; }
+.range-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.range-endpoints label { display: block; font-weight: 650; }
+.range-endpoints input { display: block; width: 100%; min-height: 28px; padding: 0; accent-color: var(--orange); }
+.range-endpoints output { display: block; overflow-wrap: anywhere; color: var(--muted); }
+.range-endpoints .button-row { margin-top: 8px; }
+.activity-range-summary { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
+.activity-range-summary h3 { margin: 0 0 12px; }
+.range-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 16px; margin: 0; }
+.range-metrics div { min-width: 0; }
+.range-metrics dt { color: var(--muted); font-size: .88rem; }
+.range-metrics dd { margin: 4px 0 0; font-size: 1.12rem; font-weight: 650; overflow-wrap: anywhere; }
+.range-metrics small { display: block; font-size: .78rem; font-weight: 400; color: var(--muted); }
+.range-gap-notice { border-left: 3px solid var(--orange); padding-left: 12px; }
+.chart-range-line, .chart-range-preview-line { fill: none; stroke: var(--orange); stroke-width: 5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.chart-range-endpoint, .chart-range-preview-endpoint { fill: var(--panel); stroke: var(--orange); stroke-width: 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.chart-range-preview-line { stroke-dasharray: 6 4; }
+.range-selecting .chart-plot { cursor: crosshair; touch-action: pan-y; }
+@media (max-width: 600px) { .range-endpoints { grid-template-columns: minmax(0, 1fr); gap: 18px; } .range-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chart-canvas { position: relative; }
 .time-series-chart .chart-heading, .spark-chart .chart-heading { gap: 16px; }
 .time-series-chart .chart-heading > div { min-width: 0; }

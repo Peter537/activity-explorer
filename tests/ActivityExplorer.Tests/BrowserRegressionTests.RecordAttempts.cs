@@ -103,7 +103,7 @@ public sealed partial class BrowserRegressionTests
             await page.EvaluateAsync("document.documentElement.style.fontSize='200%'; document.body.style.fontSize='30px'");
             await AssertNoDocumentOverflowAsync(page, "Attempts with enlarged text");
             await page.EvaluateAsync("document.documentElement.style.removeProperty('font-size'); document.body.style.removeProperty('font-size')");
-            await page.Locator(".attempt-table tbody a").First.ClickAsync();
+            await page.Locator(".attempt-table tbody th a").First.ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(origin + $"/activities/{ride.Id}");
             await page.GoBackAsync();
             await Assertions.Expect(page).ToHaveURLAsync(new Regex("^" + Regex.Escape(detailUrl) + "$"));

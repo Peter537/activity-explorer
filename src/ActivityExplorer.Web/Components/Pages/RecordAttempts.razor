@@ -97,7 +97,7 @@ else if (_result is not null)
                         var attempt = _result.Attempts.Items[index];
                         <tr>
                             <td data-label="Rank">@(((_result.Attempts.Page - 1) * _result.Attempts.PageSize + index + 1).ToString("N0"))</td>
-                            <td data-label="Result"><strong>@RecordDisplay.Value(_result.Benchmark.Sport, _result.Benchmark.Kind, attempt.Value)</strong></td>
+                            <td data-label="Result"><a class="attempt-range-link" href="@ActivityRangeUrl.ForAttempt(attempt)"><strong>@RecordDisplay.Value(_result.Benchmark.Sport, _result.Benchmark.Kind, attempt.Value)</strong></a></td>
                             <th scope="row" data-label="Activity"><a href="@($"/activities/{attempt.ActivityId}")">@attempt.ActivityTitle</a></th>
                             <td data-label="Profile">@attempt.OwnerName</td>
                             <td data-label="Date">@ReportingDate(attempt)</td>
