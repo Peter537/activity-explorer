@@ -101,7 +101,7 @@ public sealed class BadgeServiceTests
         var overview = Assert.Single(await badges.GetOverviewAsync());
         Assert.Null(overview.Level);
         Assert.Contains("timezone", overview.Error);
-        await profiles.UpdateTimeZoneAsync(owner, BadgeTimeZone.DefaultId);
+        await profiles.UpdateTimeZoneAsync(owner, ReportingTimeZone.DefaultId);
         Assert.NotNull(Assert.Single(await badges.GetOverviewAsync()).Level);
     }
 

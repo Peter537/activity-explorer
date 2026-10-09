@@ -155,7 +155,7 @@ public sealed class BadgeTests
     public void Empty_history_default_timezone_invalid_timezone_and_cancellation_are_explicit()
     {
         var snapshot = Evaluate([]);
-        Assert.Equal(BadgeTimeZone.DefaultId, snapshot.TimeZoneId);
+        Assert.Equal(ReportingTimeZone.DefaultId, snapshot.TimeZoneId);
         Assert.Equal(1, snapshot.Level.Level);
         Assert.NotEmpty(snapshot.ForMonth);
         Assert.Equal(BadgeCatalog.Definitions.Select(x => x.FamilyId).Distinct().Count(), snapshot.Editions.Select(x => x.Definition.FamilyId).Distinct().Count());

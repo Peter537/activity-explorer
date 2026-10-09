@@ -1,0 +1,10 @@
+.reporting-date-filter { flex: 1 1 100%; min-width: 0; }
+.reporting-date-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 13px; }
+.reporting-date-fields label { flex: 1 1 170px; min-width: 0; max-width: 300px; }
+.reporting-date-fields input, .reporting-date-fields select { width: 100%; min-width: 0; }
+.reporting-date-help { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.reporting-date-help p { margin: 6px 0 0; }
+.reporting-date-help details { margin-top: 6px; }
+.reporting-date-help summary { cursor: pointer; }
+.reporting-date-error { color: var(--danger); }
+@media (max-width: 600px) { .reporting-date-fields label { max-width: none; } }

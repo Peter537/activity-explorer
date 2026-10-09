@@ -41,8 +41,8 @@ public sealed class ProfileService(
     public async Task UpdateTimeZoneAsync(Guid ownerId, string timeZoneId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(timeZoneId) || timeZoneId.Length > 120)
-            throw new ArgumentException("Choose a valid badge timezone.", nameof(timeZoneId));
-        var zone = BadgeTimeZone.Resolve(timeZoneId.Trim());
+            throw new ArgumentException("Choose a valid reporting timezone.", nameof(timeZoneId));
+        var zone = ReportingTimeZone.Resolve(timeZoneId.Trim());
         await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var owner = await db.Owners.SingleOrDefaultAsync(x => x.Id == ownerId, cancellationToken)
@@ -138,7 +138,7 @@ public sealed class ProfileService(
             schemaVersion = 1,
             productVersion = "0.1.0",
             exportedAtUtc = DateTimeOffset.UtcNow,
-            profile = new { owner.Id, owner.DisplayName, owner.CreatedAtUtc, timeZoneId = owner.TimeZoneId ?? BadgeTimeZone.DefaultId },
+            profile = new { owner.Id, owner.DisplayName, owner.CreatedAtUtc, timeZoneId = owner.TimeZoneId ?? ReportingTimeZone.DefaultId },
             activities
         }, ExportJsonOptions);
         return new ProfileExport($"{SafeName(owner.DisplayName)}-activity-explorer.json", payload);

@@ -1,0 +1,15 @@
+.activity-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 16px; margin: 0 0 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.activity-totals dt { color: var(--muted); font-size: 12px; }
+.activity-totals dd { margin: 3px 0 0; font-size: clamp(1.1rem, 2vw, 1.5rem); font-weight: 700; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .activity-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+    .activity-selection-row { grid-template-columns: 38px minmax(0, 1fr); }
+    .activity-row { grid-template-columns: 30px minmax(0, 1fr) minmax(0, 1fr) 14px; gap: 8px 6px; padding: 12px 10px; }
+    .activity-row .sport-icon { grid-column: 1; grid-row: 1; width: 30px; height: 30px; }
+    .activity-title { grid-column: 2 / 4; grid-row: 1; }
+    .activity-title strong { white-space: normal; overflow-wrap: anywhere; }
+    .activity-title small { display: block; }
+    .activity-row > span:nth-child(3) { grid-column: 2; grid-row: 2; overflow-wrap: anywhere; }
+    .activity-row > span:nth-child(4) { grid-column: 3; grid-row: 2; overflow-wrap: anywhere; }
+    .activity-row .row-arrow { grid-column: 4; grid-row: 1; }
+}

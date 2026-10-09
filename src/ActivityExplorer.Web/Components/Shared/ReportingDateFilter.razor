@@ -1,0 +1,70 @@
+<div class="reporting-date-filter">
+    <div class="reporting-date-fields">
+        <label><span>Period</span><select value="@Value.Period" @onchange="PeriodChanged" disabled="@Disabled" aria-describedby="@_helpId">
+            @if (!Options.Any(x => x.Slug == Value.Period)) { <option value="@Value.Period">Unknown period: @Value.Period</option> }
+            @foreach (var option in Options) { <option value="@option.Slug">@option.Label</option> }
+        </select></label>
+        @if (Value.Period == "custom")
+        {
+            <label><span>From</span><input type="@DateInputType(Value.From)" value="@Value.From" @onchange="FromChanged" disabled="@Disabled" aria-invalid="@(Error is not null)" aria-describedby="@_helpId" /></label>
+            <label><span>To</span><input type="@DateInputType(Value.To)" value="@Value.To" @onchange="ToChanged" disabled="@Disabled" aria-invalid="@(Error is not null)" aria-describedby="@_helpId" /></label>
+        }
+    </div>
+    <div id="@_helpId" class="reporting-date-help">
+        @if (Error is not null)
+        {
+            <p class="reporting-date-error" role="alert">@Error</p>
+            @if (Error.Contains("timezone", StringComparison.OrdinalIgnoreCase)) { <a href="/profiles">Choose a timezone in Profiles</a> }
+        }
+        else if (Periods.Count > 0)
+        {
+            var ranges = Periods.Select(x => (x.From, x.To)).Distinct().ToArray();
+            @if (ranges.Length == 1)
+            {
+                <p>@RangeText(ranges[0].From, ranges[0].To) · @(Periods.Count == 1 ? Periods[0].TimeZoneId : "Each profile’s local dates")</p>
+            }
+            else
+            {
+                <details><summary>Dates vary by profile</summary><ul>@foreach (var period in Periods) { <li><strong>@period.OwnerName:</strong> @RangeText(period.From, period.To) · @period.TimeZoneId</li> }</ul></details>
+            }
+        }
+        else
+        {
+            <p>Dates use each profile’s timezone.</p>
+        }
+        @if (ActivitiesOnly) { <p>Dates apply to activities. Routes and segments remain visible.</p> }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ReportingDateInput Value { get; set; } = new();
+    [Parameter] public IReadOnlyList<ResolvedOwnerPeriod> Periods { get; set; } = [];
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool ActivitiesOnly { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private readonly string _helpId = $"reporting-dates-{Guid.NewGuid():N}";
+    private static readonly (string Slug, string Label)[] Options =
+    [
+        ("all-time", "All time"), ("today", "Today"), ("this-week", "This week"),
+        ("last-week", "Last week"), ("this-month", "This month"), ("last-month", "Last month"),
+        ("year-to-date", "Year to date"), ("last-year", "Last year"), ("custom", "Custom range")
+    ];
+
+    private Task PeriodChanged(ChangeEventArgs args)
+    {
+        Value.SelectPeriod(args.Value?.ToString() ?? "all-time", Periods);
+        return Changed.InvokeAsync();
+    }
+    private Task FromChanged(ChangeEventArgs args) { Value.From = args.Value?.ToString() ?? ""; return Changed.InvokeAsync(); }
+    private Task ToChanged(ChangeEventArgs args) { Value.To = args.Value?.ToString() ?? ""; return Changed.InvokeAsync(); }
+    private static string DateInputType(string value) => string.IsNullOrEmpty(value) || DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ? "date" : "text";
+    private static string RangeText(DateOnly? from, DateOnly? to) => (from, to) switch
+    {
+        (null, null) => "All time",
+        (not null, null) => $"From {from:dd MMM yyyy}",
+        (null, not null) => $"Through {to:dd MMM yyyy}",
+        _ when from == to => $"{from:dd MMM yyyy}",
+        _ => $"{from:dd MMM yyyy} – {to:dd MMM yyyy} (inclusive)"
+    };
+}

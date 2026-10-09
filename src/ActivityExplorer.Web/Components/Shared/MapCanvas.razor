@@ -9,6 +9,13 @@
     <p id="@($"{_id}-instructions")" class="map-keyboard-help">Pan or zoom the map with its keyboard controls, then use Add point at map center. Undo and Clear are also keyboard-operable.</p>
 }
 <div id="@_id" class="@CssClass" data-inspection-map="@(string.IsNullOrWhiteSpace(InspectionGroupId) ? null : "true")"></div>
+@if (ShowLoadStatus && !string.IsNullOrEmpty(_layerStatus))
+{
+    <div class="map-load-status" role="@(_layersFailed ? "alert" : "status")">
+        <p>@_layerStatus</p>
+        @if (_layersFailed) { <button class="button" type="button" @onclick="RetryLayersAsync">Retry map lines</button> }
+    </div>
+}
 @if (Editable)
 {
     <div class="map-keyboard-controls"><button class="button" type="button" @onclick="AddCenterPointAsync">Add point at map center</button><span role="status" aria-live="polite">@_pointStatus</span></div>
@@ -35,6 +42,7 @@
     [Parameter] public bool ShowSelectionEndpoints { get; set; }
     [Parameter] public string? InspectionGroupId { get; set; }
     [Parameter] public bool ShowDisclosure { get; set; }
+    [Parameter] public bool ShowLoadStatus { get; set; }
     [Parameter] public bool Editable { get; set; }
     [Parameter] public EventCallback<IReadOnlyList<TrackPoint>> PointsChanged { get; set; }
     private readonly string _id = $"map-{Guid.NewGuid():N}";
@@ -47,6 +55,8 @@
     private Guid? _renderedSectionId;
     private string _pointStatus = "No points added.";
     private MapPrivacyMode _mode = MapPrivacyMode.Blank;
+    private string _layerStatus = "Loading map lines...";
+    private bool _layersFailed;
 
     protected override async Task OnInitializedAsync() => _mode = await MapSettings.GetModeAsync();
 
@@ -103,6 +113,7 @@
                 : null,
             editable = Editable,
             label = Label,
+            reportLoadStatus = ShowLoadStatus,
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
         _initialized = true;
@@ -110,6 +121,18 @@
         _renderedSectionId = SelectedSectionId;
         RememberSelection();
     }
+
+    [JSInvokable]
+    public Task UpdateLayerStatus(bool loading, bool failed, int count) => InvokeAsync(() =>
+    {
+        _layersFailed = failed;
+        _layerStatus = loading ? "Loading map lines..." : failed
+            ? "Some map lines could not be loaded. Retry to refresh this view."
+            : count == 0 ? "No lines in this view. Adjust the filters or zoom out." : "";
+        StateHasChanged();
+    });
+
+    private async Task RetryLayersAsync() => await JS.InvokeVoidAsync("activityExplorerMap.reload", _id);
 
     [JSInvokable]
     public Task SelectSection(Guid sectionId) => Sections.Any(section => section.Id == sectionId)

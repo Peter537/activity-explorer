@@ -10,7 +10,18 @@ public sealed record ImportReport(Guid ImportId, ImportStatus Status, int Create
 public sealed record ActivityFilter(
     Guid? OwnerId = null, SportKind? Sport = null, DateOnly? From = null, DateOnly? To = null,
     string? Search = null, bool? HasPower = null, string? Device = null,
-    int Page = 1, int PageSize = 25, string Sort = "start-desc");
+    int Page = 1, int PageSize = 25, string Sort = "start-desc",
+    ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null,
+    IReadOnlyList<ResolvedOwnerPeriod>? ResolvedPeriods = null);
+
+public sealed record ActivityTotals(int ActivityCount, double DistanceMeters, double MovingSeconds, double ElevationMeters);
+
+public sealed record ActivitySearchResult(
+    IReadOnlyList<ActivitySummary> Items, int Total, int Page, int PageSize,
+    ActivityTotals Totals, ActivityFilter EffectiveFilter)
+{
+    public int TotalPages => Total == 0 ? 1 : (int)Math.Ceiling(Total / (double)PageSize);
+}
 
 public sealed record ActivityDeletionResult(
     int DeletedCount, bool FileCleanupPending, bool StatisticsRefreshPending);
@@ -70,7 +81,8 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page,
 
 public sealed record MapQuery(
     Guid? OwnerId = null, SportKind? Sport = null, DateOnly? From = null, DateOnly? To = null,
-    double? West = null, double? South = null, double? East = null, double? North = null, int Zoom = 8);
+    double? West = null, double? South = null, double? East = null, double? North = null, int Zoom = 8,
+    ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null);
 
 public sealed record MapFeatureCollection(string Type, IReadOnlyList<MapFeature> Features)
 {

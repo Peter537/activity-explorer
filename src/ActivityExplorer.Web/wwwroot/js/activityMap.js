@@ -37,15 +37,14 @@ window.activityExplorerMap = (() => {
         });
     }
 
-    async function setLayer(map, name, url, color, width) {
-        if (!url || !map.isStyleLoaded()) return;
+    async function setLayer(entry, name, url, color, width, signal) {
+        const map = entry.map;
+        if (!url || !map.isStyleLoaded()) return 0;
         try {
-            const response = await fetch(queryUrl(url, map), { headers: { "Accept": "application/json" } });
-            if (!response.ok) {
-                console.warn(`Activity Explorer map layer "${name}" returned HTTP ${response.status}.`);
-                return;
-            }
+            const response = await fetch(queryUrl(url, map), { headers: { "Accept": "application/json" }, signal });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
+            if (signal.aborted) return 0;
             if (map.getSource(name)) map.getSource(name).setData(data);
             else {
                 map.addSource(name, { type: "geojson", data });
@@ -54,8 +53,12 @@ window.activityExplorerMap = (() => {
                     paint: { "line-color": color, "line-width": width, "line-opacity": name === "activities" ? 0.72 : 0.92 }
                 });
             }
+            return data.features.length;
         } catch (error) {
+            if (signal.aborted) return 0;
+            map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
             console.warn(`Activity Explorer could not load map layer "${name}".`, error);
+            return null;
         }
     }
 
@@ -238,12 +241,21 @@ window.activityExplorerMap = (() => {
     }
 
     async function refresh(entry) {
-        await Promise.all([
-            setLayer(entry.map, "activities", entry.options.activityUrl, "#246b59", 2.5),
-            setLayer(entry.map, "routes", entry.options.routeUrl, "#3366cc", 4),
-            setLayer(entry.map, "segments", entry.options.segmentUrl, "#d06a35", 5)
+        entry.request?.abort();
+        const request = new AbortController();
+        entry.request = request;
+        const report = (loading, failed, count) => entry.options.reportLoadStatus
+            ? entry.dotnet?.invokeMethodAsync("UpdateLayerStatus", loading, failed, count).catch(() => {})
+            : Promise.resolve();
+        await report(true, false, 0);
+        const counts = await Promise.all([
+            setLayer(entry, "activities", entry.options.activityUrl, "#246b59", 2.5, request.signal),
+            setLayer(entry, "routes", entry.options.routeUrl, "#3366cc", 4, request.signal),
+            setLayer(entry, "segments", entry.options.segmentUrl, "#d06a35", 5, request.signal)
         ]);
+        if (request.signal.aborted) return;
         refreshTrackLayers(entry);
+        await report(false, counts.includes(null), counts.reduce((sum, count) => sum + (count || 0), 0));
     }
 
     function popup(entry, layer) {
@@ -359,6 +371,7 @@ window.activityExplorerMap = (() => {
     function destroy(id) {
         const entry = maps.get(id);
         if (entry) {
+            entry.request?.abort();
             if (entry.inspectionGroup && entry.inspectionHandler)
                 entry.inspectionGroup.removeEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
             for (const marker of entry.sectionMarkers?.values() || []) marker.remove();
@@ -367,5 +380,7 @@ window.activityExplorerMap = (() => {
         }
     }
 
-    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, destroy };
+    function reload(id) { const entry = maps.get(id); if (entry) return refresh(entry); }
+
+    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, destroy, reload };
 })();

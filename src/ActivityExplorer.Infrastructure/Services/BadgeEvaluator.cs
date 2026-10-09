@@ -13,7 +13,7 @@ public static class BadgeEvaluator
         IReadOnlyList<BadgeActivity> activities, DateOnly? month, DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var zone = BadgeTimeZone.Resolve(timeZoneId);
+        var zone = ReportingTimeZone.Resolve(timeZoneId);
         var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, zone).DateTime);
         var local = activities.Where(x => x.StartTimeUtc <= now).DistinctBy(x => x.Id)
             .OrderBy(x => x.StartTimeUtc).ThenBy(x => x.Id).Select(x =>

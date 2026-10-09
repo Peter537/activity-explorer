@@ -15,20 +15,25 @@ public sealed class ActivityQueryService(
     IOriginalStore originals,
     IFileOperationCoordinator fileOperations,
     IOwnerMutationLock ownerMutationLock,
-    ILogger<ActivityQueryService> logger) : IActivityQueryService
+    ILogger<ActivityQueryService> logger,
+    TimeProvider? timeProvider = null) : IActivityQueryService
 {
-    public async Task<PagedResult<ActivitySummary>> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default)
+    public async Task<ActivitySearchResult> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var query = ApplySort(
-            ApplyFilter(db.Activities.AsNoTracking().Include(x => x.Owner), filter),
-            filter.Sort);
-
-        var total = await query.CountAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var effective = await ResolveFilterAsync(db, filter, cancellationToken);
+        var query = ApplyFilter(db.Activities.AsNoTracking(), effective);
+        var totals = await query.GroupBy(x => 1).Select(group => new ActivityTotals(
+            group.Count(), group.Sum(x => x.DistanceMeters), group.Sum(x => x.MovingTimeSeconds), group.Sum(x => x.ElevationGainMeters)))
+            .SingleOrDefaultAsync(cancellationToken) ?? new ActivityTotals(0, 0, 0, 0);
         var page = Math.Max(filter.Page, 1);
         var pageSize = Math.Clamp(filter.PageSize, 1, 100);
-        var activities = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return new PagedResult<ActivitySummary>(activities.Select(ToSummary).ToArray(), total, page, pageSize);
+        var activities = await ApplySort(query.Include(x => x.Owner), filter.Sort)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return new(activities.Select(ToSummary).ToArray(), totals.ActivityCount, page, pageSize, totals,
+            effective with { Page = page, PageSize = pageSize });
     }
 
     public async Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(
@@ -36,9 +41,13 @@ public sealed class ActivityQueryService(
         CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        return await ApplySort(ApplyFilter(db.Activities.AsNoTracking(), filter), filter.Sort)
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var effective = await ResolveFilterAsync(db, filter, cancellationToken);
+        var ids = await ApplySort(ApplyFilter(db.Activities.AsNoTracking(), effective), filter.Sort)
             .Select(x => x.Id)
             .ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return ids;
     }
 
     public async Task<ActivityDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default)
@@ -480,20 +489,27 @@ public sealed class ActivityQueryService(
             await segments.RecomputeAsync(segmentId, cancellationToken);
     }
 
+    private async Task<ActivityFilter> ResolveFilterAsync(ExplorerDbContext db, ActivityFilter filter, CancellationToken cancellationToken)
+    {
+        var selection = ReportingDateQuery.Selection(filter.Period, filter.From, filter.To);
+        ReportingDates.Validate(selection);
+        var asOf = filter.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
+        var periods = filter.ResolvedPeriods ?? await ReportingDateQuery.ResolveAsync(db, filter.OwnerId, selection, asOf, cancellationToken);
+        return filter with
+        {
+            Period = selection.Preset,
+            From = selection.Preset == ReportingPreset.Custom ? selection.From : null,
+            To = selection.Preset == ReportingPreset.Custom ? selection.To : null,
+            AsOfUtc = asOf,
+            ResolvedPeriods = periods
+        };
+    }
+
     private static IQueryable<Activity> ApplyFilter(IQueryable<Activity> query, ActivityFilter filter)
     {
         if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
         if (filter.Sport.HasValue) query = query.Where(x => x.Sport == filter.Sport);
-        if (filter.From.HasValue)
-        {
-            var from = new DateTimeOffset(filter.From.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            query = query.Where(x => x.StartTimeUtc >= from);
-        }
-        if (filter.To.HasValue)
-        {
-            var to = new DateTimeOffset(filter.To.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            query = query.Where(x => x.StartTimeUtc < to);
-        }
+        query = ReportingDateQuery.Apply(query, filter.ResolvedPeriods!);
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
             var term = filter.Search.Trim();
@@ -510,12 +526,12 @@ public sealed class ActivityQueryService(
 
     private static IQueryable<Activity> ApplySort(IQueryable<Activity> query, string sort) => sort switch
     {
-        "start-asc" => query.OrderBy(x => x.StartTimeUtc),
-        "distance-desc" => query.OrderByDescending(x => x.DistanceMeters),
-        "distance-asc" => query.OrderBy(x => x.DistanceMeters),
-        "duration-desc" => query.OrderByDescending(x => x.MovingTimeSeconds),
-        "elevation-desc" => query.OrderByDescending(x => x.ElevationGainMeters),
-        _ => query.OrderByDescending(x => x.StartTimeUtc)
+        "start-asc" => query.OrderBy(x => x.StartTimeUtc).ThenBy(x => x.Id),
+        "distance-desc" => query.OrderByDescending(x => x.DistanceMeters).ThenBy(x => x.Id),
+        "distance-asc" => query.OrderBy(x => x.DistanceMeters).ThenBy(x => x.Id),
+        "duration-desc" => query.OrderByDescending(x => x.MovingTimeSeconds).ThenBy(x => x.Id),
+        "elevation-desc" => query.OrderByDescending(x => x.ElevationGainMeters).ThenBy(x => x.Id),
+        _ => query.OrderByDescending(x => x.StartTimeUtc).ThenBy(x => x.Id)
     };
 
     private static void ValidateMetric(ActivityMetricRequest request)

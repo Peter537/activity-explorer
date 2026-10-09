@@ -7,18 +7,23 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> contextFactory) : IMapFeatureService
+public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> contextFactory, TimeProvider? timeProvider = null) : IMapFeatureService
 {
     public async Task<MapFeatureCollection> GetActivitiesAsync(MapQuery query, CancellationToken cancellationToken = default)
     {
         Validate(query);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId,
+            ReportingDateQuery.Selection(query.Period, query.From, query.To),
+            query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken);
         var source = db.Activities.AsNoTracking().Include(x => x.Owner).Where(x => x.HasGps && x.SimplifiedGeometryWkb != null);
         if (query.OwnerId.HasValue) source = source.Where(x => x.OwnerId == query.OwnerId);
         if (query.Sport.HasValue) source = source.Where(x => x.Sport == query.Sport);
-        source = ApplyDates(source, query);
+        source = ReportingDateQuery.Apply(source, periods);
         source = ApplyBounds(source, query);
         var rows = await source.OrderByDescending(x => x.StartTimeUtc).Take(2000).ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Collection(rows.Select(x => Feature(
             x.SimplifiedGeometryWkb!,
             new Dictionary<string, object?>
@@ -75,21 +80,6 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
         })));
     }
 
-    private static IQueryable<Activity> ApplyDates(IQueryable<Activity> source, MapQuery query)
-    {
-        if (query.From.HasValue)
-        {
-            var from = new DateTimeOffset(query.From.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            source = source.Where(x => x.StartTimeUtc >= from);
-        }
-        if (query.To.HasValue)
-        {
-            var to = new DateTimeOffset(query.To.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            source = source.Where(x => x.StartTimeUtc < to);
-        }
-        return source;
-    }
-
     private static IQueryable<Activity> ApplyBounds(IQueryable<Activity> source, MapQuery query)
     {
         if (!HasBounds(query)) return source;
@@ -140,8 +130,7 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
                                  query.South is < -90 or > 90 || query.North is < -90 or > 90 || query.South > query.North))
             throw new ArgumentException("Map bounds contain an invalid latitude or longitude range.", nameof(query));
         if (query.Zoom is < 0 or > 24) throw new ArgumentOutOfRangeException(nameof(query), "Map zoom must be between 0 and 24.");
-        if (query.From.HasValue && query.To.HasValue && query.From > query.To)
-            throw new ArgumentException("The map start date cannot be after the end date.", nameof(query));
+        ReportingDates.Validate(ReportingDateQuery.Selection(query.Period, query.From, query.To));
     }
 
     private static MapFeature Feature(byte[] wkb, IReadOnlyDictionary<string, object?> properties)

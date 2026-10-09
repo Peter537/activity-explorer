@@ -1,4 +1,5 @@
 using ActivityExplorer.Core.Domain;
+using ActivityExplorer.Core.Models;
 using Microsoft.AspNetCore.Http;
 
 namespace ActivityExplorer.Tests;
@@ -38,6 +39,17 @@ public sealed class MapQueryParserTests
         Assert.Equal(new DateOnly(2026, 2, 3), query.To);
     }
 
+    [Fact]
+    public void Relative_period_takes_precedence_and_preserves_captured_reference_instant()
+    {
+        var query = Parse("?period=this-week&from=bad&to=2026-99-99&asOf=2026-10-09T23%3A30%3A00.0000000%2B02%3A00");
+
+        Assert.Equal(ReportingPreset.ThisWeek, query.Period);
+        Assert.Null(query.From);
+        Assert.Null(query.To);
+        Assert.Equal(new DateTimeOffset(2026, 10, 9, 21, 30, 0, TimeSpan.Zero), query.AsOfUtc);
+    }
+
     [Theory]
     [InlineData("?west=-10&south=-20&east=30")]
     [InlineData("?west=NaN&south=-20&east=30&north=40")]
@@ -46,6 +58,11 @@ public sealed class MapQueryParserTests
     [InlineData("?west=-10&south=50&east=30&north=40")]
     [InlineData("?west=-10&south=-20&east=30&north=40&zoom=25")]
     [InlineData("?from=2026-02-03&to=2026-01-02")]
+    [InlineData("?from=2026-02-30")]
+    [InlineData("?to=bad")]
+    [InlineData("?period=unknown")]
+    [InlineData("?period=custom&from=bad")]
+    [InlineData("?period=today&asOf=not-a-time")]
     public void Parse_rejects_partial_non_finite_and_out_of_range_queries(string queryString)
     {
         Assert.Throws<BadHttpRequestException>(() => Parse(queryString));

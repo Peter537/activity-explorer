@@ -53,16 +53,3 @@ public sealed record BadgeSnapshot(
 
 public sealed record BadgeProfileOverview(Guid OwnerId, string Name, BadgeLevel? Level, int EarnedCount, DateOnly? AsOf, string? Error);
 public sealed record BadgeDetail(BadgeSnapshot Snapshot, BadgeEdition Selected, IReadOnlyList<BadgeEdition> Related);
-
-public static class BadgeTimeZone
-{
-    public const string DefaultId = "Europe/Copenhagen";
-    public static TimeZoneInfo Resolve(string? id)
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById(string.IsNullOrWhiteSpace(id) ? DefaultId : id); }
-        catch (Exception exception) when (exception is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            throw new InvalidOperationException("The profile's badge timezone is unavailable. Choose a valid timezone in Profiles.", exception);
-        }
-    }
-}

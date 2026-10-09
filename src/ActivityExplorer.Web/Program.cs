@@ -355,6 +355,10 @@ internal static class MapEndpointHandler
         {
             return Results.BadRequest(new { error = exception.Message });
         }
+        catch (ArgumentException exception)
+        {
+            return Results.BadRequest(new { error = exception.Message });
+        }
     }
 }
 
@@ -376,14 +380,18 @@ internal static class MapQueryParser
                 ? sportValue
                 : throw new BadHttpRequestException("The map sport is invalid.");
 
-        DateOnly? Date(string key)
+        ReportingDateSelection selection;
+        try { selection = ReportingDates.Parse(request.Query["period"], request.Query["from"], request.Query["to"]); }
+        catch (ArgumentException exception) { throw new BadHttpRequestException(exception.Message, exception); }
+
+        var asOfText = request.Query["asOf"].ToString();
+        DateTimeOffset? asOf = null;
+        if (!string.IsNullOrWhiteSpace(asOfText))
         {
-            var raw = request.Query[key].ToString();
-            if (string.IsNullOrWhiteSpace(raw)) return null;
-            return DateOnly.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.None, out var value)
-                ? value
-                : throw new BadHttpRequestException($"The map {key} date is invalid.");
+            if (!DateTimeOffset.TryParseExact(asOfText, "O", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var value))
+                throw new BadHttpRequestException("The map reporting reference time must be an ISO round-trip timestamp.");
+            asOf = value.ToUniversalTime();
         }
 
         double? Number(string key)
@@ -402,16 +410,14 @@ internal static class MapQueryParser
             : int.TryParse(zoomText, out var zoomValue) && zoomValue is >= 0 and <= 24
                 ? zoomValue
                 : throw new BadHttpRequestException("The map zoom must be between 0 and 24.");
-        var query = new MapQuery(owner, sport, Date("from"), Date("to"),
-            Number("west"), Number("south"), Number("east"), Number("north"), zoom);
+        var query = new MapQuery(owner, sport, selection.From, selection.To,
+            Number("west"), Number("south"), Number("east"), Number("north"), zoom, selection.Preset, asOf);
         var boundCount = new[] { query.West, query.South, query.East, query.North }.Count(value => value.HasValue);
         if (boundCount is not 0 and not 4)
             throw new BadHttpRequestException("Map bounds must include west, south, east, and north.");
         if (boundCount == 4 && (query.West is < -180 or > 180 || query.East is < -180 or > 180 ||
                                 query.South is < -90 or > 90 || query.North is < -90 or > 90 || query.South > query.North))
             throw new BadHttpRequestException("Map bounds contain an invalid latitude or longitude range.");
-        if (query.From.HasValue && query.To.HasValue && query.From > query.To)
-            throw new BadHttpRequestException("The map start date cannot be after the end date.");
         return query;
     }
 }

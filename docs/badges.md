@@ -26,7 +26,7 @@ Historical incomplete and not-started editions can still be completed by importi
 
 ## Qualification rules
 
-Set **Badge timezone** in Profiles. The default is **Europe/Copenhagen**. Dates and morning/night windows use this timezone with its historical daylight-saving rules, independent of the browser timezone and source-file offset. Changing it recalculates historical awards. The whole activity belongs to its local start date, even if it ends after midnight; its distance and time are not split across days.
+Set **Reporting timezone** in Profiles. The default is **Europe/Copenhagen**. This setting controls Activities and World Map reporting dates as well as badge dates and morning/night windows. It uses the operating system's historical timezone rules, independent of the browser timezone and source-file offset. Changing it recalculates historical awards. The whole activity belongs to its local start date, even if it ends after midnight; its distance and time are not split across days. Reporting totals use all matching summaries; the badge qualification rules below remain unchanged.
 
 - Distance and ascent use finite, positive recorded summary values. Distances are in kilometres; ascent is in metres. Thresholds use the recorded values before display rounding.
 - Moving-time badges use recorded moving time. Values marked unavailable never count; elapsed time is not substituted.

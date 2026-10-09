@@ -1,67 +1,121 @@
 @page "/map"
 @implements IDisposable
 @inject ProfileState ProfileState
-@using ActivityExplorer.Web.Components.Shared
 @inject NavigationManager Navigation
+@inject TimeProvider Clock
 
 <PageTitle>World Map - Activity Explorer</PageTitle>
 <PageHeader Title="World Map" Summary="Explore your activities, routes, and local segments together." />
-<form class="filter-bar map-filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
-    <label><span>Sport</span><select @bind="_sport"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
-    <label><span>From</span><input type="date" @bind="_from" /></label>
-    <label><span>To</span><input type="date" @bind="_to" /></label>
-    <button class="button primary" type="submit">Apply filters</button>
+<form class="filter-bar map-filters" aria-label="Map filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
+    <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+    <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" ActivitiesOnly="true" />
+    <button class="button primary" type="submit" disabled="@(_dateError is not null)">Apply filters</button>
     <button class="button" type="button" @onclick="Reset">Reset</button>
 </form>
-<section class="panel flush map-panel" @key="_mapKey">
-    <MapCanvas ActivityUrl="@Url("activities")" RouteUrl="@Url("routes")" SegmentUrl="@Url("segments")"
-               CssClass="world-map" Label="Activity, route, and segment world map" ShowDisclosure="true" />
-</section>
-<div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div>
+@if (_dirty && _hasMap) { <p class="notice" role="status">Apply filters to update these results.</p> }
+@if (_hasMap)
+{
+    <section class="panel flush map-panel" @key="_mapKey">
+        <MapCanvas ActivityUrl="@Url("activities")" RouteUrl="@Url("routes")" SegmentUrl="@Url("segments")"
+                   CssClass="world-map" Label="Activity, route, and segment world map" ShowDisclosure="true" ShowLoadStatus="true" />
+    </section>
+    <div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div>
+}
 
 @code {
-    private string _sport = "";
     [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "from")] public string? QueryFrom { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "to")] public string? QueryTo { get; set; }
-    private DateTime? _from;
-    private DateTime? _to;
+    [Parameter, SupplyParameterFromQuery(Name = "period")] public string? QueryPeriod { get; set; }
+    private string _sport = "", _appliedSport = "";
+    private ReportingDateInput _dates = new();
+    private IReadOnlyList<ResolvedOwnerPeriod> _periods = [];
+    private ReportingDateSelection _appliedDates = new(ReportingPreset.AllTime);
+    private Guid? _appliedOwner;
+    private DateTimeOffset _asOfUtc, _appliedAsOfUtc;
+    private string? _dateError;
+    private bool _dirty, _hasMap;
     private int _mapKey;
 
     protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
     protected override void OnParametersSet()
     {
-        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) ? sport.ToString() : "";
-        _from = ParseDate(QueryFrom);
-        _to = ParseDate(QueryTo);
-        _mapKey++;
+        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : "";
+        _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
+        _asOfUtc = Clock.GetUtcNow();
+        _dirty = false;
+        _hasMap = false;
+        if (!ValidateDates()) return;
+        var target = BuildUri();
+        if (QueryPeriod is not null && Navigation.ToBaseRelativePath(Navigation.Uri) != target.TrimStart('/'))
+        {
+            Navigation.NavigateTo(target, replace: true);
+            return;
+        }
+        ApplyMap();
+    }
+
+    private bool ValidateDates()
+    {
+        try
+        {
+            var selection = _dates.Selection;
+            _dates.Period = ReportingDates.ToSlug(selection.Preset);
+            _periods = ProfileState.Profiles.Where(x => !ProfileState.SelectedOwnerId.HasValue || x.Id == ProfileState.SelectedOwnerId)
+                .Select(x => ReportingDates.Resolve(selection, x.Id, x.DisplayName, x.TimeZoneId, _asOfUtc)).ToArray();
+            if (_periods.Count == 0) _ = ReportingDates.Resolve(selection, Guid.Empty, "", null, _asOfUtc);
+            _dateError = null;
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        { _dateError = exception.Message; _periods = []; return false; }
     }
 
     private string Url(string kind)
     {
         var parts = new List<string>();
-        if (ProfileState.SelectedOwnerId.HasValue) parts.Add($"ownerId={ProfileState.SelectedOwnerId}");
-        if (!string.IsNullOrWhiteSpace(_sport)) parts.Add($"sport={Uri.EscapeDataString(_sport)}");
-        if (_from.HasValue) parts.Add($"from={_from.Value:yyyy-MM-dd}");
-        if (_to.HasValue) parts.Add($"to={_to.Value:yyyy-MM-dd}");
+        if (_appliedOwner.HasValue) parts.Add($"ownerId={_appliedOwner}");
+        if (!string.IsNullOrWhiteSpace(_appliedSport)) parts.Add($"sport={Uri.EscapeDataString(_appliedSport)}");
+        if (kind == "activities")
+        {
+            if (_appliedDates.Preset == ReportingPreset.Custom)
+            {
+                if (_appliedDates.From.HasValue) parts.Add($"from={ReportingDateInput.DateText(_appliedDates.From)}");
+                if (_appliedDates.To.HasValue) parts.Add($"to={ReportingDateInput.DateText(_appliedDates.To)}");
+            }
+            else if (_appliedDates.Preset != ReportingPreset.AllTime) parts.Add($"period={ReportingDates.ToSlug(_appliedDates.Preset)}");
+            parts.Add($"asOf={Uri.EscapeDataString(_appliedAsOfUtc.ToString("O", CultureInfo.InvariantCulture))}");
+        }
         return $"/internal/map/{kind}" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
+    }
+
+    private void ApplyMap()
+    {
+        _appliedSport = _sport;
+        _appliedDates = _dates.Selection;
+        _appliedOwner = ProfileState.SelectedOwnerId;
+        _appliedAsOfUtc = _asOfUtc;
+        _hasMap = true;
+        _dirty = false;
+        _mapKey++;
     }
     private void RefreshMap()
     {
+        _asOfUtc = Clock.GetUtcNow();
+        if (!ValidateDates()) return;
         var target = BuildUri();
-        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) _mapKey++;
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) ApplyMap();
         else Navigation.NavigateTo(target);
     }
-    private void Reset() { _sport = ""; _from = _to = null; RefreshMap(); }
+    private void FiltersChanged() { _dirty = true; _asOfUtc = Clock.GetUtcNow(); ValidateDates(); }
+    private void Reset() { _sport = ""; _dates = new(); RefreshMap(); }
     private string BuildUri()
     {
         var parts = new List<string>();
         if (!string.IsNullOrWhiteSpace(_sport)) parts.Add($"sport={Uri.EscapeDataString(_sport.ToLowerInvariant())}");
-        if (_from.HasValue) parts.Add($"from={_from.Value:yyyy-MM-dd}");
-        if (_to.HasValue) parts.Add($"to={_to.Value:yyyy-MM-dd}");
+        foreach (var pair in _dates.QueryValues()) parts.Add($"{pair.Key}={Uri.EscapeDataString(pair.Value)}");
         return "/map" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
     }
-    private static DateTime? ParseDate(string? value) => DateTime.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date : null;
-    private void ProfileChanged() => InvokeAsync(() => { _mapKey++; StateHasChanged(); });
+    private void ProfileChanged() => InvokeAsync(() => { _hasMap = false; RefreshMap(); StateHasChanged(); });
     public void Dispose() => ProfileState.Changed -= ProfileChanged;
 }

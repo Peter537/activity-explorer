@@ -45,7 +45,7 @@ SQLite can contain names and notes; timestamps and offsets; location tracks and 
 
 ## Badge settings
 
-Profiles also store an optional badge timezone, defaulting to Europe/Copenhagen. Changing it updates badge calendar interpretation without rewriting imported timestamps or source offsets. Badge results and points are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).
+Profiles also store an optional reporting timezone, defaulting to Europe/Copenhagen. Changing it updates activity reporting dates, date filters, and badge calendar interpretation without rewriting imported timestamps or source offsets. Filtered totals and badge results are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).
 
 ## Network behavior
 
