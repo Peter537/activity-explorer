@@ -338,10 +338,13 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(cycling).ToBeVisibleAsync();
             await page.EvaluateAsync("document.documentElement.style.removeProperty('font-size'); document.body.style.removeProperty('font-size')");
             await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-            var dashboardRecord = page.Locator(".record-row").Filter(new LocatorFilterOptions { HasTextString = "Cycling - 5 min" });
+            var dashboardRecord = page.Locator(".record-row").Filter(new LocatorFilterOptions { HasTextString = "Cycling · 5 min progress" });
             await Assertions.Expect(dashboardRecord).ToContainTextAsync(
                 new Regex("4[.,]3 km"));
-            await Assertions.Expect(dashboardRecord).ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
+            await Assertions.Expect(dashboardRecord.GetByRole(AriaRole.Link, new() { Name = "Open Timed distance browser ride", Exact = true }))
+                .ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}");
+            await Assertions.Expect(dashboardRecord.GetByRole(AriaRole.Link, new() { Name = "Cycling · 5 min progress", Exact = true }))
+                .ToHaveAttributeAsync("href", "/records/attempts?sport=cycling&kind=timeddistanceeffort&key=5%20min&view=progress&period=year-to-date");
 
             Assert.DoesNotContain(browserErrors, error => !IsKnownHeadlessMapLibreError(error));
             Assert.DoesNotContain("Unhandled exception", output.ToString(), StringComparison.OrdinalIgnoreCase);
@@ -923,7 +926,7 @@ public sealed partial class BrowserRegressionTests
                 if (message.Type == "error") browserErrors.Add(message.Text);
             };
 
-            await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await page.GotoAsync(origin + "/?period=custom&from=2026-01-01&to=2026-12-31", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             var spark = page.Locator(".spark-chart");
             await Assertions.Expect(spark).ToHaveAttributeAsync("data-charts-bound", "true");
             await AssertChartAxesAsync(spark, expectedXAxisTicks: 5);

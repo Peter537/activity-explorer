@@ -17,6 +17,8 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Deduplicates exact files and equivalent activities across formats while retaining provenance.
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Shows activity count, distance, moving time, and ascent for the complete filtered result, with shared date shortcuts on Activities and World Map.
+- Compares training periods, charts weekly or monthly progress across five summary metrics, and opens daily activity lists from a monthly training calendar.
+- Charts each activity’s best benchmark attempt and the best result so far within a selected period, separately for each profile.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
 - Calculates ordered cycling, running, walking, and rowing distance bests, timed distance bests from 1 minute through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
@@ -104,6 +106,16 @@ Choose a **Period** on Activities or World Map, then **Apply filters**. Shortcut
 Dates use the activity owner's **Reporting timezone** in Profiles, which defaults to **Europe/Copenhagen**. In **All profiles**, each owner's local start date and local today determine membership. Activities shows owner-local dates and totals across every matching page, including moving durations longer than 24 hours. World Map applies dates to activity lines only.
 
 Relative date URLs resolve again on refresh; sorting and pagination retain the displayed period. Invalid dates and reversed ranges remain visible for correction. Editing filters clears activity selection and deletion confirmation, and requires applying the filters before selection or deletion becomes available again. An all-filtered deletion confirms exact IDs, excluding activities imported after confirmation. See [Maps](docs/maps.md#reporting-dates-and-urls) for date URL parameters.
+
+## Progress dashboard and calendar
+
+Dashboard opens at **Year to date**, compared with the same dates last year. Select a sport and reporting period, then **Apply filters**. The five totals are activities, distance, moving time, ascent, and active days. Any matching activity makes its owner-local start date active; multiple profiles sharing a date count as one active day. Badge duration requirements do not apply.
+
+**Previous period** compares the same number of calendar days immediately before the selected range. **Prior-year dates** shifts each endpoint back one year, clamping February 29 to February 28. Both ranges are shown. Differences are signed, and percentage change is unavailable when the comparison total is zero. All time and open-ended custom ranges remain available but need both endpoints before totals can be compared.
+
+Choose weekly or monthly trends and any of the five metrics. Empty buckets are zero; partial weeks or months include only the selected dates. Sport breakdown, recent activities, and equipment follow the same filters. Record highlights remain labelled **Lifetime records**; their progress links open the selected period’s benchmark history. Use **Refresh dashboard** to include later committed imports or edits.
+
+**Calendar** shows a separately selected month, grouped by sport, with day and week totals. Weeks start Monday, and partial week totals include only days in the displayed month. Open a date to see all matching activities. The responsive view becomes a compact list when space is limited; an explicit Calendar or List choice stays in the URL. Month navigation, filters, dashboard trend controls, and benchmark view/period survive refresh and browser Back/Forward. The selected profile remains session-wide.
 
 ## Maps and privacy
 

@@ -1,0 +1,20 @@
+.progress-filters { align-items: flex-end; }
+.progress-totals ::deep .metric-card { min-width: 0; padding: 18px; }
+.progress-totals ::deep .metric-card strong { overflow-wrap: anywhere; font-size: clamp(1.3rem, 2.2vw, 1.9rem); }
+.progress-totals ::deep .metric-card small { line-height: 1.6; }
+.comparison-context { color: var(--muted); font-size: 13px; margin: -6px 0 24px; }
+.comparison-context p { margin-bottom: 8px; }
+.trend-controls { display: flex; flex-wrap: wrap; gap: 14px; }
+.trend-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.trend-controls select { max-width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+.progress-trend ::deep .chart-panel { padding: 0; border: 0; box-shadow: none; margin: 0; }
+.progress-recent .activity-row { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 12px; }
+.progress-recent .activity-row > span:last-child { grid-column: 3; }
+.progress-recent .activity-title { grid-row: span 2; }
+.progress-recent .activity-title strong, .progress-recent .activity-title small { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; }
+.record-row { gap: 12px; }
+.record-row > span { min-width: 0; overflow-wrap: anywhere; }
+.sport-row { grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; }
+.sport-row > span:nth-last-child(-n+2) { grid-column: 3; }
+@media (max-width: 820px) { .progress-trend .panel-heading { align-items: flex-start; flex-direction: column; gap: 15px; } }
+@media (max-width: 560px) { .progress-recent .activity-row { grid-template-columns: 30px minmax(0, 1fr); } .progress-recent .activity-row > span:nth-child(n+3) { grid-column: 2; } .progress-recent .activity-title { grid-row: auto; } }

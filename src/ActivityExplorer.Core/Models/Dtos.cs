@@ -64,14 +64,7 @@ public sealed record SegmentEffortSummary(
     double CoveragePercent, bool MetricsCurrent);
 public sealed record UpdateActivityRequest(string Title, string? Description, string? GearName, Guid OwnerId);
 
-public sealed record DashboardSummary(
-    int ActivityCount, double DistanceMeters, double MovingSeconds, double ElevationMeters,
-    IReadOnlyList<SportTotal> Sports, IReadOnlyList<ActivitySummary> Recent,
-    IReadOnlyList<PersonalRecord> Highlights, int ImportWarnings,
-    IReadOnlyList<PeriodTotal> MonthlyTrend, IReadOnlyList<NamedTotal> Devices, IReadOnlyList<NamedTotal> Gear);
-
 public sealed record SportTotal(SportKind Sport, int Count, double DistanceMeters, double MovingSeconds, double ElevationMeters);
-public sealed record PeriodTotal(DateOnly Period, int Count, double DistanceMeters, double MovingSeconds);
 public sealed record NamedTotal(string Name, int Count);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize)
@@ -130,7 +123,8 @@ public sealed record PersonalRecord(
 
 public sealed record RecordAttemptQuery(
     SportKind Sport, RecordKind Kind, string Key, Guid? OwnerId = null,
-    RecordScope Scope = RecordScope.All, bool MultiplePerActivity = false, int Page = 1);
+    RecordScope Scope = RecordScope.All, bool MultiplePerActivity = false, int Page = 1,
+    ReportingDateSelection? Period = null, DateTimeOffset? AsOfUtc = null);
 
 public sealed record RecordBenchmark(SportKind Sport, RecordKind Kind, string Key, string Category, double? Target)
 {
@@ -143,4 +137,5 @@ public sealed record RecordAttempt(
     double Value, double CoveragePercent, double? StartSeconds, double? FinishSeconds,
     double? StartPosition, double? FinishPosition);
 
-public sealed record RecordAttemptPage(RecordBenchmark Benchmark, PagedResult<RecordAttempt> Attempts);
+public sealed record RecordAttemptPage(RecordBenchmark Benchmark, PagedResult<RecordAttempt> Attempts,
+    IReadOnlyList<ResolvedOwnerPeriod>? Periods = null);

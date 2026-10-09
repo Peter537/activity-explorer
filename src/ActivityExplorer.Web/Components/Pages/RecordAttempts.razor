@@ -5,29 +5,63 @@
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject ILogger<RecordAttempts> Logger
+@inject TimeProvider Clock
 
 <PageTitle>@Title - Activity Explorer</PageTitle>
 <PageHeader Title="@Title">
     <Metadata>
-        @if (_result is not null) { <span>@_result.Benchmark.Category</span> }
+        @if (Benchmark is not null) { <span>@Benchmark.Category</span> }
         <span>@RecordDisplay.ScopeLabel(_scope)</span>
     </Metadata>
     <Actions><a class="button" href="@BackUrl">Back to Records</a></Actions>
 </PageHeader>
 
+@if (!_invalid)
+{
+    <section class="panel attempts-filters" aria-label="Benchmark view and period">
+        <label><span>View</span><select value="@(_progress ? "progress" : "strongest")" @onchange="ChangeView">
+            <option value="strongest">Strongest first</option><option value="progress">Progress over time</option>
+        </select></label>
+        <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_periodError" Changed="DatesChanged" />
+        <button class="button" @onclick="ApplyPeriod">Apply period</button>
+    </section>
+}
+
 @if (_invalid)
 {
     <section class="empty-state"><h2>Benchmark not found</h2><p>Choose an achieved benchmark from Records.</p></section>
+}
+else if (_periodError is not null || _dateDirty)
+{
+    <p class="notice" role="status">Apply the period to update this view.</p>
 }
 else if (_error)
 {
     <section class="notice error" role="alert"><h2>Attempts could not be loaded</h2><p>Try loading this benchmark again.</p><button class="button" @onclick="Load">Try again</button></section>
 }
-else if (_result is null)
+else if (_cancelled)
 {
-    <div class="loading" role="status">Calculating benchmark attempts...</div>
+    <section class="notice" role="status"><h2>Calculation cancelled</h2><p>No partial history is shown.</p><button class="button" @onclick="Load">Try again</button></section>
 }
-else
+else if (_loading)
+{
+    <div class="loading" role="status">Calculating benchmark attempts... <button class="button" @onclick="Cancel">Cancel calculation</button></div>
+}
+else if (_progress && _history is not null)
+{
+    <section class="panel attempts-panel">
+        <p class="attempt-help">Each activity contributes its best qualifying attempt. The best-so-far line starts with the first result in this period. Profiles have separate histories.</p>
+        @if (_history.Series.Count == 0)
+        {
+            <div class="empty-state"><h2>No matching attempts</h2><p>No qualifying attempts match this benchmark, profile, training scope, and period.</p><a href="@BackUrl">Choose another benchmark or scope in Records</a></div>
+        }
+        @foreach (var series in _history.Series)
+        {
+            <BenchmarkProgressChart @key="series.OwnerId" Benchmark="_history.Benchmark" Series="series" />
+        }
+    </section>
+}
+else if (_result is not null)
 {
     <section class="panel attempts-panel">
         <div class="attempt-controls">
@@ -49,7 +83,7 @@ else
         }
         @if (_result.Attempts.Total == 0)
         {
-            <div class="empty-state"><h2>No matching attempts</h2><p>No qualifying attempts match this benchmark, profile, and training scope.</p><a href="@BackUrl">Choose another benchmark or scope in Records</a></div>
+            <div class="empty-state"><h2>No matching attempts</h2><p>No qualifying attempts match this benchmark, profile, training scope, and period.</p><a href="@BackUrl">Choose another benchmark or scope in Records</a></div>
         }
         else
         {
@@ -66,7 +100,7 @@ else
                             <td data-label="Result"><strong>@RecordDisplay.Value(_result.Benchmark.Sport, _result.Benchmark.Kind, attempt.Value)</strong></td>
                             <th scope="row" data-label="Activity"><a href="@($"/activities/{attempt.ActivityId}")">@attempt.ActivityTitle</a></th>
                             <td data-label="Profile">@attempt.OwnerName</td>
-                            <td data-label="Date">@attempt.ActivityDate.ToLocalTime().ToString("d")</td>
+                            <td data-label="Date">@ReportingDate(attempt)</td>
                             <td data-label="Coverage">@attempt.CoveragePercent.ToString("N0")%</td>
                             <td data-label="Position in activity">@Position(attempt)</td>
                         </tr>
@@ -94,13 +128,23 @@ else
     [Parameter, SupplyParameterFromQuery(Name = "owner")] public string? QueryOwner { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "mode")] public string? QueryMode { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "page")] public string? QueryPage { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "view")] public string? QueryView { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "period")] public string? QueryPeriod { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "from")] public string? QueryFrom { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? QueryTo { get; set; }
 
     private RecordAttemptPage? _result;
+    private RecordHistory? _history;
+    private RecordBenchmark? Benchmark => _result?.Benchmark ?? _history?.Benchmark;
+    private ReportingDateInput _dates = new();
+    private ReportingDateSelection _period = new(ReportingPreset.AllTime);
+    private IReadOnlyList<ResolvedOwnerPeriod> _periods = [];
+    private string? _periodError;
     private SportKind? _sport;
     private RecordKind? _kind;
     private RecordScope _scope;
     private Guid? _owner;
-    private bool _multiple, _invalid, _error, _syncingProfile, _disposed;
+    private bool _multiple, _invalid, _error, _syncingProfile, _disposed, _progress, _loading, _cancelled, _dateDirty;
     private int _page = 1;
     private CancellationTokenSource? _loadCancellation;
     private string Title => _sport.HasValue && !string.IsNullOrWhiteSpace(QueryKey) ? $"{_sport} · {QueryKey} attempts" : "Benchmark attempts";
@@ -116,16 +160,24 @@ else
         _kind = RecordDisplay.Parse<RecordKind>(QueryKind);
         _scope = RecordDisplay.Parse<RecordScope>(QueryScope) ?? RecordScope.All;
         _multiple = string.Equals(QueryMode, "multiple", StringComparison.OrdinalIgnoreCase);
-        _page = int.TryParse(QueryPage, out var page) ? Math.Max(1, page) : 1;
+        _progress = string.Equals(QueryView, "progress", StringComparison.OrdinalIgnoreCase);
+        _page = !_progress && int.TryParse(QueryPage, out var page) ? Math.Max(1, page) : 1;
         _owner = Guid.TryParse(QueryOwner, out var owner) ? owner : null;
         _invalid = !_sport.HasValue || !_kind.HasValue || string.IsNullOrWhiteSpace(QueryKey)
             || (QueryOwner is not null && (!_owner.HasValue || !ProfileState.Profiles.Any(profile => profile.Id == _owner)));
         _result = null;
+        _history = null;
+        _periods = [];
+        _periodError = null;
+        _loading = _cancelled = _dateDirty = false;
         _error = false;
         if (_invalid) return;
         _syncingProfile = true;
         try { if (ProfileState.SelectedOwnerId != _owner) ProfileState.Select(_owner); }
         finally { _syncingProfile = false; }
+        _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
+        try { _period = _dates.Selection; }
+        catch (ArgumentException exception) { _periodError = exception.Message; return; }
         var canonical = Url(_page);
         if (new Uri(Navigation.Uri).PathAndQuery != canonical)
         {
@@ -142,20 +194,40 @@ else
         using var cancellation = new CancellationTokenSource();
         _loadCancellation = cancellation;
         _result = null;
+        _history = null;
+        _periodError = null;
+        _cancelled = _dateDirty = false;
+        _loading = true;
         _error = false;
         try
         {
-            var result = await Statistics.GetAttemptsAsync(new(_sport.Value, _kind.Value, QueryKey, _owner, _scope, _multiple, _page), cancellation.Token);
-            if (cancellation.IsCancellationRequested || _disposed) return;
-            _result = result;
-            _invalid = result is null;
-            if (result is not null && (result.Attempts.Page != _page || (result.Benchmark.IsWholeActivity && _multiple)))
+            if (_progress)
             {
-                if (result.Benchmark.IsWholeActivity) _multiple = false;
-                Navigation.NavigateTo(Url(result.Attempts.Page), replace: true);
+                var history = await Statistics.GetHistoryAsync(new(_sport.Value, _kind.Value, QueryKey, _owner, _scope, _period, Clock.GetUtcNow()), cancellation.Token);
+                if (cancellation.IsCancellationRequested || _disposed) return;
+                _history = history;
+                _periods = history?.Periods ?? [];
+                _invalid = history is null;
+            }
+            else
+            {
+                var result = await Statistics.GetAttemptsAsync(new(_sport.Value, _kind.Value, QueryKey, _owner, _scope, _multiple, _page, _period, Clock.GetUtcNow()), cancellation.Token);
+                if (cancellation.IsCancellationRequested || _disposed) return;
+                _result = result;
+                _periods = result?.Periods ?? [];
+                _invalid = result is null;
+                if (result is not null && (result.Attempts.Page != _page || (result.Benchmark.IsWholeActivity && _multiple)))
+                {
+                    if (result.Benchmark.IsWholeActivity) _multiple = false;
+                    Navigation.NavigateTo(Url(result.Attempts.Page), replace: true);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (ArgumentException exception)
+        {
+            if (!cancellation.IsCancellationRequested && !_disposed) _periodError = exception.Message;
+        }
         catch (Exception exception)
         {
             if (!cancellation.IsCancellationRequested && !_disposed)
@@ -164,10 +236,67 @@ else
                 _error = true;
             }
         }
-        finally { if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null; }
+        finally
+        {
+            if (ReferenceEquals(_loadCancellation, cancellation))
+            {
+                _loadCancellation = null;
+                _loading = false;
+            }
+        }
     }
 
-    private string Url(int page) => RecordDisplay.AttemptsUrl(_sport!.Value, _kind!.Value, QueryKey!, _scope, _owner, _multiple, page);
+    private string Url(int page)
+    {
+        var url = RecordDisplay.AttemptsUrl(_sport!.Value, _kind!.Value, QueryKey!, _scope, _owner, _multiple, _progress ? 1 : page);
+        if (_progress) url += "&view=progress";
+        if (_period.Preset == ReportingPreset.Custom)
+        {
+            url += "&period=custom";
+            if (_period.From.HasValue) url += $"&from={ReportingDateInput.DateText(_period.From)}";
+            if (_period.To.HasValue) url += $"&to={ReportingDateInput.DateText(_period.To)}";
+        }
+        else if (_period.Preset != ReportingPreset.AllTime) url += $"&period={ReportingDates.ToSlug(_period.Preset)}";
+        return url;
+    }
+    private void ChangeView(ChangeEventArgs args)
+    {
+        _progress = args.Value?.ToString() == "progress";
+        Navigation.NavigateTo(Url(1));
+    }
+    private void DatesChanged()
+    {
+        _loadCancellation?.Cancel();
+        _dateDirty = true;
+        _periodError = null;
+        try
+        {
+            var selection = _dates.Selection;
+            var instant = Clock.GetUtcNow();
+            _periods = ProfileState.Profiles.Where(profile => !_owner.HasValue || profile.Id == _owner)
+                .Select(profile => ReportingDates.Resolve(selection, profile.Id, profile.DisplayName, profile.TimeZoneId, instant)).ToArray();
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            _periodError = exception.Message;
+            _periods = [];
+        }
+    }
+    private async Task ApplyPeriod()
+    {
+        try { _period = _dates.Selection; }
+        catch (ArgumentException exception) { _periodError = exception.Message; return; }
+        _page = 1;
+        var url = Url(1);
+        if (new Uri(Navigation.Uri).PathAndQuery == url) await Load();
+        else Navigation.NavigateTo(url);
+    }
+    private void Cancel()
+    {
+        _loadCancellation?.Cancel();
+        _cancelled = true;
+        _loading = false;
+    }
     private void ChangeMode(ChangeEventArgs args)
     {
         _multiple = args.Value?.ToString() == "multiple";
@@ -179,6 +308,11 @@ else
         _loadCancellation?.Cancel();
         _owner = ProfileState.SelectedOwnerId;
         _ = InvokeAsync(() => Navigation.NavigateTo(Url(1)));
+    }
+    private string ReportingDate(RecordAttempt attempt)
+    {
+        var period = _periods.First(item => item.OwnerId == attempt.OwnerId);
+        return TimeZoneInfo.ConvertTime(attempt.ActivityDate, ReportingTimeZone.Resolve(period.TimeZoneId)).ToString("d", CultureInfo.CurrentCulture);
     }
     private static string Position(RecordAttempt attempt) => attempt.StartSeconds.HasValue && attempt.FinishSeconds.HasValue
         ? $"{Elapsed(attempt.StartSeconds.Value)} – {Elapsed(attempt.FinishSeconds.Value)} elapsed" : "Whole activity";

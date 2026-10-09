@@ -1,0 +1,101 @@
+<section class="benchmark-owner-series" data-owner="@Series.OwnerId">
+    <h2>@Series.OwnerName</h2>
+    <p class="muted">@Series.Points.Count.ToString("N0") qualifying activities · @Series.TimeZoneId</p>
+    <div class="chart-panel spark-chart benchmark-progress-chart">
+        <div class="chart-heading"><strong>Best attempt per activity</strong><span>@BenchmarkProgressGeometry.Unit(Benchmark)</span></div>
+        <p class="progress-legend"><span class="attempt-key">Points: activity attempts</span><span class="best-key">Line: best so far in this period</span></p>
+        <div class="chart-plot-layout">
+            <div class="chart-y-axis" aria-hidden="true">
+                @for (var index = _geometry.Scale.Ticks.Count - 1; index >= 0; index--)
+                {
+                    <span class="chart-axis-value">@_geometry.Scale.Ticks[index].Label</span>
+                }
+            </div>
+            <div class="chart-canvas">
+                <svg class="chart-plot" viewBox="0 0 800 180" preserveAspectRatio="none" role="img"
+                     aria-label="@($"{Series.OwnerName}, {Benchmark.Key}: {Series.Points.Count:N0} activity attempts and best so far within the selected period. Use the attempt slider or chronological table for exact results.")">
+                    @foreach (var tick in _geometry.Scale.Ticks)
+                    {
+                        <line class="chart-gridline" x1="0" x2="800" y1="@Invariant(tick.Position)" y2="@Invariant(tick.Position)" aria-hidden="true"></line>
+                    }
+                    <path class="progress-best-line" d="@_geometry.BestPath" aria-hidden="true"></path>
+                    @for (var index = 0; index < _geometry.Samples.Count; index++)
+                    {
+                        var sample = _geometry.Samples[index];
+                        <circle class="chart-sample" cx="@Invariant(sample.X)" cy="@Invariant(sample.Y)" r="3.5"
+                                data-axis="@index" data-value="@Invariant(sample.Point.Attempt.Value)"
+                                data-axis-label="@LocalDate(sample.Point.Attempt.ActivityDate)"
+                                data-value-label="@Description(sample.Point)" aria-hidden="true"></circle>
+                    }
+                    <rect class="chart-hit-area" x="0" y="0" width="800" height="180" fill="transparent"></rect>
+                    <line class="chart-cursor" x1="0" x2="0" y1="0" y2="180"></line>
+                    <circle class="chart-marker" cx="0" cy="0" r="4"></circle>
+                </svg>
+                <output class="chart-tooltip" aria-hidden="true"></output>
+            </div>
+        </div>
+        <div class="chart-x-axis" aria-hidden="true">
+            @if (Series.Points.Count > 0)
+            {
+                <span class="chart-axis-value">@Series.Points[0].ReportingDate.ToString("dd MMM yyyy")</span>
+                @if (Series.Points.Count > 1) { <span class="chart-axis-value">@Series.Points[^1].ReportingDate.ToString("dd MMM yyyy")</span> }
+            }
+        </div>
+        @if (_geometry.Samples.Count > 0)
+        {
+            <div class="chart-accessible-values">
+                <label><span>@Series.OwnerName attempt</span>
+                    <input class="chart-inspector" type="range" min="0" max="@(_geometry.Samples.Count - 1)" step="1"
+                           aria-valuetext="@SelectedText" @bind="_selectedIndex" @bind:event="oninput" />
+                </label>
+                <output class="chart-exact-output" aria-live="polite">
+                    <span>Attempt @(_selectedIndex + 1) of @Series.Points.Count</span>
+                    <strong>@SelectedText</strong>
+                    <a href="@($"/activities/{Series.Points[_selectedIndex].Attempt.ActivityId}")">Open selected activity</a>
+                </output>
+            </div>
+        }
+    </div>
+    <details class="history-details">
+        <summary>View chronological attempts</summary>
+        <div class="history-table-wrap">
+            <table class="history-table">
+                <caption>@Series.OwnerName · @Benchmark.Key · chronological attempts</caption>
+                <thead><tr><th scope="col">Date</th><th scope="col">Result</th><th scope="col">Best so far</th><th scope="col">Activity</th><th scope="col">Coverage</th></tr></thead>
+                <tbody>
+                @foreach (var point in Series.Points)
+                {
+                    <tr>
+                        <td data-label="Date">@LocalDate(point.Attempt.ActivityDate)</td>
+                        <td data-label="Result">@Value(point.Attempt.Value)</td>
+                        <td data-label="Best so far">@Value(point.BestSoFar)</td>
+                        <th scope="row" data-label="Activity"><a href="@($"/activities/{point.Attempt.ActivityId}")">@point.Attempt.ActivityTitle</a></th>
+                        <td data-label="Coverage">@point.Attempt.CoveragePercent.ToString("N0")%</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </details>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public RecordBenchmark Benchmark { get; set; } = default!;
+    [Parameter, EditorRequired] public RecordHistorySeries Series { get; set; } = default!;
+    private BenchmarkProgressGeometry _geometry = new([], ChartScaleBuilder.Build(0, 0), "");
+    private TimeZoneInfo _zone = TimeZoneInfo.Utc;
+    private int _selectedIndex;
+    private string SelectedText => Series.Points.Count == 0 ? "No attempts" : $"{LocalDate(Series.Points[_selectedIndex].Attempt.ActivityDate)} · {Description(Series.Points[_selectedIndex])}";
+
+    protected override void OnParametersSet()
+    {
+        _geometry = BenchmarkProgressGeometry.Build(Benchmark, Series.Points);
+        _zone = ReportingTimeZone.Resolve(Series.TimeZoneId);
+        _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(0, Series.Points.Count - 1));
+    }
+
+    private string Description(RecordHistoryPoint point) => $"{point.Attempt.ActivityTitle}: {Value(point.Attempt.Value)}; best so far {Value(point.BestSoFar)}";
+    private string Value(double value) => RecordDisplay.Value(Benchmark.Sport, Benchmark.Kind, value);
+    private string LocalDate(DateTimeOffset timestamp) => TimeZoneInfo.ConvertTime(timestamp, _zone).ToString("dd MMM yyyy HH:mm", CultureInfo.CurrentCulture);
+    private static string Invariant(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+}

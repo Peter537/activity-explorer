@@ -134,6 +134,8 @@ window.activityCharts = (() => {
         };
 
         const onPointerOut = event => {
+            // Touch emits out/leave when the finger lifts; keep a benchmark tap readable.
+            if (event.pointerType === "touch" && root.classList.contains("benchmark-progress-chart")) return;
             const svg = event.target.closest?.(".chart-plot");
             if (!svg || !root.contains(svg)) return;
             const nextPlot = event.relatedTarget?.closest?.(".chart-plot");
@@ -142,7 +144,8 @@ window.activityCharts = (() => {
             restoreFocusedInspector(root);
         };
 
-        const onPointerLeave = () => {
+        const onPointerLeave = event => {
+            if (event.pointerType === "touch" && root.classList.contains("benchmark-progress-chart")) return;
             clear(root);
             restoreFocusedInspector(root);
         };
@@ -161,6 +164,7 @@ window.activityCharts = (() => {
         };
 
         root.addEventListener("pointermove", onPointerMove);
+        root.addEventListener("pointerdown", onPointerMove);
         root.addEventListener("pointerout", onPointerOut);
         root.addEventListener("pointerleave", onPointerLeave);
         root.addEventListener("input", onInspector);
@@ -177,6 +181,7 @@ window.activityCharts = (() => {
         const binding = bindings.get(root);
         if (!binding) return;
         root.removeEventListener("pointermove", binding.onPointerMove);
+        root.removeEventListener("pointerdown", binding.onPointerMove);
         root.removeEventListener("pointerout", binding.onPointerOut);
         root.removeEventListener("pointerleave", binding.onPointerLeave);
         root.removeEventListener("input", binding.onInspector);

@@ -1,3 +1,9 @@
+.attempts-filters { display: flex; gap: 16px; align-items: start; flex-wrap: wrap; margin-bottom: 20px; }
+.attempts-filters > label { display: grid; gap: 6px; }
+.attempts-filters > label span { color: var(--muted); font-size: .8rem; font-weight: 700; }
+.attempts-filters > label select { min-height: 44px; }
+.attempts-filters > button { margin-top: 22px; }
+.loading .button { margin-left: 12px; }
 .attempt-controls { display: flex; justify-content: space-between; align-items: end; flex-wrap: wrap; gap: 16px; }
 .attempt-controls p { margin: 0; font-weight: 700; }
 .attempt-controls label { display: grid; gap: 6px; }
@@ -27,6 +33,8 @@
     .attempt-table tbody th::before, .attempt-table td::before { content: attr(data-label); font-size: .72rem; color: var(--muted); font-weight: 700; }
 }
 @media (max-width: 500px) {
+    .attempts-filters { flex-direction: column; align-items: stretch; }
+    .attempts-filters > button { margin-top: 0; }
     .attempt-controls { align-items: stretch; flex-direction: column; }
     .attempt-table tr { grid-template-columns: minmax(0, 1fr); }
     .attempt-table th, .attempt-table td { grid-template-columns: 8ch minmax(0, 1fr); }

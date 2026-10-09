@@ -18,7 +18,7 @@ Range, coverage, and the ordinary sample average are calculated from the complet
 
 ## Reading the chart frame
 
-The horizontal axis identifies where a value occurs: calendar month on the dashboard, elapsed time or distance on detailed streams, and distance on a segment definition. The vertical axis uses the metric and unit shown in the chart heading, such as metres, beats per minute, watts, or minutes per kilometre. Gridlines make changes in height comparable to labelled values rather than only to the chart card.
+The horizontal axis identifies where a value occurs: calendar week or month on the dashboard, activity dates in benchmark progress, elapsed time or distance on detailed streams, and distance on a segment definition. The vertical axis uses the metric and unit shown in the chart heading, such as metres, beats per minute, watts, or minutes per kilometre. Gridlines make changes in height comparable to labelled values rather than only to the chart card.
 
 Detailed stream headings summarize the full usable series:
 
@@ -28,9 +28,15 @@ Detailed stream headings summarize the full usable series:
 
 These figures do not change when the display selects representative points for a dense line.
 
-## Dashboard monthly distance
+## Dashboard training trends
 
-**Distance over the last 12 months** totals imported activity distance by calendar month. Five horizontal labels span the 12-month period, while the vertical axis and gridlines show distance in kilometres. Pointer inspection identifies the month and its exact total, including a zero-distance month. Open **Inspect monthly values** to use the keyboard-operable month slider or view all 12 Month/Distance rows in a table.
+Dashboard trends cover the selected reporting period and sport, grouped by Monday-start weeks or calendar months. Choose activities, distance, moving time, ascent, or active days. Distance uses kilometres on the axis, moving time uses hours, and exact inspection retains duration formatting. Up to five horizontal labels span the selected buckets. Every bucket remains available to pointer inspection, the keyboard slider, and the data table, including zero totals and partial edge periods. The exact range appears in inspection and table rows.
+
+## Benchmark progress
+
+Choose **Progress over time** in a benchmark’s attempt view. Each point represents one activity’s best qualifying attempt. Horizontal spacing follows actual activity start times, with owner-local date labels. The step line shows the best result so far within the selected period, resetting when the period changes. Each profile has a separate chart and chronological table. No ranked-page limit or lifetime winning snapshot supplies this history.
+
+Pointer or touch inspection shows the activity result and running best. The keyboard slider provides the same values and an activity link; **View chronological attempts** opens the complete table. Qualification and better-result direction stay benchmark-specific, including lower elapsed times and higher power or distance. Rowing average speed is displayed as time per 500 m. Cancelled or failed calculations do not show partial history as complete.
 
 ## Activity and effort streams
 

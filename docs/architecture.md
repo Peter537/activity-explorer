@@ -36,6 +36,14 @@ Core defines `ReportingPreset`, `ReportingDateSelection`, and `ResolvedOwnerPeri
 
 Activities and World Map share the date input component. Public URLs preserve relative preset slugs or fixed custom dates. Sorting, pagination, and deletion preparation reuse the displayed effective filter; applying filters, profile changes, and page reloads resolve periods again. Internal map activity requests carry the captured reference instant across viewport changes. Edited controls are separate from applied results, and superseded activity loads cannot replace newer results. Reporting uses existing summary fields and profile timezone settings without a schema migration.
 
+## Progress reporting
+
+`DashboardQuery` and `TrainingCalendarQuery` use the existing activity query service. Both project stored summary fields after owner, sport, and owner-local reporting-date filtering. Profile settings, selected/comparison summaries, and dashboard record highlights are read in a consistent SQLite transaction. No stream, geometry, or original-file reads are needed. Daily grouping supplies totals, distinct active dates, Monday-start weeks, and calendar-month buckets. Calendar dates and activity-list links share Phase 1’s inclusive date contract.
+
+Comparisons resolve calendar dates before converting them to UTC boundaries. Previous periods have equal inclusive day counts; prior-year dates clamp leap-day endpoints. An unbounded or unrepresentable comparison remains unavailable instead of implying zero. Aggregate DTOs carry resolved ranges so Razor does not reconstruct membership rules. Results are calculated on demand, without a schema change, persistent aggregate, or cross-request cache.
+
+Benchmark progress uses `IStatisticsService.GetHistoryAsync` and shares qualifying-attempt evaluation with the strongest-first view. The selected benchmark and reporting dates filter candidate activities before batched stream reads in one consistent, deferred SQLite read snapshot. A replacement request can read while a cancelled calculation unwinds, without reserving SQLite's single writer. Each owner receives a chronological best-per-activity series and a running best reset at the beginning of the selected period. Whole-activity benchmarks stay summary-only. Cancellation and failures discard partial results, and UI load generations prevent stale profile/filter responses from replacing current results.
+
 ## Badge calculation
 
 `IBadgeService` reads profile settings and activity summaries in one consistent SQLite read transaction, then passes plain DTOs to the pure `BadgeEvaluator`. `BadgeCatalog` defines stable family/tier identifiers, targets, recurrence, points, requirements, and local vector artwork keys. Calendar groups and shared contributions are reused across tiers; streams are not loaded. Results, evidence, points, and levels are calculated on demand without an award table, background worker, or cross-request cache.

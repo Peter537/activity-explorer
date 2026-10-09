@@ -1,0 +1,244 @@
+@page "/calendar"
+@implements IDisposable
+@inject IActivityQueryService Activities
+@inject ProfileState ProfileState
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+
+<PageTitle>Training calendar - Activity Explorer</PageTitle>
+<PageHeader Title="Training calendar" Summary="See your active days and open the activities behind each one.">
+    <Actions><a class="button" href="@DashboardUrl">Progress dashboard</a></Actions>
+</PageHeader>
+
+<form class="filter-bar calendar-filters" aria-label="Calendar filters" @onsubmit="ApplyAsync" @onsubmit:preventDefault>
+    <label><span>Month</span><input type="@MonthInputType" @bind="_monthInput" @bind:after="FilterEdited" aria-invalid="@(_error is not null)" /></label>
+    <label><span>Sport</span><select @bind="_sport" @bind:after="FilterEdited"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+    <label><span>View</span><select @bind="_view" @bind:after="FilterEdited"><option value="auto">Responsive</option><option value="calendar">Calendar</option><option value="list">List</option></select></label>
+    <button class="button primary" type="submit">Apply filters</button>
+    <button class="button" type="button" @onclick="LoadAsync" disabled="@(_loading || _dirty)">Refresh</button>
+</form>
+@if (_dirty) { <p class="notice" role="status">Apply filters to update this calendar.</p> }
+@if (_error is not null)
+{
+    <p class="notice error" role="alert">@_error @if (_error.Contains("timezone", StringComparison.OrdinalIgnoreCase)) { <a href="/profiles">Choose a timezone in Profiles</a> }</p>
+    <button class="button" @onclick="ApplyAsync">Retry loading calendar</button>
+}
+@if (_loading) { <p class="loading" role="status">Loading calendar…</p> }
+@if (_displayMonth is { } displayMonth)
+{
+    <section class="calendar-heading" aria-label="Calendar month navigation">
+        <button class="button" aria-label="Previous month" disabled="@(displayMonth.Year == 1 && displayMonth.Month == 1)" @onclick="() => MoveMonthAsync(-1)">← Previous</button>
+        <h2 aria-live="polite">@displayMonth.ToString("MMMM yyyy", CultureInfo.CurrentCulture)</h2>
+        <button class="button" aria-label="Next month" disabled="@(displayMonth >= new DateOnly(9999, 11, 1))" @onclick="() => MoveMonthAsync(1)">Next →</button>
+        <button class="button" @onclick="ThisMonthAsync">This month</button>
+    </section>
+}
+@if (_calendar is not null && !_loading)
+{
+    <dl class="calendar-totals" aria-label="Calendar month totals">
+        <div><dt>Activities</dt><dd>@_calendar.Totals.ActivityCount.ToString("N0")</dd></div>
+        <div><dt>Distance</dt><dd>@Format.Distance(_calendar.Totals.DistanceMeters)</dd></div>
+        <div><dt>Moving time</dt><dd>@Format.Duration(_calendar.Totals.MovingSeconds)</dd></div>
+        <div><dt>Ascent</dt><dd>@($"{_calendar.Totals.ElevationMeters:N0} m")</dd></div>
+        <div><dt>Active days</dt><dd>@_calendar.Totals.ActiveDays</dd></div>
+    </dl>
+    <p class="calendar-note">@(_calendar.Periods.Count == 1 ? $"Dates use {_calendar.Periods[0].TimeZoneId}." : "Dates use each profile’s reporting timezone; active days count distinct local dates.") Weeks start Monday. Week totals include only days in this month.</p>
+    @if (_calendar.Totals.ActivityCount == 0)
+    {
+        <p class="notice" role="status">No activities match this month and sport. Choose another month or import more history.</p>
+    }
+    <div class="calendar-content view-@_appliedView">
+        <section class="calendar-grid" aria-label="Monthly training calendar">
+            <div class="calendar-weekdays" aria-hidden="true">@foreach (var day in Weekdays) { <span>@day</span> }<span>Week total</span></div>
+            @foreach (var week in _calendar.Weeks)
+            {
+                var weekStart = ReportingProgress.BucketStart(week.Start, TrendGranularity.Weekly);
+                <div class="calendar-week">
+                    @for (var index = 0; index < 7; index++)
+                    {
+                        var date = weekStart.AddDays(index);
+                        var day = _calendar.Days.FirstOrDefault(item => item.Date == date);
+                        @if (day is null) { <div class="calendar-day outside-month" aria-hidden="true"></div> }
+                        else
+                        {
+                            <a class="calendar-day @(day.Totals.ActivityCount > 0 ? "active-day" : "rest-day")" href="@DayUrl(day.Date)" data-date="@IsoDate(day.Date)" aria-label="@DayLabel(day)">
+                                <time datetime="@IsoDate(day.Date)">@day.Date.Day</time>
+                                @if (day.Totals.ActivityCount > 0)
+                                {
+                                    @foreach (var sport in day.Sports) { <span class="calendar-sport"><i class="sport-dot @sport.Sport.ToString().ToLowerInvariant()" aria-hidden="true"></i>@sport.Sport <strong>@sport.Count</strong></span> }
+                                    <strong class="day-distance">@Format.Distance(day.Totals.DistanceMeters)</strong>
+                                    <small>@Format.Duration(day.Totals.MovingSeconds)</small>
+                                    <small>@($"{day.Totals.ElevationMeters:N0} m ascent")</small>
+                                }
+                                else { <span class="no-activity">No activities</span> }
+                            </a>
+                        }
+                    }
+                    <div class="calendar-week-total" aria-label="@($"Week total {week.Start:d MMM} to {week.End:d MMM}")">
+                        @if (IsPartialWeek(week)) { <span class="partial-week">Partial week</span> }
+                        <strong>@Format.Distance(week.Totals.DistanceMeters)</strong><span>@week.Totals.ActivityCount activities</span><span>@Format.Duration(week.Totals.MovingSeconds)</span><span>@($"{week.Totals.ElevationMeters:N0} m ascent")</span><span>@week.Totals.ActiveDays active days</span>
+                    </div>
+                </div>
+            }
+        </section>
+        <section class="calendar-list" aria-label="Training calendar list">
+            @foreach (var week in _calendar.Weeks)
+            {
+                <section class="calendar-list-week">
+                    <h3>@week.Start.ToString("d MMM") – @week.End.ToString("d MMM")</h3>
+                    @foreach (var day in _calendar.Days.Where(day => day.Date >= week.Start && day.Date <= week.End))
+                    {
+                        <a class="calendar-list-day @(day.Totals.ActivityCount > 0 ? "active-day" : "rest-day")" href="@DayUrl(day.Date)" data-date="@IsoDate(day.Date)" aria-label="@DayLabel(day)">
+                            <time datetime="@IsoDate(day.Date)"><strong>@day.Date.ToString("ddd")</strong><span>@day.Date.Day</span></time>
+                            <div class="list-day-sports">
+                                @if (day.Totals.ActivityCount == 0) { <span class="muted">No activities</span> }
+                                @foreach (var sport in day.Sports) { <span class="calendar-sport"><i class="sport-dot @sport.Sport.ToString().ToLowerInvariant()" aria-hidden="true"></i>@sport.Sport <strong>@sport.Count</strong></span> }
+                            </div>
+                            @if (day.Totals.ActivityCount > 0)
+                            { <div class="list-day-totals"><strong>@Format.Distance(day.Totals.DistanceMeters)</strong><span>@Format.Duration(day.Totals.MovingSeconds)</span><span>@($"{day.Totals.ElevationMeters:N0} m ascent")</span></div> }
+                        </a>
+                    }
+                    <div class="list-week-total"><strong>@(IsPartialWeek(week) ? "Partial week total" : "Week total")</strong><span>@week.Totals.ActivityCount activities · @week.Totals.ActiveDays active days</span><span>@Format.Distance(week.Totals.DistanceMeters) · @Format.Duration(week.Totals.MovingSeconds) · @($"{week.Totals.ElevationMeters:N0} m ascent")</span></div>
+                </section>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery(Name = "month")] public string? QueryMonth { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "view")] public string? QueryView { get; set; }
+    private static readonly string[] Weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    private TrainingCalendarSummary? _calendar;
+    private string _monthInput = "", _sport = "", _view = "auto", _appliedView = "auto";
+    private DateOnly? _displayMonth;
+    private SportKind? _appliedSport;
+    private string? _error;
+    private bool _loading, _dirty, _disposed;
+    private int _revision;
+    private CancellationTokenSource? _cancellation;
+    private SportKind? Sport => Enum.TryParse<SportKind>(_sport, true, out var sport) && Enum.IsDefined(sport) ? sport : null;
+    private string DashboardUrl => _appliedSport.HasValue ? $"/?sport={_appliedSport.Value.ToString().ToLowerInvariant()}" : "/";
+    private string MonthInputType => string.IsNullOrWhiteSpace(_monthInput) || TryParseMonth(_monthInput, out _) ? "month" : "text";
+
+    protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
+    protected override async Task OnParametersSetAsync()
+    {
+        RestoreAppliedControls();
+        await LoadAsync();
+    }
+
+    private void RestoreAppliedControls()
+    {
+        _monthInput = QueryMonth ?? "";
+        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : "";
+        _view = QueryView is "list" or "calendar" ? QueryView : "auto";
+        _dirty = false;
+    }
+
+    private async Task LoadAsync()
+    {
+        CancelCurrentLoad();
+        var revision = ++_revision;
+        using var cancellation = new CancellationTokenSource();
+        _cancellation = cancellation;
+        _error = null;
+        _loading = true;
+        _calendar = null;
+        try
+        {
+            DateOnly? month = null;
+            if (!string.IsNullOrWhiteSpace(_monthInput))
+            {
+                if (!TryParseMonth(_monthInput, out var parsed))
+                    throw new ArgumentException("Choose a valid month in yyyy-MM format.");
+                month = parsed;
+            }
+            if (month.HasValue) _displayMonth = month;
+            var sport = Sport;
+            var view = _view;
+            _appliedSport = sport;
+            _appliedView = view;
+            var result = await Activities.GetTrainingCalendarAsync(new(ProfileState.SelectedOwnerId, sport, month, Clock.GetUtcNow()), cancellation.Token);
+            if (_disposed || revision != _revision) return;
+            _calendar = result;
+            _displayMonth = result.Month;
+            _monthInput = result.Month.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+            _appliedSport = sport;
+            _appliedView = view;
+            _dirty = false;
+            if (QueryMonth != _monthInput) Navigation.NavigateTo(BuildUri(), replace: true);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (!_disposed && revision == _revision) _error = $"Calendar could not be loaded. {exception.Message}";
+        }
+        finally
+        {
+            if (revision == _revision) { _loading = false; _cancellation = null; }
+        }
+    }
+
+    private void FilterEdited()
+    {
+        CancelCurrentLoad();
+        _revision++;
+        _loading = false;
+        _dirty = true;
+    }
+    private async Task ApplyAsync()
+    {
+        var target = BuildUri();
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await LoadAsync();
+        else Navigation.NavigateTo(target);
+    }
+    private Task MoveMonthAsync(int delta)
+    {
+        if (_displayMonth is null) return Task.CompletedTask;
+        _monthInput = _displayMonth.Value.AddMonths(delta).ToString("yyyy-MM", CultureInfo.InvariantCulture);
+        _sport = _appliedSport?.ToString() ?? "";
+        _view = _appliedView;
+        return ApplyAsync();
+    }
+    private Task ThisMonthAsync()
+    {
+        _monthInput = "";
+        _sport = _appliedSport?.ToString() ?? "";
+        _view = _appliedView;
+        return ApplyAsync();
+    }
+    private string BuildUri()
+    {
+        var values = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_monthInput)) values.Add($"month={Uri.EscapeDataString(_monthInput)}");
+        if (Sport.HasValue) values.Add($"sport={Sport.Value.ToString().ToLowerInvariant()}");
+        if (_view is "list" or "calendar") values.Add($"view={_view}");
+        return values.Count == 0 ? "/calendar" : $"/calendar?{string.Join('&', values)}";
+    }
+    private string DayUrl(DateOnly day) => $"/activities?from={IsoDate(day)}&to={IsoDate(day)}" +
+        (_appliedSport.HasValue ? $"&sport={_appliedSport.Value.ToString().ToLowerInvariant()}" : "");
+    private static string IsoDate(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private static bool TryParseMonth(string value, out DateOnly month) =>
+        DateOnly.TryParseExact(value + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out month);
+    private static bool IsPartialWeek(ReportingBucket week) => week.Start.DayOfWeek != DayOfWeek.Monday || week.End.DayOfWeek != DayOfWeek.Sunday;
+    private static string DayLabel(TrainingCalendarDay day) => $"{day.Date:dddd d MMMM yyyy}: {day.Totals.ActivityCount} activities, {Format.Distance(day.Totals.DistanceMeters)}, {Format.Duration(day.Totals.MovingSeconds)}";
+    private void ProfileChanged()
+    {
+        CancelCurrentLoad();
+        _revision++;
+        _calendar = null;
+        _ = InvokeAsync(async () =>
+        {
+            if (_disposed) return;
+            RestoreAppliedControls();
+            var loading = LoadAsync();
+            StateHasChanged();
+            await loading;
+            if (!_disposed) StateHasChanged();
+        });
+    }
+    private void CancelCurrentLoad() { var cancellation = _cancellation; _cancellation = null; cancellation?.Cancel(); }
+    public void Dispose() { _disposed = true; ProfileState.Changed -= ProfileChanged; _revision++; CancelCurrentLoad(); }
+}

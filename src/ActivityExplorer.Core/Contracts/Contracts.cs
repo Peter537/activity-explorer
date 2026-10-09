@@ -76,7 +76,8 @@ public interface IActivityQueryService
     Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(Guid? ownerId, CancellationToken cancellationToken = default);
     Task<ActivitySearchResult> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
     Task<ActivityDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default);
-    Task<DashboardSummary> GetDashboardAsync(Guid? ownerId, CancellationToken cancellationToken = default);
+    Task<DashboardSummary> GetDashboardAsync(DashboardQuery query, CancellationToken cancellationToken = default);
+    Task<TrainingCalendarSummary> GetTrainingCalendarAsync(TrainingCalendarQuery query, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
     Task<ActivityDeletionResult> DeleteAsync(
         IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default);
@@ -125,6 +126,7 @@ public interface IStatisticsService
     Task<IReadOnlyList<PersonalRecord>> GetRecordsAsync(
         Guid? ownerId, RecordScope scope = RecordScope.All, CancellationToken cancellationToken = default);
     Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default);
+    Task<RecordHistory?> GetHistoryAsync(RecordHistoryQuery query, CancellationToken cancellationToken = default);
 }
 
 public interface IMapFeatureService

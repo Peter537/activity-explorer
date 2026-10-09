@@ -61,8 +61,8 @@
             </div>
         }
         <details class="chart-accessible-values">
-            <summary>Inspect monthly values</summary>
-            <p id="@_inspectorHelpId">Move the slider to step through each displayed month. The exact month and distance update below.</p>
+            <summary>Inspect @AxisLabel.ToLowerInvariant() values</summary>
+            <p id="@_inspectorHelpId">Move the slider to step through each @AxisLabel.ToLowerInvariant(). The exact period and @ValueLabel.ToLowerInvariant() update below.</p>
             <label>
                 <span>@Title sample</span>
                 <input class="chart-inspector" type="range" min="0" max="@(_geometry.Samples.Count - 1)" step="1"
@@ -75,7 +75,7 @@
             </output>
             <details>
                 <summary>View @Title data table</summary>
-                <div class="chart-data-table"><table><caption>@Title values</caption><thead><tr><th scope="col">Month</th><th scope="col">Distance</th></tr></thead><tbody>
+                <div class="chart-data-table"><table><caption>@Title values</caption><thead><tr><th scope="col">@AxisLabel</th><th scope="col">@ValueLabel</th></tr></thead><tbody>
                     @foreach (var sample in _geometry.Samples)
                     {
                         <tr><td>@FormatAxis(sample.SourceIndex)</td><td>@FormatValue(sample.Value)</td></tr>
@@ -91,6 +91,10 @@
     [Parameter] public string Unit { get; set; } = "";
     [Parameter] public IReadOnlyList<double?> Values { get; set; } = [];
     [Parameter] public IReadOnlyList<string> Labels { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> AxisLabels { get; set; } = [];
+    [Parameter] public string AxisLabel { get; set; } = "Month";
+    [Parameter] public string ValueLabel { get; set; } = "Distance";
+    [Parameter] public Func<double, string>? ValueFormatter { get; set; }
     [Parameter] public bool IncludeZero { get; set; }
     private readonly string _inspectorHelpId = $"spark-chart-help-{Guid.NewGuid():N}";
     private SparkChartGeometryResult _geometry = SparkChartGeometry.Build([]);
@@ -100,7 +104,7 @@
     protected override void OnParametersSet()
     {
         _geometry = SparkChartGeometry.Build(Values, IncludeZero);
-        _axisTicks = HasLabels ? ChartAxisLabels.BuildCategoryTicks(Labels) : [];
+        _axisTicks = HasLabels ? ChartAxisLabels.BuildCategoryTicks(AxisLabels.Count == Values.Count ? AxisLabels : Labels) : [];
         _selectedIndex = Math.Clamp(_selectedIndex, 0, Math.Max(_geometry.Samples.Count - 1, 0));
     }
 
@@ -132,13 +136,11 @@
         ? Labels[sourceIndex]
         : $"Sample {sourceIndex + 1:N0}";
 
-    private string FormatValue(double value) => string.IsNullOrWhiteSpace(Unit)
+    private string FormatValue(double value) => ValueFormatter?.Invoke(value) ?? (string.IsNullOrWhiteSpace(Unit)
         ? value.ToString("N1")
-        : $"{value:N1} {Unit}";
+        : $"{value:N1} {Unit}");
 
-    private string FormatRange(double minimum, double maximum) => string.IsNullOrWhiteSpace(Unit)
-        ? $"{minimum:N1}\u2013{maximum:N1}"
-        : $"{minimum:N1}\u2013{maximum:N1} {Unit}";
+    private string FormatRange(double minimum, double maximum) => $"{FormatValue(minimum)} – {FormatValue(maximum)}";
 
     private static string Invariant(double value) =>
         value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);

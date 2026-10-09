@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed class ActivityQueryService(
+public sealed partial class ActivityQueryService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     IStatisticsService statistics,
     ISegmentService segments,
@@ -120,65 +120,6 @@ public sealed class ActivityQueryService(
         return await query.GroupBy(x => x.Sport)
             .Select(group => new { Sport = group.Key, Count = group.Count() })
             .ToDictionaryAsync(x => x.Sport, x => x.Count, cancellationToken);
-    }
-
-    public async Task<DashboardSummary> GetDashboardAsync(Guid? ownerId, CancellationToken cancellationToken = default)
-    {
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var query = db.Activities.AsNoTracking().Include(x => x.Owner).AsQueryable();
-        if (ownerId.HasValue) query = query.Where(x => x.OwnerId == ownerId);
-
-        var totals = await query.GroupBy(_ => 1).Select(x => new
-        {
-            Count = x.Count(),
-            Distance = x.Sum(a => a.DistanceMeters),
-            Moving = x.Sum(a => a.MovingTimeSeconds),
-            Elevation = x.Sum(a => a.ElevationGainMeters)
-        }).SingleOrDefaultAsync(cancellationToken);
-
-        var sports = await query.GroupBy(x => x.Sport).Select(x => new SportTotal(
-            x.Key, x.Count(), x.Sum(a => a.DistanceMeters), x.Sum(a => a.MovingTimeSeconds), x.Sum(a => a.ElevationGainMeters)))
-            .ToListAsync(cancellationToken);
-        var recentEntities = await query.OrderByDescending(x => x.StartTimeUtc).Take(8).ToListAsync(cancellationToken);
-        var trendSource = await query.Select(x => new
-        {
-            x.StartTimeUtc,
-            x.DistanceMeters,
-            x.MovingTimeSeconds,
-            x.DeviceName,
-            x.GearName
-        }).ToListAsync(cancellationToken);
-        var currentMonth = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
-        var monthlyTrend = Enumerable.Range(0, 12).Select(offset => currentMonth.AddMonths(offset - 11))
-            .Select(month =>
-            {
-                var rows = trendSource.Where(x =>
-                    x.StartTimeUtc.Year == month.Year && x.StartTimeUtc.Month == month.Month).ToArray();
-                return new PeriodTotal(month, rows.Length, rows.Sum(x => x.DistanceMeters), rows.Sum(x => x.MovingTimeSeconds));
-            }).ToArray();
-        var devices = trendSource.Where(x => !string.IsNullOrWhiteSpace(x.DeviceName))
-            .GroupBy(x => x.DeviceName!, StringComparer.OrdinalIgnoreCase)
-            .Select(x => new NamedTotal(x.Key, x.Count())).OrderByDescending(x => x.Count).ThenBy(x => x.Name).Take(5).ToArray();
-        var gear = trendSource.Where(x => !string.IsNullOrWhiteSpace(x.GearName))
-            .GroupBy(x => x.GearName!, StringComparer.OrdinalIgnoreCase)
-            .Select(x => new NamedTotal(x.Key, x.Count())).OrderByDescending(x => x.Count).ThenBy(x => x.Name).Take(5).ToArray();
-        var records = await statistics.GetRecordsAsync(ownerId, RecordScope.All, cancellationToken);
-        var warningQuery = db.ImportBatches.AsNoTracking().Where(x => x.Warnings > 0 || x.Status == ImportStatus.Failed);
-        if (ownerId.HasValue) warningQuery = warningQuery.Where(x => x.OwnerId == ownerId);
-        var warnings = await warningQuery.CountAsync(cancellationToken);
-
-        return new DashboardSummary(
-            totals?.Count ?? 0,
-            totals?.Distance ?? 0,
-            totals?.Moving ?? 0,
-            totals?.Elevation ?? 0,
-            sports,
-            recentEntities.Select(ToSummary).ToArray(),
-            records.Take(5).ToArray(),
-            warnings,
-            monthlyTrend,
-            devices,
-            gear);
     }
 
     public async Task<ActivityDeletionResult> DeleteAsync(

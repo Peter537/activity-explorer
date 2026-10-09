@@ -43,14 +43,6 @@ internal static class SparkChartGeometry
                 ChartScaleBuilder.Build(0, 0, includeZero, Height));
         }
 
-        if (indexed.Length > 500)
-        {
-            var stride = (int)Math.Ceiling(indexed.Length / 499d);
-            indexed = indexed
-                .Where((_, index) => index % stride == 0 || index == indexed.Length - 1)
-                .ToArray();
-        }
-
         var minimum = indexed.Min(item => item.Value);
         var maximum = indexed.Max(item => item.Value);
         var scale = ChartScaleBuilder.Build(minimum, maximum, includeZero, Height);

@@ -13,6 +13,48 @@ public sealed class ChartSeriesTests
     private static readonly JsonSerializerOptions LegacyJsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void Benchmark_progress_uses_real_time_spacing_and_stepwise_best_without_dropping_attempts()
+    {
+        var benchmark = new RecordBenchmark(Core.Domain.SportKind.Cycling, Core.Domain.RecordKind.Distance, "Longest distance", "Activity records", null);
+        var points = new[] { HistoryPoint(0, 10_000, 10_000), HistoryPoint(1, 8_000, 10_000), HistoryPoint(10, 12_000, 12_000) };
+        var geometry = BenchmarkProgressGeometry.Build(benchmark, points);
+        Assert.Equal(new[] { 0d, 80, 800 }, geometry.Samples.Select(sample => sample.X));
+        Assert.Equal(geometry.Samples[0].BestY, geometry.Samples[1].BestY);
+        Assert.True(geometry.Samples[2].BestY < geometry.Samples[1].BestY);
+        Assert.Contains(" H 80 V ", geometry.BestPath, StringComparison.Ordinal);
+        Assert.Contains(" H 800 V ", geometry.BestPath, StringComparison.Ordinal);
+        var dense = Enumerable.Range(0, 601).Select(index => HistoryPoint(index, 1_000 + index, 1_000 + index)).ToArray();
+        Assert.Equal(601, BenchmarkProgressGeometry.Build(benchmark, dense).Samples.Count);
+        Assert.Equal(400, Assert.Single(BenchmarkProgressGeometry.Build(benchmark, [points[0]]).Samples).X);
+    }
+
+    [Fact]
+    public void Benchmark_rowing_chart_uses_split_units_and_invariant_coordinates()
+    {
+        var benchmark = new RecordBenchmark(Core.Domain.SportKind.Rowing, Core.Domain.RecordKind.AverageSpeed, "Best average split", "Activity records", null);
+        var before = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CommaDecimalCulture();
+            var geometry = BenchmarkProgressGeometry.Build(benchmark, [HistoryPoint(0, 4, 4), HistoryPoint(1, 5, 5), HistoryPoint(3, 4.5, 5)]);
+            Assert.Equal("min/500 m", BenchmarkProgressGeometry.Unit(benchmark));
+            Assert.Equal(500 / 4d / 60, BenchmarkProgressGeometry.DisplayValue(benchmark, 4));
+            Assert.True(geometry.Samples[1].BestY > geometry.Samples[0].BestY);
+            Assert.Equal(geometry.Samples[1].BestY, geometry.Samples[2].BestY);
+            Assert.Contains("H 266.667", geometry.BestPath, StringComparison.Ordinal);
+            Assert.DoesNotContain("H 266,667", geometry.BestPath, StringComparison.Ordinal);
+        }
+        finally { CultureInfo.CurrentCulture = before; }
+    }
+
+    private static RecordHistoryPoint HistoryPoint(int day, double value, double best)
+    {
+        var date = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero).AddDays(day);
+        return new(new(Guid.NewGuid(), "Synthetic attempt", Guid.Empty, "Athlete", date, value, 100, null, null, null, null),
+            DateOnly.FromDateTime(date.DateTime), best);
+    }
+
+    [Fact]
     public void Spark_geometry_uses_invariant_decimals_and_real_area_endpoints_under_comma_decimal_culture()
     {
         var before = CultureInfo.CurrentCulture;

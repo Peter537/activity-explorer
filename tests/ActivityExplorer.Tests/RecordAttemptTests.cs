@@ -222,6 +222,186 @@ public sealed class RecordAttemptTests
         Assert.DoesNotContain(counter.Commands, command => command.Contains("ActivityStreams", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task History_contains_every_activity_separates_owners_and_resets_best_with_the_period()
+    {
+        var counter = new QueryCounter();
+        var factory = await Database(counter);
+        var owner = new OwnerProfile { DisplayName = "History athlete", TimeZoneId = "UTC" };
+        var other = new OwnerProfile { DisplayName = "Other history athlete", TimeZoneId = "UTC" };
+        await using (var db = factory.CreateDbContext())
+        {
+            db.Owners.AddRange(owner, other);
+            for (var index = 0; index < 61; index++)
+            {
+                var activity = Activity(owner.Id, $"History {index:00}", index % 2 == 0);
+                activity.StartTimeUtc = Start.AddDays(index);
+                activity.DistanceMeters = 100_000 - index * 1_000;
+                activity.Stream!.CompressedPayload = [0, 1, 2];
+                db.Add(activity);
+            }
+            var otherActivity = Activity(other.Id, "Other history", false);
+            otherActivity.DistanceMeters = 5_000;
+            db.Add(otherActivity);
+            await db.SaveChangesAsync();
+        }
+        var service = new StatisticsService(factory);
+        var query = new RecordHistoryQuery(SportKind.Cycling, RecordKind.Distance, "Longest distance");
+        counter.Commands.Clear();
+        var history = (await service.GetHistoryAsync(query))!;
+        Assert.Equal(2, history.Series.Count);
+        var points = history.Series.Single(series => series.OwnerId == owner.Id).Points;
+        Assert.Equal(61, points.Count);
+        Assert.Equal("History 00", points[0].Attempt.ActivityTitle);
+        Assert.Equal("History 60", points[^1].Attempt.ActivityTitle);
+        Assert.All(points, point => Assert.Equal(100_000, point.BestSoFar));
+        Assert.Equal(5_000, Assert.Single(history.Series.Single(series => series.OwnerId == other.Id).Points).BestSoFar);
+        Assert.DoesNotContain(counter.Commands, command => command.Contains("ActivityStreams", StringComparison.Ordinal));
+        var period = new ReportingDateSelection(ReportingPreset.Custom, new(2026, 1, 11), new(2026, 1, 13));
+        var filtered = (await service.GetHistoryAsync(query with { OwnerId = owner.Id, Period = period }))!;
+        Assert.Equal(3, Assert.Single(filtered.Series).Points.Count);
+        Assert.All(filtered.Series[0].Points, point => Assert.Equal(90_000, point.BestSoFar));
+        var ranked = (await service.GetAttemptsAsync(new(SportKind.Cycling, RecordKind.Distance, "Longest distance", owner.Id, Period: period)))!;
+        Assert.Equal(filtered.Series[0].Points.Select(point => point.Attempt.ActivityId), ranked.Attempts.Items.Select(attempt => attempt.ActivityId));
+        Assert.Equal(31, Assert.Single((await service.GetHistoryAsync(query with { OwnerId = owner.Id, Scope = RecordScope.Indoor }))!.Series).Points.Count);
+        Assert.Empty((await service.GetHistoryAsync(query with { OwnerId = Guid.NewGuid() }))!.Series);
+        Assert.Null(await service.GetHistoryAsync(query with { Key = "Unknown benchmark" }));
+    }
+
+    [Fact]
+    public async Task History_uses_the_best_qualifying_window_and_keeps_lower_results_and_scope_rules()
+    {
+        var factory = await Database();
+        var owner = new OwnerProfile { DisplayName = "Distance history athlete" };
+        await using (var db = factory.CreateDbContext())
+        {
+            db.Add(owner);
+            foreach (var (days, seconds, indoor) in new[] { (0, 600, false), (1, 500, true), (2, 550, false) })
+            {
+                var activity = Activity(owner.Id, $"Effort {days}", indoor);
+                activity.StartTimeUtc = Start.AddDays(days);
+                activity.Stream!.CompressedPayload = TrackCodec.Encode([
+                    Point(0, 0) with { Timestamp = activity.StartTimeUtc },
+                    Point(seconds, 5_000) with { Timestamp = activity.StartTimeUtc.AddSeconds(seconds) },
+                    Point(seconds * 2, 10_000) with { Timestamp = activity.StartTimeUtc.AddSeconds(seconds * 2) }
+                ]);
+                db.Add(activity);
+            }
+            var ineligible = Activity(owner.Id, "No GPS cycling", true);
+            ineligible.Stream!.CompressedPayload = TrackCodec.Encode(Track(10_000, 10).Select(point => point with { Latitude = null, Longitude = null }).ToArray());
+            db.Add(ineligible);
+            await db.SaveChangesAsync();
+        }
+        var service = new StatisticsService(factory);
+        var query = new RecordHistoryQuery(SportKind.Cycling, RecordKind.DistanceEffort, "5 km", owner.Id);
+        var points = Assert.Single((await service.GetHistoryAsync(query))!.Series).Points;
+        Assert.Equal(new[] { 600d, 500, 550 }, points.Select(point => point.Attempt.Value));
+        Assert.Equal(new[] { 600d, 500, 500 }, points.Select(point => point.BestSoFar));
+        Assert.All(points, point => Assert.Equal(100, point.Attempt.CoveragePercent));
+        var outdoor = Assert.Single((await service.GetHistoryAsync(query with { Scope = RecordScope.Outdoor }))!.Series).Points;
+        Assert.Equal(new[] { 600d, 550 }, outdoor.Select(point => point.BestSoFar));
+        var indoorPoints = Assert.Single((await service.GetHistoryAsync(query with { Scope = RecordScope.Indoor }))!.Series).Points;
+        Assert.Equal(500, Assert.Single(indoorPoints).Attempt.Value);
+    }
+
+    [Fact]
+    public async Task History_filters_and_labels_each_owners_reporting_date_and_reloads_transfers_and_deletions()
+    {
+        var factory = await Database();
+        var east = new OwnerProfile { DisplayName = "East athlete", TimeZoneId = "Europe/Copenhagen" };
+        var west = new OwnerProfile { DisplayName = "West athlete", TimeZoneId = "America/Los_Angeles" };
+        var timestamp = new DateTimeOffset(2026, 3, 29, 22, 30, 0, TimeSpan.Zero);
+        var eastActivity = Activity(east.Id, "East midnight activity", false);
+        eastActivity.StartTimeUtc = timestamp;
+        var westActivity = Activity(west.Id, "West afternoon activity", false);
+        westActivity.StartTimeUtc = timestamp;
+        await using (var db = factory.CreateDbContext())
+        {
+            db.AddRange(east, west, eastActivity, westActivity);
+            await db.SaveChangesAsync();
+        }
+        var service = new StatisticsService(factory);
+        var query = new RecordHistoryQuery(SportKind.Cycling, RecordKind.Distance, "Longest distance", Period: new(ReportingPreset.Today), AsOfUtc: timestamp);
+        var history = (await service.GetHistoryAsync(query))!;
+        Assert.Equal(new DateOnly(2026, 3, 30), Assert.Single(history.Series.Single(series => series.OwnerId == east.Id).Points).ReportingDate);
+        Assert.Equal(new DateOnly(2026, 3, 29), Assert.Single(history.Series.Single(series => series.OwnerId == west.Id).Points).ReportingDate);
+        var fixedDate = query with { Period = new(ReportingPreset.Custom, new(2026, 3, 30), new(2026, 3, 30)) };
+        Assert.Equal(east.Id, Assert.Single((await service.GetHistoryAsync(fixedDate))!.Series).OwnerId);
+        await using (var db = factory.CreateDbContext())
+        {
+            var activity = await db.Activities.Include(item => item.Stream).SingleAsync(item => item.Id == eastActivity.Id);
+            activity.OwnerId = west.Id;
+            activity.Stream!.OwnerId = west.Id;
+            activity.Title = "Transferred activity";
+            await db.SaveChangesAsync();
+        }
+        Assert.Empty((await service.GetHistoryAsync(fixedDate))!.Series);
+        var transferred = Assert.Single((await service.GetHistoryAsync(query))!.Series);
+        Assert.Equal(west.Id, transferred.OwnerId);
+        Assert.Contains(transferred.Points, point => point.Attempt.ActivityTitle == "Transferred activity");
+        await using (var db = factory.CreateDbContext())
+        {
+            db.Remove(await db.Activities.SingleAsync(item => item.Id == eastActivity.Id));
+            await db.SaveChangesAsync();
+        }
+        Assert.Single(Assert.Single((await service.GetHistoryAsync(query))!.Series).Points);
+    }
+
+    [Fact]
+    public async Task History_fails_on_corrupt_matching_payload_and_cancels_after_a_completed_batch()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var counter = new QueryCounter { CancelAfterStreamQueries = 2, Cancellation = cancellation };
+        var factory = await Database(counter);
+        var owner = new OwnerProfile { DisplayName = "Cancellable history athlete" };
+        await using (var db = factory.CreateDbContext())
+        {
+            db.Add(owner);
+            for (var index = 0; index < 33; index++) db.Add(Activity(owner.Id, $"History {index}", false));
+            await db.SaveChangesAsync();
+        }
+        var service = new StatisticsService(factory);
+        var query = new RecordHistoryQuery(SportKind.Cycling, RecordKind.DistanceEffort, "5 km", owner.Id);
+        counter.Commands.Clear();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.GetHistoryAsync(query, cancellation.Token));
+        Assert.Equal(2, counter.StreamQueries);
+        counter.CancelAfterStreamQueries = 0;
+        await using (var db = factory.CreateDbContext())
+        {
+            (await db.ActivityStreams.FirstAsync()).CompressedPayload = [0, 1, 2];
+            await db.SaveChangesAsync();
+        }
+        await Assert.ThrowsAnyAsync<Exception>(() => service.GetHistoryAsync(query));
+        Assert.Empty((await service.GetHistoryAsync(query with { Period = new(ReportingPreset.Custom, new(2027, 1, 1), new(2027, 1, 2)) }))!.Series);
+    }
+
+    [Fact]
+    public async Task A_pending_history_snapshot_does_not_block_a_second_history_request()
+    {
+        var pause = new PauseFirstActivityRead();
+        var factory = await Database(pause, commandTimeout: 1);
+        var owner = new OwnerProfile { DisplayName = "Concurrent history athlete" };
+        await using (var db = factory.CreateDbContext())
+        {
+            db.AddRange(owner, Activity(owner.Id, "Concurrent history", false));
+            await db.SaveChangesAsync();
+        }
+        var service = new StatisticsService(factory);
+        var query = new RecordHistoryQuery(SportKind.Cycling, RecordKind.Distance, "Longest distance", owner.Id);
+        var first = service.GetHistoryAsync(query);
+        try
+        {
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var second = await Task.Run(() => service.GetHistoryAsync(query)).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(Assert.Single(second!.Series).Points);
+        }
+        finally
+        {
+            pause.Resume.TrySetResult();
+            await first.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     private static IReadOnlyList<EffortWindow> Calculate(IReadOnlyList<TrackPoint> points, RecordKind kind, double target, SportKind sport = SportKind.Cycling) =>
         BestEffortCalculator.Attempts(points, sport, kind, target, true);
     private static TrackPoint Point(double seconds, double distance, double power = 200) =>
@@ -247,10 +427,10 @@ public sealed class RecordAttemptTests
         NaturalFingerprint = Guid.NewGuid().ToString("N"),
         Stream = new() { OwnerId = owner, PointCount = 1_001, CompressedPayload = TrackCodec.Encode(Track(10_000, 10)) }
     };
-    private static async Task<TestDbFactory> Database(QueryCounter? counter = null)
+    private static async Task<TestDbFactory> Database(DbCommandInterceptor? counter = null, int commandTimeout = 30)
     {
         var path = Path.Combine(TestSupport.NewDirectory(), "attempts.db");
-        var builder = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite($"Data Source={path}");
+        var builder = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite($"Data Source={path};Default Timeout={commandTimeout}");
         if (counter is not null) builder.AddInterceptors(counter);
         var factory = new TestDbFactory(builder.Options);
         await using var db = factory.CreateDbContext();
@@ -260,10 +440,15 @@ public sealed class RecordAttemptTests
     private sealed class QueryCounter : DbCommandInterceptor
     {
         public List<string> Commands { get; } = [];
+        public int CancelAfterStreamQueries { get; set; }
+        public int StreamQueries { get; private set; }
+        public CancellationTokenSource? Cancellation { get; set; }
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
             Commands.Add(command.CommandText);
+            if (command.CommandText.Contains("LEFT JOIN \"ActivityStreams\"", StringComparison.Ordinal) &&
+                ++StreamQueries == CancelAfterStreamQueries) Cancellation?.Cancel();
             return ValueTask.FromResult(result);
         }
     }
@@ -271,5 +456,23 @@ public sealed class RecordAttemptTests
     {
         public ExplorerDbContext CreateDbContext() => new(options);
         public Task<ExplorerDbContext> CreateDbContextAsync(CancellationToken cancellationToken = default) => Task.FromResult(CreateDbContext());
+    }
+
+    private sealed class PauseFirstActivityRead : DbCommandInterceptor
+    {
+        private int _entered;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            DbDataReader result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Activities\"", StringComparison.Ordinal) && Interlocked.Exchange(ref _entered, 1) == 0)
+            {
+                Entered.TrySetResult();
+                await Resume.Task.WaitAsync(cancellationToken);
+            }
+            return result;
+        }
     }
 }
