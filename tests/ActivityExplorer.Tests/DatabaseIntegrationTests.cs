@@ -915,6 +915,9 @@ public sealed partial class DatabaseIntegrationTests
         var parentSegmentId = await segments.CreateAsync(new CreateSegmentPathRequest(owner, "Imported path", SportKind.Cycling, TestSupport.Track(30)));
         var childSegmentId = await segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(parentSegmentId, "Imported section", 5, 20));
         await processor.ProcessAsync(await AddBatchAsync(SourceKind.GarminArchive));
+        long explorationVersion;
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            explorationVersion = await db.Activities.Select(x => x.ExplorationInputVersion).SingleAsync();
         await processor.ProcessAsync(await AddBatchAsync(SourceKind.StravaArchive));
 
         await using var resultDb = await setup.Factory.CreateDbContextAsync();
@@ -923,6 +926,7 @@ public sealed partial class DatabaseIntegrationTests
         Assert.Equal("Strava description", activity.Description);
         Assert.Equal("strava-42", activity.StravaId);
         Assert.Equal(2, activity.SourceFiles.Count);
+        Assert.True(activity.ExplorationInputVersion > explorationVersion);
         var section = Assert.Single((await segments.GetAsync(parentSegmentId))!.Children);
         Assert.Equal(childSegmentId, section.Summary.Id);
         Assert.Equal(activity.Id, Assert.Single(section.Efforts).ActivityId);

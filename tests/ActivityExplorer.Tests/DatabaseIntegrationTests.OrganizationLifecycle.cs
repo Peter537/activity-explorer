@@ -219,6 +219,9 @@ public sealed partial class DatabaseIntegrationTests
         var gear = await services.Organization.PrepareBatchAsync(owner, [activity.Id], null, new([], [], GearEditMode.Set, "Local bike"));
         await services.Organization.ApplyBatchAsync(gear);
         var pending = await services.Organization.PrepareBatchAsync(owner, [activity.Id], null, new([], [], GearEditMode.Clear, null));
+        long explorationVersion;
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            explorationVersion = await db.Activities.Where(x => x.Id == activity.Id).Select(x => x.ExplorationInputVersion).SingleAsync();
         if (upgradeParser) importer.ParserVersion++;
         await ImportAsync(SourceKind.StravaArchive);
 
@@ -226,6 +229,11 @@ public sealed partial class DatabaseIntegrationTests
         Assert.Equal("Local bike", reimported.GearName);
         Assert.Equal(tag, Assert.Single(reimported.Summary.Tags).Id);
         Assert.True(reimported.Summary.MutationVersion > pending.Members.Single().MutationVersion);
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            var afterImport = await db.Activities.Where(x => x.Id == activity.Id).Select(x => x.ExplorationInputVersion).SingleAsync();
+            Assert.Equal(upgradeParser, afterImport > explorationVersion);
+        }
         await Assert.ThrowsAsync<InvalidOperationException>(() => services.Organization.ApplyBatchAsync(pending));
         Assert.Single((await services.Activities.SearchAsync(new(owner))).Items);
         Assert.Single(Directory.EnumerateFiles(services.Paths.GetOwnerOriginalsPath(owner)));

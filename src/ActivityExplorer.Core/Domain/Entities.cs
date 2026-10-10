@@ -120,6 +120,7 @@ public sealed class Activity
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public ActivityStream? Stream { get; set; }
     public long MutationVersion { get; set; }
+    public long ExplorationInputVersion { get; set; }
     public List<ActivityTag> Tags { get; set; } = [];
     public List<ActivityLap> Laps { get; set; } = [];
     public List<SourceFile> SourceFiles { get; set; } = [];

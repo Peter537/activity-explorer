@@ -123,9 +123,10 @@ public sealed class ImportProcessor(
         if (exactSource is not null)
         {
             var originalProvider = exactSource.Provider;
+            Activity? exactActivity = null;
             if (exactSource.ActivityId.HasValue)
             {
-                var exactActivity = await db.Activities
+                exactActivity = await db.Activities
                     .Include(x => x.Stream)
                     .Include(x => x.Laps)
                     .Include(x => x.SourceFiles)
@@ -155,6 +156,7 @@ public sealed class ImportProcessor(
                          x.OwnerId == batch.OwnerId && x.Provider == candidate.Provider && x.Sha256 == candidate.Sha256,
                          cancellationToken))
             {
+                if (exactActivity is not null) exactActivity.ExplorationInputVersion++;
                 db.SourceFiles.Add(new SourceFile
                 {
                     OwnerId = batch.OwnerId,
@@ -221,6 +223,7 @@ public sealed class ImportProcessor(
                 ExternalId = candidate.ExternalId,
                 Length = candidate.Length
             });
+            activity.ExplorationInputVersion++;
 
             ApplyExternalId(activity, candidate.Provider, candidate.ExternalId);
             await db.SaveChangesAsync(cancellationToken);
@@ -360,6 +363,7 @@ public sealed class ImportProcessor(
     internal static void ReplaceTechnicalData(Activity target, ParsedActivity source, int parserVersion = FitActivityImporter.CurrentParserVersion)
     {
         target.MutationVersion++;
+        target.ExplorationInputVersion++;
         target.UpdatedAtUtc = DateTimeOffset.UtcNow;
         var bounds = GeometryCodec.Bounds(source.Points);
         var geometry = GeometryCodec.ToWkb(source.Points);

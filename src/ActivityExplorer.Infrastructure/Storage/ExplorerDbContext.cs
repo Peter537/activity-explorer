@@ -27,10 +27,19 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
     public DbSet<SavedSearch> SavedSearches => Set<SavedSearch>();
     public DbSet<PersonalGoal> Goals => Set<PersonalGoal>();
     public DbSet<GoalDefinitionRevision> GoalDefinitionRevisions => Set<GoalDefinitionRevision>();
+    public DbSet<ActivityExplorationIndex> ActivityExplorationIndexes => Set<ActivityExplorationIndex>();
+    public DbSet<ActivityExplorationCell> ActivityExplorationCells => Set<ActivityExplorationCell>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
+        modelBuilder.Entity<ActivityExplorationIndex>().HasKey(x => x.ActivityId);
+        modelBuilder.Entity<ActivityExplorationIndex>().HasOne(x => x.Activity).WithMany()
+            .HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ActivityExplorationCell>().HasKey(x => new { x.ActivityId, x.CellId });
+        modelBuilder.Entity<ActivityExplorationCell>().HasIndex(x => x.CellId);
+        modelBuilder.Entity<ActivityExplorationCell>().HasOne(x => x.Activity).WithMany()
+            .HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<PersonalGoal>().HasIndex(x => x.OwnerId);
         modelBuilder.Entity<PersonalGoal>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<GoalDefinitionRevision>().HasKey(x => new { x.GoalId, x.EffectiveFromEdition });

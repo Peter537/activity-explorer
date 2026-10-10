@@ -50,6 +50,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGoalService, GoalService>();
         services.AddHostedService<StatisticsRepairWorker>();
         services.AddSingleton<IMapFeatureService, MapFeatureService>();
+        services.AddSingleton<ExplorationSourceReader>();
+        services.AddSingleton<IExplorationIndexService, ExplorationIndexService>();
+        services.AddSingleton<IExplorationQueryService, ExplorationQueryService>();
         services.AddSingleton<IMapSettingsService, MapSettingsService>();
         services.AddSingleton<IProfileService, ProfileService>();
         services.AddSingleton<IImportHistoryService, ImportHistoryService>();

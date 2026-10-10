@@ -21,6 +21,7 @@ public sealed class DatabaseInitializer(
         await EnsureSegmentLinksAsync(db, cancellationToken);
         await EnsureOrganizationSchemaAsync(db, cancellationToken);
         await EnsureGoalsSchemaAsync(db, cancellationToken);
+        await EnsureExplorationSchemaAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -175,6 +176,41 @@ public sealed class DatabaseInitializer(
                 PRIMARY KEY ("GoalId", "EffectiveFromEdition"),
                 FOREIGN KEY ("GoalId") REFERENCES "Goals" ("Id") ON DELETE CASCADE
             );
+            """, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureExplorationSchemaAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var hasInputVersion = false;
+        await using (var command = db.Database.GetDbConnection().CreateCommand())
+        {
+            command.Transaction = transaction.GetDbTransaction();
+            command.CommandText = "PRAGMA table_info('Activities')";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (reader.GetString(1) == "ExplorationInputVersion") hasInputVersion = true;
+        }
+        if (!hasInputVersion)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Activities\" ADD COLUMN \"ExplorationInputVersion\" INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ActivityExplorationIndexes" (
+                "ActivityId" TEXT NOT NULL PRIMARY KEY,
+                "InputVersion" INTEGER NOT NULL,
+                "ComputationVersion" INTEGER NOT NULL,
+                "CellCount" INTEGER NOT NULL,
+                "IsLimited" INTEGER NOT NULL,
+                "Diagnostic" TEXT NULL,
+                FOREIGN KEY ("ActivityId") REFERENCES "Activities" ("Id") ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS "ActivityExplorationCells" (
+                "ActivityId" TEXT NOT NULL,
+                "CellId" INTEGER NOT NULL,
+                PRIMARY KEY ("ActivityId", "CellId"),
+                FOREIGN KEY ("ActivityId") REFERENCES "Activities" ("Id") ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ActivityExplorationCells_CellId" ON "ActivityExplorationCells" ("CellId");
             """, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }

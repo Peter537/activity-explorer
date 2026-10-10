@@ -38,4 +38,19 @@ public static class TrackCodec
         using var brotli = new BrotliStream(input, CompressionMode.Decompress);
         return JsonSerializer.Deserialize<List<TrackPoint>>(brotli, Options) ?? [];
     }
+
+    public static async ValueTask<IReadOnlyList<TrackPoint>> DecodeAsync(byte[] payload, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (payload.Length == 0) return [];
+        using var input = new MemoryStream(payload);
+        return await DecodeAsync(input, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<IReadOnlyList<TrackPoint>> DecodeAsync(Stream input, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await using var brotli = new BrotliStream(input, CompressionMode.Decompress, leaveOpen: true);
+        return await JsonSerializer.DeserializeAsync<List<TrackPoint>>(brotli, Options, cancellationToken).ConfigureAwait(false) ?? [];
+    }
 }

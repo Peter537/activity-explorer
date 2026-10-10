@@ -3,119 +3,135 @@
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
+@inject IExplorationIndexService ExplorationIndex
+@inject IExplorationQueryService ExplorationQueries
 
 <PageTitle>World Map - Activity Explorer</PageTitle>
-<PageHeader Title="World Map" Summary="Explore your activities, routes, and local segments together." />
+<PageHeader Title="World Map" Summary="Explore your GPS history, familiar places, and first discoveries." />
+<nav class="map-views" aria-label="Map view">
+    @foreach (var view in new[] { "lines", "frequency", "exploration" })
+    {
+        <a class="button @(_view == view ? "primary" : "")" aria-current="@(_view == view ? "page" : null)" href="@ViewUri(view)">@CultureInfo.InvariantCulture.TextInfo.ToTitleCase(view)</a>
+    }
+</nav>
 <form class="filter-bar map-filters" aria-label="Map filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
-    <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" ActivitiesOnly="true" />
+    <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" ActivitiesOnly="@(_view == "lines")" Disabled="@(_view == "exploration" && _cumulative)" />
     <button class="button primary" type="submit" disabled="@(_dateError is not null)">Apply filters</button>
     <button class="button" type="button" @onclick="Reset">Reset</button>
 </form>
 @if (_dirty && _hasMap) { <p class="notice" role="status">Apply filters to update these results.</p> }
+@if (_error is not null)
+{
+    <div class="notice exploration-error" role="alert"><p>@_error</p><button type="button" class="button" @onclick="Retry">Retry calculation</button><a class="button" href="/map">Reset map</a></div>
+    @if (_view == "exploration" && _cumulative && QueryThrough is not null)
+    {
+        <p><a class="button" href="@WithQuery(new() { ["through"] = null, ["cell"] = null, ["page"] = null, ["activityPage"] = null })">Use the default cumulative date</a></p>
+    }
+}
+@if (_view == "exploration")
+{
+    <div class="coverage-controls" role="group" aria-label="Exploration period mode">
+        <a class="button @(!_cumulative ? "primary" : "")" href="@CoverageUri(false)" aria-current="@(!_cumulative ? "true" : null)">Range</a>
+        <a class="button @(_cumulative ? "primary" : "")" href="@CoverageUri(true)" aria-current="@(_cumulative ? "true" : null)">Cumulative</a>
+        <span>@(_cumulative ? "All history through the selected date. Your range is retained." : "Visits in the applied period; discoveries checked against all history.")</span>
+    </div>
+}
+@if (_view != "lines")
+{
+    @if (_building)
+    {
+        <div class="exploration-build" role="status" aria-live="polite">
+            <span>@(_progress?.Message ?? "Preparing exploration history…")</span>
+            @if (_progress is { Total: > 0 } progress) { <progress value="@progress.Completed" max="@progress.Total" aria-label="Activities processed"></progress><span>@progress.Completed.ToString("N0") / @progress.Total.ToString("N0") activities</span> }
+            <button class="button" type="button" @onclick="Cancel">Cancel calculation</button>
+        </div>
+    }
+    else if (_cancelled)
+    {
+        <div class="notice" role="status">Calculation cancelled. Completed activities are saved. <button class="button" type="button" @onclick="Retry">Resume calculation</button></div>
+    }
+    @if (_result?.Summary is { } summary)
+    {
+        <dl class="exploration-totals" aria-label="Exploration totals">
+            <div><dt>@(_cumulative && _view == "exploration" ? "Cells visited through date" : "Visited cells")</dt><dd>@summary.VisitedCells.ToString("N0")</dd></div>
+            <div><dt>@(_cumulative && _view == "exploration" ? "New on this date" : "New in period")</dt><dd>@summary.NewCells.ToString("N0")</dd></div>
+            <div><dt>GPS activities</dt><dd>@summary.MatchingActivities.ToString("N0")</dd></div>
+            <div><dt>Most activities in one cell</dt><dd>@summary.MaximumFrequency.ToString("N0")</dd></div>
+        </dl>
+        <p class="exploration-scope">Calculation complete · @(ProfileState.SelectedOwnerId.HasValue ? "Selected profile" : "Union across all profiles") · Fixed zoom-14 cells; their ground area varies with latitude.</p>
+        @if (summary.LimitedActivities > 0)
+        {
+            <div class="notice exploration-limited" role="status"><p><strong>Limited coverage for @summary.LimitedActivities.ToString("N0") @(summary.LimitedActivities == 1 ? "activity" : "activities").</strong> Only recorded GPS points could be verified. Connecting travel is excluded, so coverage and first discoveries may be incomplete.</p><button class="button" type="button" @onclick="Recheck">Recheck limited activities</button></div>
+        }
+        @if (summary.VisitedCells == 0) { <p class="notice" role="status">No GPS cells match this view. Broaden the period or sport, or import activities with GPS.</p> }
+    }
+    @if (_view == "exploration" && _cumulative && _timelineFirst is { } first && _timelineLast is { } last)
+    {
+        <div class="exploration-timeline">
+            <label><span>Through reporting date</span><input type="date" min="@DateText(first)" max="@DateText(last)" value="@DateText(_timelineThrough)" @onchange="ThroughChanged" /></label>
+            <label class="timeline-slider"><span>Cumulative exploration</span><input type="range" min="@first.DayNumber" max="@last.DayNumber" value="@((_timelineThrough ?? last).DayNumber)" aria-valuetext="@DateText(_timelineThrough)" @onchange="SliderChanged" /></label>
+            <span>@first.ToString("dd MMM yyyy") – @last.ToString("dd MMM yyyy")</span>
+        </div>
+    }
+}
 @if (_hasMap)
 {
-    <section class="panel flush map-panel" @key="_mapKey">
-        <MapCanvas ActivityUrl="@Url("activities")" RouteUrl="@Url("routes")" SegmentUrl="@Url("segments")"
-                   CssClass="world-map" Label="Activity, route, and segment world map" ShowDisclosure="true" ShowLoadStatus="true" />
+    <section class="panel flush map-panel">
+        <MapCanvas ActivityUrl="@(_view == "lines" ? LineUrl("activities") : null)" RouteUrl="@(_view == "lines" ? LineUrl("routes") : null)" SegmentUrl="@(_view == "lines" ? LineUrl("segments") : null)"
+                   ExplorationUrl="@ExplorationUrl" ExplorationView="@_view" SelectedCellId="@_selectedCell" SelectedCellIdChanged="SelectCell" ExplorationInvalidated="Retry" ExplorationSummaryChanged="ViewportSummaryChanged"
+                   CssClass="world-map" Label="@(_view == "lines" ? "Activity, route, and segment world map" : "GPS activity cells world map")" ShowDisclosure="true" ShowLoadStatus="true" />
     </section>
-    <div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div>
+    @if (_view == "lines") { <div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div> }
+    else if (_result?.Summary is not null)
+    {
+        <div class="map-legend exploration-legend" aria-label="Cell legend">
+            @if (_view == "frequency") { <span class="frequency-scale" aria-hidden="true"></span><span>Fewer → more distinct activities · Same scale across the full filtered history</span> }
+            else { <span class="visited-key" aria-hidden="true"></span><span>Visited</span><span class="new-key" aria-hidden="true"></span><span>@(_cumulative ? "First discovered on this date" : "New in period")</span> }
+        </div>
+        <p class="exploration-help">Zoomed-out groups show visited / new cell counts and their highest cell frequency. Select a group to zoom in, or use the cell list below.</p>
+    }
 }
-
-@code {
-    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
-    [Parameter, SupplyParameterFromQuery(Name = "from")] public string? QueryFrom { get; set; }
-    [Parameter, SupplyParameterFromQuery(Name = "to")] public string? QueryTo { get; set; }
-    [Parameter, SupplyParameterFromQuery(Name = "period")] public string? QueryPeriod { get; set; }
-    private string _sport = "", _appliedSport = "";
-    private ReportingDateInput _dates = new();
-    private IReadOnlyList<ResolvedOwnerPeriod> _periods = [];
-    private ReportingDateSelection _appliedDates = new(ReportingPreset.AllTime);
-    private Guid? _appliedOwner;
-    private DateTimeOffset _asOfUtc, _appliedAsOfUtc;
-    private string? _dateError;
-    private bool _dirty, _hasMap;
-    private int _mapKey;
-
-    protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
-    protected override void OnParametersSet()
-    {
-        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : "";
-        _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
-        _asOfUtc = Clock.GetUtcNow();
-        _dirty = false;
-        _hasMap = false;
-        if (!ValidateDates()) return;
-        var target = BuildUri();
-        if (QueryPeriod is not null && Navigation.ToBaseRelativePath(Navigation.Uri) != target.TrimStart('/'))
-        {
-            Navigation.NavigateTo(target, replace: true);
-            return;
-        }
-        ApplyMap();
-    }
-
-    private bool ValidateDates()
-    {
-        try
-        {
-            var selection = _dates.Selection;
-            _dates.Period = ReportingDates.ToSlug(selection.Preset);
-            _periods = ProfileState.Profiles.Where(x => !ProfileState.SelectedOwnerId.HasValue || x.Id == ProfileState.SelectedOwnerId)
-                .Select(x => ReportingDates.Resolve(selection, x.Id, x.DisplayName, x.TimeZoneId, _asOfUtc)).ToArray();
-            if (_periods.Count == 0) _ = ReportingDates.Resolve(selection, Guid.Empty, "", null, _asOfUtc);
-            _dateError = null;
-            return true;
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
-        { _dateError = exception.Message; _periods = []; return false; }
-    }
-
-    private string Url(string kind)
-    {
-        var parts = new List<string>();
-        if (_appliedOwner.HasValue) parts.Add($"ownerId={_appliedOwner}");
-        if (!string.IsNullOrWhiteSpace(_appliedSport)) parts.Add($"sport={Uri.EscapeDataString(_appliedSport)}");
-        if (kind == "activities")
-        {
-            if (_appliedDates.Preset == ReportingPreset.Custom)
+@if (_view != "lines" && _result?.Summary is not null)
+{
+    <div class="exploration-details">
+        <section class="panel cell-list" aria-labelledby="cells-heading">
+            <h2 id="cells-heading">Visited cells</h2>
+            <p>Most frequently visited first. First and last visits use all history in this profile and sport scope.</p>
+            @if (_result.Cells.Items.Count > 0)
             {
-                if (_appliedDates.From.HasValue) parts.Add($"from={ReportingDateInput.DateText(_appliedDates.From)}");
-                if (_appliedDates.To.HasValue) parts.Add($"to={ReportingDateInput.DateText(_appliedDates.To)}");
+                <div class="exploration-table"><table><thead><tr><th>Cell</th><th>Activities</th><th>First visit</th><th>Last visit</th></tr></thead><tbody>
+                    @foreach (var cell in _result.Cells.Items)
+                    {
+                        <tr class="@(_selectedCell == cell.CellId ? "selected-cell" : "")"><th scope="row"><a href="@CellUri(cell.CellId)">@cell.X / @cell.Y</a>@if (cell.IsNew) { <small>New</small> }</th><td>@cell.ActivityCount.ToString("N0")</td><td>@cell.FirstVisit.ToString("dd MMM yyyy")</td><td>@cell.LastVisit.ToString("dd MMM yyyy")</td></tr>
+                    }
+                </tbody></table></div>
+                <div class="pager"><button class="button" disabled="@(_result.Cells.Page <= 1)" @onclick="() => ChangeCellPage(-1)">Previous cells</button><span>Page @_result.Cells.Page of @_result.Cells.TotalPages</span><button class="button" disabled="@(_result.Cells.Page >= _result.Cells.TotalPages)" @onclick="() => ChangeCellPage(1)">Next cells</button></div>
             }
-            else if (_appliedDates.Preset != ReportingPreset.AllTime) parts.Add($"period={ReportingDates.ToSlug(_appliedDates.Preset)}");
-            parts.Add($"asOf={Uri.EscapeDataString(_appliedAsOfUtc.ToString("O", CultureInfo.InvariantCulture))}");
+            else { <p>No cells in this period.</p> }
+        </section>
+        @if (_selectedCell.HasValue)
+        {
+            <section class="panel cell-detail" aria-labelledby="cell-heading">
+                <div class="panel-heading"><h2 id="cell-heading">Selected cell</h2><a class="button" href="@CellUri(null)">Close cell</a></div>
+                @if (_cellDetail is { } detail)
+                {
+                    <p><strong>@detail.Cell.X / @detail.Cell.Y</strong> · @detail.Cell.ActivityCount.ToString("N0") matching activities</p>
+                    <p>First visit @detail.Cell.FirstVisit.ToString("dd MMM yyyy") · Last visit @detail.Cell.LastVisit.ToString("dd MMM yyyy") · Reporting dates</p>
+                    <ul class="cell-contributors">@foreach (var activity in detail.Activities.Items) { <li><a href="@($"/activities/{activity.ActivityId}")">@activity.Title</a><small>@activity.OwnerName · @activity.Sport · @activity.Date.ToString("dd MMM yyyy")</small></li> }</ul>
+                    <div class="pager"><button class="button" disabled="@(detail.Activities.Page <= 1)" @onclick="() => ChangeContributionPage(-1)">Previous activities</button><span>Page @detail.Activities.Page of @detail.Activities.TotalPages</span><button class="button" disabled="@(detail.Activities.Page >= detail.Activities.TotalPages)" @onclick="() => ChangeContributionPage(1)">Next activities</button></div>
+                }
+                else { <p>No matching visits for this cell. Choose another cell or broaden the period.</p> }
+            </section>
         }
-        return $"/internal/map/{kind}" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
-    }
-
-    private void ApplyMap()
-    {
-        _appliedSport = _sport;
-        _appliedDates = _dates.Selection;
-        _appliedOwner = ProfileState.SelectedOwnerId;
-        _appliedAsOfUtc = _asOfUtc;
-        _hasMap = true;
-        _dirty = false;
-        _mapKey++;
-    }
-    private void RefreshMap()
-    {
-        _asOfUtc = Clock.GetUtcNow();
-        if (!ValidateDates()) return;
-        var target = BuildUri();
-        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) ApplyMap();
-        else Navigation.NavigateTo(target);
-    }
-    private void FiltersChanged() { _dirty = true; _asOfUtc = Clock.GetUtcNow(); ValidateDates(); }
-    private void Reset() { _sport = ""; _dates = new(); RefreshMap(); }
-    private string BuildUri()
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(_sport)) parts.Add($"sport={Uri.EscapeDataString(_sport.ToLowerInvariant())}");
-        foreach (var pair in _dates.QueryValues()) parts.Add($"{pair.Key}={Uri.EscapeDataString(pair.Value)}");
-        return "/map" + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
-    }
-    private void ProfileChanged() => InvokeAsync(() => { _hasMap = false; RefreshMap(); StateHasChanged(); });
-    public void Dispose() => ProfileState.Changed -= ProfileChanged;
+        @if (_view == "exploration")
+        {
+            <section class="panel discovery-history" aria-labelledby="discovery-heading">
+                <h2 id="discovery-heading">Monthly first discoveries</h2>
+                <p>Each cell appears once, in its earliest reporting month across the selected profiles and sport. This history is independent of the range filter.</p>
+                <table><thead><tr><th>Month</th><th>New cells</th></tr></thead><tbody>@foreach (var month in _result.Months) { <tr><th scope="row">@month.Month.ToString("MMM yyyy")</th><td>@month.NewCells.ToString("N0")</td></tr> }</tbody></table>
+                <div class="pager"><button class="button" disabled="@(_result.HistoryMonth < new DateOnly(2, 12, 1))" @onclick="() => ChangeHistory(-12)">Earlier year</button><span>Twelve months</span><button class="button" disabled="@(_result.HistoryMonth.Year >= 9999)" @onclick="() => ChangeHistory(12)">Later year</button></div>
+            </section>
+        }
+    </div>
 }

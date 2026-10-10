@@ -17,6 +17,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Deduplicates exact files and equivalent activities across formats while retaining provenance.
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Shows activity count, distance, moving time, and ascent for the complete filtered result, with shared date shortcuts on Activities and World Map.
+- Maps distinct activity frequency and exploration across recorded GPS history, with visited/new cells, first discoveries, and a cumulative timeline. See [Maps](docs/maps.md#frequency-and-exploration).
 - Organizes activities with profile-owned tags and named saved searches, and reviews exact batches of tag or gear changes before applying them atomically.
 - Compares training periods, charts weekly or monthly progress across five summary metrics, and opens daily activity lists from a monthly training calendar.
 - Tracks personal distance, moving-time, ascent, activity-count, and active-day goals with recurring editions, pace guides, history, and contributing activities.
@@ -128,7 +129,7 @@ See [Importing data](docs/imports.md) and [Legal and export guides](docs/legal-a
 
 Choose a **Period** on Activities or World Map, then **Apply filters**. Shortcuts include Today, This week, Last week, This month, Last month, Year to date, Last year, and All time. **Custom range** includes both endpoint dates and allows either endpoint to be blank. Weeks run Monday–Sunday; This week and This month include the full calendar period, while Year to date ends today.
 
-Dates use the activity owner's **Reporting timezone** in Profiles, which defaults to **Europe/Copenhagen**. In **All profiles**, each owner's local start date and local today determine membership. Activities shows owner-local dates and totals across every matching page, including moving durations longer than 24 hours. World Map applies dates to activity lines only.
+Dates use the activity owner's **Reporting timezone** in Profiles, which defaults to **Europe/Copenhagen**. In **All profiles**, each owner's local start date and local today determine membership. Activities shows owner-local dates and totals across every matching page, including moving durations longer than 24 hours. World Map applies the period to activity lines, Frequency, and Exploration Range; Cumulative uses its separate inclusive date. Routes and segments retain their owner/sport filters.
 
 Relative date URLs resolve again on refresh; sorting and pagination retain the displayed period. Invalid dates and reversed ranges remain visible for correction. Editing filters clears activity selection and deletion confirmation, and requires applying the filters before selection or deletion becomes available again. An all-filtered deletion confirms exact IDs, excluding activities imported after confirmation. See [Maps](docs/maps.md#reporting-dates-and-urls) for date URL parameters.
 

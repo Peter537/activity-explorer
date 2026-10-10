@@ -155,6 +155,18 @@ internalApi.MapGet("/map/routes", (HttpRequest request, IMapFeatureService maps,
     MapEndpointHandler.ExecuteAsync(request, maps.GetRoutesAsync, token));
 internalApi.MapGet("/map/segments", (HttpRequest request, IMapFeatureService maps, CancellationToken token) =>
     MapEndpointHandler.ExecuteAsync(request, maps.GetSegmentsAsync, token));
+internalApi.MapGet("/map/exploration", async (HttpRequest request, IExplorationQueryService exploration, CancellationToken token) =>
+{
+    try
+    {
+        var bounds = MapQueryParser.Parse(request);
+        return Results.Json(await exploration.GetViewportAsync(ExplorationQueryInput.FromRequest(request, bounds), bounds, token));
+    }
+    catch (Exception exception) when (exception is BadHttpRequestException or ArgumentException)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
+});
 internalApi.MapGet("/originals/{id:guid}", async (
     Guid id, IDbContextFactory<ExplorerDbContext> factory, IOriginalStore originals, CancellationToken token) =>
 {

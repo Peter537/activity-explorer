@@ -1,5 +1,6 @@
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
+using ActivityExplorer.Web.Services;
 using Microsoft.AspNetCore.Http;
 
 namespace ActivityExplorer.Tests;
@@ -73,5 +74,32 @@ public sealed class MapQueryParserTests
         var context = new DefaultHttpContext();
         context.Request.QueryString = new QueryString(queryString);
         return MapQueryParser.Parse(context.Request);
+    }
+
+    [Theory]
+    [InlineData("?view=frequency&from=2026-03-01&to=2026-04-01", false)]
+    [InlineData("?view=exploration&coverage=cumulative&through=2026-03-20&from=2026-03-01&to=2026-04-01", true)]
+    public void Exploration_endpoint_preserves_date_range_independently_of_coverage(string queryString, bool cumulative)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.QueryString = new(queryString);
+        var query = ExplorationQueryInput.FromRequest(context.Request, MapQueryParser.Parse(context.Request));
+
+        Assert.Equal(ReportingPreset.Custom, query.Dates.Preset);
+        Assert.Equal(new DateOnly(2026, 3, 1), query.Dates.From);
+        Assert.Equal(new DateOnly(2026, 4, 1), query.Dates.To);
+        Assert.Equal(cumulative, query.Cumulative);
+        Assert.Equal(cumulative ? new DateOnly(2026, 3, 20) : (DateOnly?)null, query.Through);
+    }
+
+    [Theory]
+    [InlineData("?view=unknown")]
+    [InlineData("?view=exploration&coverage=unknown")]
+    [InlineData("?view=exploration&through=2026-02-30")]
+    public void Exploration_endpoint_rejects_invalid_view_coverage_and_dates(string queryString)
+    {
+        var context = new DefaultHttpContext();
+        context.Request.QueryString = new(queryString);
+        Assert.Throws<ArgumentException>(() => ExplorationQueryInput.FromRequest(context.Request, MapQueryParser.Parse(context.Request)));
     }
 }

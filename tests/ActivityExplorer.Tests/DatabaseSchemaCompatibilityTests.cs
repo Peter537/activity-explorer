@@ -6,6 +6,33 @@ namespace ActivityExplorer.Tests;
 public sealed class DatabaseSchemaCompatibilityTests
 {
     [Fact]
+    public async Task Exploration_upgrade_is_additive_idempotent_and_cascades_only_derived_memberships()
+    {
+        var directory = TestSupport.NewDirectory();
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(directory, "legacy-exploration.db")}").Options;
+        await using var db = new ExplorerDbContext(options);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE "Activities" ("Id" TEXT NOT NULL PRIMARY KEY, "Title" TEXT NOT NULL);
+            INSERT INTO "Activities" VALUES ('activity', 'Preserved title'), ('other', 'Other title');
+            """);
+        await DatabaseInitializer.EnsureExplorationSchemaAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO "ActivityExplorationIndexes" VALUES ('activity', 0, 1, 1, 0, NULL), ('other', 0, 1, 1, 1, 'Point only');
+            INSERT INTO "ActivityExplorationCells" VALUES ('activity', 42), ('other', 42);
+            """);
+        await DatabaseInitializer.EnsureExplorationSchemaAsync(db);
+        Assert.Equal("Preserved title", await ScalarAsync<string>(db, "SELECT \"Title\" FROM \"Activities\" WHERE \"Id\" = 'activity'"));
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT \"ExplorationInputVersion\" FROM \"Activities\" WHERE \"Id\" = 'activity'"));
+        Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"ActivityExplorationCells\""));
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"ActivityExplorationCells\" VALUES ('activity', 42)"));
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Activities\" WHERE \"Id\" = 'activity'");
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"ActivityExplorationCells\""));
+        Assert.Equal("Point only", await ScalarAsync<string>(db, "SELECT \"Diagnostic\" FROM \"ActivityExplorationIndexes\""));
+    }
+
+    [Fact]
     public async Task Goal_upgrade_is_additive_idempotent_and_cascades_definitions_with_their_owner()
     {
         var directory = TestSupport.NewDirectory();

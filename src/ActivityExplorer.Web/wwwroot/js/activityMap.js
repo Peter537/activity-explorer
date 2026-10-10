@@ -33,13 +33,16 @@ window.activityExplorerMap = (() => {
         return baseUrl + separator + new URLSearchParams({
             west: bounds.west.toString(), south: bounds.south.toString(),
             east: bounds.east.toString(), north: bounds.north.toString(),
-            zoom: Math.round(map.getZoom()).toString()
+            zoom: Math.floor(map.getZoom()).toString()
         });
     }
 
     async function setLayer(entry, name, url, color, width, signal) {
         const map = entry.map;
-        if (!url || !map.isStyleLoaded()) return 0;
+        if (!url) {
+            map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
+            return 0;
+        }
         try {
             const response = await fetch(queryUrl(url, map), { headers: { "Accept": "application/json" }, signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -359,19 +362,111 @@ window.activityExplorerMap = (() => {
         refreshComparisonLayers(entry);
     }
 
+    function paintExploration(entry) {
+        const map = entry.map;
+        if (!map.getLayer("exploration-fill")) return;
+        map.setPaintProperty("exploration-fill", "fill-color", entry.options.explorationView === "frequency"
+            ? ["interpolate", ["linear"], ["get", "weight"], 0, "#dcece5", 0.5, "#68a28d", 1, "#174c3f"]
+            : ["case", [">", ["get", "newCells"], 0], "#d06a35", "#246b59"]);
+        map.setPaintProperty("exploration-outline", "line-color", ["case",
+            ["==", ["get", "cellId"], entry.options.selectedCellId ?? -2], "#17211d", "#45695b"]);
+        map.setPaintProperty("exploration-outline", "line-width", ["case",
+            ["==", ["get", "cellId"], entry.options.selectedCellId ?? -2], 3, 0.7]);
+    }
+
+    async function setExploration(entry, signal) {
+        const map = entry.map;
+        if (!entry.options.explorationUrl) {
+            map.getSource("exploration")?.setData({ type: "FeatureCollection", features: [] });
+            return 0;
+        }
+        try {
+            const response = await fetch(queryUrl(entry.options.explorationUrl, map), { headers: { "Accept": "application/json" }, signal });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const result = await response.json();
+            if (signal.aborted || entry.disposed) return 0;
+            if (!result.index.isComplete || !result.summary) {
+                map.getSource("exploration")?.setData({ type: "FeatureCollection", features: [] });
+                await entry.dotnet?.invokeMethodAsync("InvalidateExploration");
+                return 0;
+            }
+            const maximum = Math.max(1, result.summary.maximumFrequency);
+            const data = { type: "FeatureCollection", features: result.cells.map(cell => ({
+                type: "Feature",
+                geometry: { type: "Polygon", coordinates: [[[cell.west, cell.south], [cell.east, cell.south],
+                    [cell.east, cell.north], [cell.west, cell.north], [cell.west, cell.south]]] },
+                properties: { ...cell, cellId: cell.zoom === 14 ? cell.y * 16384 + cell.x : -1,
+                    weight: Math.log1p(cell.activityCount) / Math.log1p(maximum) }
+            })) };
+            if (map.getSource("exploration")) map.getSource("exploration").setData(data);
+            else {
+                map.addSource("exploration", { type: "geojson", data });
+                map.addLayer({ id: "exploration-fill", type: "fill", source: "exploration", paint: { "fill-color": "#246b59", "fill-opacity": 0.68 } });
+                map.addLayer({ id: "exploration-outline", type: "line", source: "exploration", paint: { "line-color": "#45695b", "line-width": 0.7 } });
+            }
+            paintExploration(entry);
+            map.getCanvas().dataset.explorationRenderZoom = result.renderZoom;
+            map.getCanvas().dataset.explorationFeatures = result.cells.length;
+            await entry.dotnet?.invokeMethodAsync("UpdateExplorationSummary", result.summary);
+            return result.cells.length;
+        } catch (error) {
+            if (signal.aborted || entry.disposed) return 0;
+            map.getSource("exploration")?.setData({ type: "FeatureCollection", features: [] });
+            console.warn("Activity Explorer could not load exploration cells.", error);
+            return null;
+        }
+    }
+
+    function explorationInteraction(entry) {
+        const map = entry.map;
+        map.on("click", "exploration-fill", event => {
+            const cell = event.features?.[0]?.properties;
+            if (!cell) return;
+            entry.cellPopup?.remove();
+            const description = document.createElement("div");
+            if (cell.zoom < 14) {
+                description.textContent = `${cell.visitedCells} visited / ${cell.newCells} new cells. Highest frequency: ${cell.activityCount} activities.`;
+                const shift = Math.round((map.getCenter().lng - (cell.west + cell.east) / 2) / 360) * 360;
+                map.fitBounds([[cell.west + shift, cell.south], [cell.east + shift, cell.north]], { padding: 40, maxZoom: 16, duration: 0 });
+            } else {
+                description.textContent = `Cell ${cell.x} / ${cell.y} · ${cell.activityCount} activities. Activity details are below the map.`;
+                entry.dotnet?.invokeMethodAsync("SelectExplorationCell", cell.cellId).catch(() => {});
+            }
+            entry.cellPopup = new entry.maplibre.Popup().setLngLat(event.lngLat).setDOMContent(description).addTo(map);
+        });
+        map.on("mouseenter", "exploration-fill", () => map.getCanvas().style.cursor = "pointer");
+        map.on("mouseleave", "exploration-fill", () => map.getCanvas().style.cursor = "");
+    }
+
+    function updateLayers(id, options) {
+        const entry = maps.get(id);
+        if (!entry || entry.disposed) return;
+        const changed = ["activityUrl", "routeUrl", "segmentUrl", "explorationUrl"].some(key => entry.options[key] !== options[key]);
+        if (changed || entry.options.explorationView !== options.explorationView) entry.cellPopup?.remove();
+        Object.assign(entry.options, options);
+        entry.map.getCanvas().setAttribute("aria-label", options.label || "Activity map");
+        paintExploration(entry);
+        if (changed) return refresh(entry);
+    }
+
     async function refresh(entry) {
         if (entry.disposed) return;
         entry.request?.abort();
+        // Source updates temporarily make isStyleLoaded false. Only a style replacement
+        // should defer a request; style.load will use the latest layer options.
+        if (!entry.styleReady) return;
         const request = new AbortController();
         entry.request = request;
+        const revision = entry.layerRevision = (entry.layerRevision || 0) + 1;
         const report = (loading, failed, count) => entry.options.reportLoadStatus
-            ? entry.dotnet?.invokeMethodAsync("UpdateLayerStatus", loading, failed, count).catch(() => {})
+            ? entry.dotnet?.invokeMethodAsync("UpdateLayerStatus", loading, failed, count, revision).catch(() => {})
             : Promise.resolve();
         await report(true, false, 0);
         const counts = await Promise.all([
             setLayer(entry, "activities", entry.options.activityUrl, "#246b59", 2.5, request.signal),
             setLayer(entry, "routes", entry.options.routeUrl, "#3366cc", 4, request.signal),
-            setLayer(entry, "segments", entry.options.segmentUrl, "#d06a35", 5, request.signal)
+            setLayer(entry, "segments", entry.options.segmentUrl, "#d06a35", 5, request.signal),
+            setExploration(entry, request.signal)
         ]);
         if (request.signal.aborted) return;
         refreshTrackLayers(entry);
@@ -406,7 +501,9 @@ window.activityExplorerMap = (() => {
         canvas.setAttribute("aria-label", options.label || "Activity map");
         if (options.describedBy) canvas.setAttribute("aria-describedby", options.describedBy);
 
-        const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap };
+        const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap, styleReady: false };
+        ["activities", "routes", "segments"].forEach(layer => popup(entry, layer));
+        explorationInteraction(entry);
         indexActivityCoordinates(entry);
         maps.set(id, entry);
         if (options.inspectionGroupId) {
@@ -425,10 +522,12 @@ window.activityExplorerMap = (() => {
             compact: true,
             customAttribution: options.blankBaseMap ? "Local tracks - Activity Explorer" : '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>'
         }));
-        map.on("load", async () => {
-            await refresh(entry);
+        map.on("style.load", () => {
+            entry.styleReady = true;
+            refresh(entry);
+        });
+        map.on("load", () => {
             if (entry.disposed) return;
-            ["activities", "routes", "segments"].forEach(layer => { if (map.getLayer(layer)) popup(entry, layer); });
             const fitCoordinates = options.activityTrack ? projectionCoordinates(options.activityTrack) : options.inlineCoordinates;
             if (fitCoordinates?.length) {
                 const bounds = fitCoordinates.reduce((value, coordinate) => value.extend(coordinate), new maplibregl.LngLatBounds(fitCoordinates[0], fitCoordinates[0]));
@@ -447,8 +546,8 @@ window.activityExplorerMap = (() => {
         map.on("error", event => {
             if (!entry.fallback && event?.error) {
                 entry.fallback = true;
+                entry.styleReady = false;
                 map.setStyle(blankStyle());
-                map.once("styledata", () => refresh(entry));
             }
         });
     }
@@ -552,5 +651,5 @@ window.activityExplorerMap = (() => {
 
     function reload(id) { const entry = maps.get(id); if (entry) return refresh(entry); }
 
-    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, updateActivity, updateActivitySelection, updateComparison, updateHighlight, destroy, reload };
+    return { create, addCenterPoint, undo, clear, updateLayers, updateSelection, updateSections, updateActivity, updateActivitySelection, updateComparison, updateHighlight, destroy, reload };
 })();

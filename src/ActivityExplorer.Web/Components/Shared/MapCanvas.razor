@@ -13,7 +13,7 @@
 {
     <div class="map-load-status" role="@(_layersFailed ? "alert" : "status")">
         <p>@_layerStatus</p>
-        @if (_layersFailed) { <button class="button" type="button" @onclick="RetryLayersAsync">Retry map lines</button> }
+        @if (_layersFailed) { <button class="button" type="button" @onclick="RetryLayersAsync">@(_cellsView ? "Retry map cells" : "Retry map lines")</button> }
     </div>
 }
 @if (Editable)
@@ -31,6 +31,12 @@
     [Parameter] public string? ActivityUrl { get; set; }
     [Parameter] public string? RouteUrl { get; set; }
     [Parameter] public string? SegmentUrl { get; set; }
+    [Parameter] public string? ExplorationUrl { get; set; }
+    [Parameter] public string? ExplorationView { get; set; }
+    [Parameter] public int? SelectedCellId { get; set; }
+    [Parameter] public EventCallback<int> SelectedCellIdChanged { get; set; }
+    [Parameter] public EventCallback ExplorationInvalidated { get; set; }
+    [Parameter] public EventCallback<ExplorationSummary> ExplorationSummaryChanged { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? InlinePoints { get; set; }
     [Parameter] public IReadOnlyList<TrackPoint>? HighlightPoints { get; set; }
     [Parameter] public ActivityMapProjection? ActivityTrack { get; set; }
@@ -67,6 +73,11 @@
     private MapPrivacyMode _mode = MapPrivacyMode.Blank;
     private string _layerStatus = "Loading map lines...";
     private bool _layersFailed;
+    private bool _cellsView => ExplorationView is "frequency" or "exploration";
+    private int _layerRevision;
+    private (string?, string?, string?, string?, string?, string, int?) _renderedLayers;
+    private (string?, string?, string?, string?, string?, string, int?) CurrentLayers =>
+        (ActivityUrl, RouteUrl, SegmentUrl, ExplorationUrl, ExplorationView, Label, SelectedCellId);
 
     protected override async Task OnInitializedAsync() => _mode = await MapSettings.GetModeAsync();
 
@@ -83,8 +94,19 @@
         var selectionStart = SelectionStartIndex;
         var selectionEnd = SelectionEndIndex;
         var selectionReversed = SelectionReversed;
+        var layers = CurrentLayers;
         if (!firstRender)
         {
+            if (_initialized && _renderedLayers != layers)
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateLayers", _id, new
+                {
+                    activityUrl = layers.Item1, routeUrl = layers.Item2, segmentUrl = layers.Item3,
+                    explorationUrl = layers.Item4, explorationView = layers.Item5, label = layers.Item6,
+                    selectedCellId = layers.Item7
+                });
+                _renderedLayers = layers;
+            }
             if (_initialized && !ReferenceEquals(_renderedHighlightPoints, highlightPoints))
             {
                 await JS.InvokeVoidAsync("activityExplorerMap.updateHighlight", _id, Coordinates(highlightPoints));
@@ -137,6 +159,9 @@
             activityUrl = ActivityUrl,
             routeUrl = RouteUrl,
             segmentUrl = SegmentUrl,
+            explorationUrl = ExplorationUrl,
+            explorationView = ExplorationView,
+            selectedCellId = SelectedCellId,
             inlineCoordinates = coordinates,
             highlightCoordinates,
             activityTrack,
@@ -166,6 +191,7 @@
             return;
         }
         _initialized = true;
+        _renderedLayers = layers;
         _renderedSections = sections;
         _renderedSectionId = sectionId;
         _renderedActivityTrack = activityTrack;
@@ -178,14 +204,30 @@
     }
 
     [JSInvokable]
-    public Task UpdateLayerStatus(bool loading, bool failed, int count) => InvokeAsync(() =>
+    public Task UpdateLayerStatus(bool loading, bool failed, int count, int revision) => InvokeAsync(() =>
     {
+        if (_disposed || revision < _layerRevision) return;
+        _layerRevision = revision;
         _layersFailed = failed;
-        _layerStatus = loading ? "Loading map lines..." : failed
-            ? "Some map lines could not be loaded. Retry to refresh this view."
-            : count == 0 ? "No lines in this view. Adjust the filters or zoom out." : "";
+        _layerStatus = _cellsView
+            ? string.IsNullOrEmpty(ExplorationUrl) ? "" : loading ? "Loading map cells..." : failed
+                ? "Map cells could not be loaded. Retry to refresh this view."
+                : count == 0 ? "No cells in this view. Adjust the filters or zoom out." : ""
+            : loading ? "Loading map lines..." : failed
+                ? "Some map lines could not be loaded. Retry to refresh this view."
+                : count == 0 ? "No lines in this view. Adjust the filters or zoom out." : "";
         StateHasChanged();
     });
+
+    [JSInvokable]
+    public Task SelectExplorationCell(int cellId) => cellId is >= 0 and < 268435456
+        ? SelectedCellIdChanged.InvokeAsync(cellId) : Task.CompletedTask;
+
+    [JSInvokable]
+    public Task InvalidateExploration() => ExplorationInvalidated.InvokeAsync();
+
+    [JSInvokable]
+    public Task UpdateExplorationSummary(ExplorationSummary summary) => ExplorationSummaryChanged.InvokeAsync(summary);
 
     private async Task RetryLayersAsync() => await JS.InvokeVoidAsync("activityExplorerMap.reload", _id);
 
@@ -211,7 +253,7 @@
     public ValueTask UndoAsync() => JS.InvokeVoidAsync("activityExplorerMap.undo", _id);
     public ValueTask ClearAsync() => JS.InvokeVoidAsync("activityExplorerMap.clear", _id);
 
-    private bool HasPendingUpdates => !ReferenceEquals(_renderedActivityTrack, ActivityTrack) ||
+    private bool HasPendingUpdates => _renderedLayers != CurrentLayers || !ReferenceEquals(_renderedActivityTrack, ActivityTrack) ||
         !ReferenceEquals(_renderedActivitySelection, ActivitySelection) ||
         !ReferenceEquals(_renderedBaselineComparisonTrack, BaselineComparisonTrack) ||
         !ReferenceEquals(_renderedComparisonTrack, ComparisonTrack) ||
