@@ -50,6 +50,12 @@ Core's `ActivityRange` identifies endpoints through original source brackets, in
 
 `IActivityRangeAnalyzer` calculates full-source metrics and gap-separated map projections in Infrastructure. It reports available contributions, covered seconds, completeness, and distance method without persistence or external requests. The Web layer owns versioned URL serialization, validation recovery, and the selected interval. Query-only navigation reuses the loaded activity; superseded loads and calculations are cancelled. Chart hit testing uses source-axis data independently of downsampling, and chart/map highlights use supported source edges. The activity map projection is separate from the segment creator's existing integer index contract.
 
+## Segment effort comparison
+
+`ISegmentService.GetComparisonAsync` reads definition, owner and effort metadata, child candidates, and only the requested activity streams in one deferred SQLite snapshot. Each distinct selected activity is decoded once after releasing the snapshot. Exact effort IDs, ownership, sport, stream ownership, and source boundaries are validated before comparison; missing or invalid selections never fall back to another pass.
+
+`SegmentComparisonCalculator` builds bounded, endpoint-anchored monotone correspondences to the ordered saved geometry. Core DTOs preserve canonical distance, original source brackets, actual elapsed time, gap-separated map runs, and explicit unavailable reasons. Child pairing maps contained pass boundaries through that correspondence and requires unique, ordered placements. The focused Web comparison component shares scales and formatting with existing charts while keeping its paired inspector separate from single-series interactions. Results are ephemeral: no comparison table, schema migration, HTTP endpoint, dependency, or stored effort-version change. See [Comparing two efforts](segments.md#comparing-two-efforts) for resolution, limits, and timing rules.
+
 ## Badge calculation
 
 `IBadgeService` reads profile settings and activity summaries in one consistent SQLite read transaction, then passes plain DTOs to the pure `BadgeEvaluator`. `BadgeCatalog` defines stable family/tier identifiers, targets, recurrence, points, requirements, and local vector artwork keys. Calendar groups and shared contributions are reused across tiers; streams are not loaded. Results, evidence, points, and levels are calculated on demand without an award table, background worker, or cross-request cache.

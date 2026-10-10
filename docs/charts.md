@@ -70,6 +70,12 @@ The segment definition profile keeps its more detailed presentation: distance on
 
 This definition profile describes the saved path. The charts for a selected effort describe the recorded activity-stream slice and follow the synchronized stream behavior above. See [Local segment methodology](segments.md) for grade calculation, rendering limits, and matching details.
 
+## Two-effort segment comparison
+
+The segment's **Compare two efforts** mode uses one saved-segment distance axis for the time gap and both sensor traces. The baseline is a solid green line and the comparison is a dashed blue line, with explicit labels and a shared value table. Positive time gap means the comparison is slower. Pointer, touch, and keyboard inspection synchronize both efforts and their map positions; the existing single-effort chart inspector remains independent.
+
+Pauses count in elapsed time, including a vertical gap change at stationary progress. Inspection uses departure values at repeated distances. Missing sensors split their traces without hiding the time comparison, and a recorded zero is distinct from an unavailable reading. Rendered traces use bounded representative points; synchronized inspection uses the complete aligned series, retaining original source provenance. See [Comparing two efforts](segments.md#comparing-two-efforts) for alignment rules, unavailable states, and child-pass pairing.
+
 ## Missing data, gaps, and dense recordings
 
 **Not recorded in the source** means the selected stream contains no usable samples for that metric. Activity Explorer does not infer a missing sensor value, and an unavailable chart does not show meaningless axes or gridlines. A single usable sample still renders as one point with its chart frame.

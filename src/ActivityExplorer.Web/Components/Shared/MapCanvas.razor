@@ -35,6 +35,8 @@
     [Parameter] public IReadOnlyList<TrackPoint>? HighlightPoints { get; set; }
     [Parameter] public ActivityMapProjection? ActivityTrack { get; set; }
     [Parameter] public ActivityMapProjection? ActivitySelection { get; set; }
+    [Parameter] public ActivityMapProjection? BaselineComparisonTrack { get; set; }
+    [Parameter] public ActivityMapProjection? ComparisonTrack { get; set; }
     [Parameter] public IReadOnlyList<SegmentMapSection> Sections { get; set; } = [];
     [Parameter] public Guid? SelectedSectionId { get; set; }
     [Parameter] public EventCallback<Guid> SelectedSectionIdChanged { get; set; }
@@ -56,6 +58,9 @@
     private bool _renderedSelectionReversed;
     private ActivityMapProjection? _renderedActivityTrack;
     private ActivityMapProjection? _renderedActivitySelection;
+    private ActivityMapProjection? _renderedBaselineComparisonTrack;
+    private ActivityMapProjection? _renderedComparisonTrack;
+    private IReadOnlyList<TrackPoint>? _renderedHighlightPoints;
     private IReadOnlyList<SegmentMapSection>? _renderedSections;
     private Guid? _renderedSectionId;
     private string _pointStatus = "No points added.";
@@ -70,6 +75,9 @@
         if (_disposed) return;
         var activityTrack = ActivityTrack;
         var activitySelection = ActivitySelection;
+        var baselineComparisonTrack = BaselineComparisonTrack;
+        var comparisonTrack = ComparisonTrack;
+        var highlightPoints = HighlightPoints;
         var sections = Sections;
         var sectionId = SelectedSectionId;
         var selectionStart = SelectionStartIndex;
@@ -77,6 +85,18 @@
         var selectionReversed = SelectionReversed;
         if (!firstRender)
         {
+            if (_initialized && !ReferenceEquals(_renderedHighlightPoints, highlightPoints))
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateHighlight", _id, Coordinates(highlightPoints));
+                _renderedHighlightPoints = highlightPoints;
+            }
+            if (_initialized && (!ReferenceEquals(_renderedBaselineComparisonTrack, baselineComparisonTrack) ||
+                                 !ReferenceEquals(_renderedComparisonTrack, comparisonTrack)))
+            {
+                await JS.InvokeVoidAsync("activityExplorerMap.updateComparison", _id, baselineComparisonTrack, comparisonTrack);
+                _renderedBaselineComparisonTrack = baselineComparisonTrack;
+                _renderedComparisonTrack = comparisonTrack;
+            }
             if (_initialized && !ReferenceEquals(_renderedActivityTrack, activityTrack))
             {
                 await JS.InvokeVoidAsync("activityExplorerMap.updateActivity", _id, activityTrack, activitySelection);
@@ -109,14 +129,8 @@
             if (_initialized && !_disposed && HasPendingUpdates) await InvokeAsync(StateHasChanged);
             return;
         }
-        var coordinates = InlinePoints?
-            .Where(x => x.Longitude.HasValue && x.Latitude.HasValue)
-            .Select(x => new[] { x.Longitude!.Value, x.Latitude!.Value })
-            .ToArray();
-        var highlightCoordinates = HighlightPoints?
-            .Where(x => x.Longitude.HasValue && x.Latitude.HasValue)
-            .Select(x => new[] { x.Longitude!.Value, x.Latitude!.Value })
-            .ToArray();
+        var coordinates = Coordinates(InlinePoints);
+        var highlightCoordinates = Coordinates(highlightPoints);
         _reference = DotNetObjectReference.Create(this);
         await JS.InvokeVoidAsync("activityExplorerMap.create", _id, new
         {
@@ -127,6 +141,8 @@
             highlightCoordinates,
             activityTrack,
             activitySelection,
+            baselineComparisonTrack,
+            comparisonTrack,
             sections,
             selectedSectionId = sectionId,
             selectionStartIndex = selectionStart,
@@ -154,6 +170,9 @@
         _renderedSectionId = sectionId;
         _renderedActivityTrack = activityTrack;
         _renderedActivitySelection = activitySelection;
+        _renderedBaselineComparisonTrack = baselineComparisonTrack;
+        _renderedComparisonTrack = comparisonTrack;
+        _renderedHighlightPoints = highlightPoints;
         RememberSelection(selectionStart, selectionEnd, selectionReversed);
         if (HasPendingUpdates) await InvokeAsync(StateHasChanged);
     }
@@ -194,9 +213,16 @@
 
     private bool HasPendingUpdates => !ReferenceEquals(_renderedActivityTrack, ActivityTrack) ||
         !ReferenceEquals(_renderedActivitySelection, ActivitySelection) ||
+        !ReferenceEquals(_renderedBaselineComparisonTrack, BaselineComparisonTrack) ||
+        !ReferenceEquals(_renderedComparisonTrack, ComparisonTrack) ||
+        !ReferenceEquals(_renderedHighlightPoints, HighlightPoints) ||
         !ReferenceEquals(_renderedSections, Sections) || _renderedSectionId != SelectedSectionId ||
         _renderedSelectionStart != SelectionStartIndex || _renderedSelectionEnd != SelectionEndIndex ||
         _renderedSelectionReversed != SelectionReversed;
+
+    private static double[][]? Coordinates(IReadOnlyList<TrackPoint>? points) => points?
+        .Where(point => point.Longitude.HasValue && point.Latitude.HasValue)
+        .Select(point => new[] { point.Longitude!.Value, point.Latitude!.Value }).ToArray();
 
     private void RememberSelection(int? start, int? end, bool reversed)
     {

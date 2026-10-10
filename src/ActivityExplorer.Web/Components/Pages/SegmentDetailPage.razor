@@ -1,9 +1,10 @@
 @page "/segments/{Id:guid}"
+@implements IDisposable
 @inject ISegmentService SegmentService
 @inject NavigationManager Navigation
 
 <PageTitle>@(_segment?.Summary.Name ?? (_loadError is not null ? "Segment unavailable" : _loaded ? "Segment not found" : "Segment")) - Activity Explorer</PageTitle>
-@if (!_loaded)
+@if (!_loaded && _segment is null)
 {
     <div class="loading" role="status">Loading segment...</div>
 }
@@ -49,17 +50,64 @@ else
         <MetricCard Label="Personal best" Value="@(_segment.Summary.BestElapsedSeconds.HasValue ? Format.Duration(_segment.Summary.BestElapsedSeconds.Value) : "--")" />
     </section>
 
+    <section class="panel comparison-controls" aria-label="Effort view" aria-busy="@(!_loaded ? "true" : "false")">
+        <div class="button-row">
+            <button type="button" class="@(!IsComparing ? "button primary" : "button")" aria-pressed="@(!IsComparing ? "true" : "false")" @onclick="InspectEffort">Inspect effort</button>
+            <button type="button" class="@(IsComparing ? "button primary" : "button")" aria-pressed="@(IsComparing ? "true" : "false")" @onclick="EnterComparison">Compare two efforts</button>
+        </div>
+        @if (IsComparing)
+        {
+            <div class="comparison-selectors">
+                <div class="comparison-selector"><label for="comparison-baseline">Baseline</label><select id="comparison-baseline" value="@EffortSelectionValue(BaselineId)" @onchange="ChangeBaseline">
+                    <option value="">Choose baseline effort</option>
+                    @if (HasUnknownSelection(BaselineId)) { <option value="@EffortSelectionValue(BaselineId)">Unavailable selection</option> }
+                    @foreach (var effort in _segment.Efforts)
+                    {
+                        <option value="@effort.Id" disabled="@(effort.Id.ToString() == EffortSelectionValue(ComparisonId))">@EffortLabel(effort)</option>
+                    }
+                </select></div>
+                <div class="comparison-selector"><label for="comparison-effort">Comparison</label><select id="comparison-effort" value="@EffortSelectionValue(ComparisonId)" @onchange="ChangeComparison">
+                    <option value="">Choose another effort</option>
+                    @if (HasUnknownSelection(ComparisonId)) { <option value="@EffortSelectionValue(ComparisonId)">Unavailable selection</option> }
+                    @foreach (var effort in _segment.Efforts)
+                    {
+                        <option value="@effort.Id" disabled="@(effort.Id.ToString() == EffortSelectionValue(BaselineId))">@EffortLabel(effort)</option>
+                    }
+                </select></div>
+                <button type="button" class="button" disabled="@(!CanSwap)" @onclick="SwapEfforts">Swap efforts</button>
+            </div>
+            <p class="muted comparison-help">Comparison time − baseline time. Positive means slower; elapsed time includes pauses.</p>
+            @if (string.IsNullOrEmpty(BaselineId) || string.IsNullOrEmpty(ComparisonId))
+            {
+                <p role="status">@(_segment.Efforts.Count < 2 ? "Two distinct efforts are needed to compare this segment." : "Choose another effort to complete the comparison.")</p>
+            }
+        }
+        @if (!_loaded) { <p role="status">Loading @(IsComparing ? "comparison" : "effort")...</p> }
+        @if (_comparisonLoadError is not null && IsComparing)
+        {
+            <div role="alert"><p>@_comparisonLoadError</p><button type="button" class="button" @onclick="LoadAsync">Retry comparison</button></div>
+        }
+    </section>
+
     <section id="@_definitionExplorerId" class="segment-definition-explorer">
         <SegmentDefinitionProfile Points="_segment.Points" InspectionGroupId="@_definitionExplorerId" />
         <SegmentSectionStrip Sections="_mapSections" DistanceMeters="_segment.Summary.DistanceMeters" SelectedId="_selectedSectionId" SelectedIdChanged="SelectSection" />
         <section class="panel flush map-panel">
-            <MapCanvas @key="(Id, _segment.SelectedEffortId)" InlinePoints="_segment.Points"
-                       HighlightPoints="_segment.SelectedEffortPoints" InspectionGroupId="@_definitionExplorerId"
+            <MapCanvas @key="(Id, IsComparing ? (Guid?)null : _segment.SelectedEffortId)" InlinePoints="_segment.Points"
+                       HighlightPoints="@(IsComparing ? null : _segment.SelectedEffortPoints)" InspectionGroupId="@_definitionExplorerId"
+                       BaselineComparisonTrack="@(IsComparing ? _comparisonResult?.BaselineAlignment?.Map : null)"
+                       ComparisonTrack="@(IsComparing ? _comparisonResult?.ComparisonAlignment?.Map : null)"
                        Sections="_mapSections" SelectedSectionId="_selectedSectionId" SelectedSectionIdChanged="SelectSection"
-                       CssClass="detail-map" Label="Segment and selected effort map" />
+                       CssClass="detail-map" Label="@(IsComparing ? "Segment, baseline, and comparison effort map" : "Segment and selected effort map")" />
         </section>
+        @if (IsComparing && _comparisonResult is not null && _loaded)
+        {
+            <SegmentComparisonView Result="_comparisonResult" InspectionGroupId="@_definitionExplorerId" />
+        }
     </section>
 
+    @if (!IsComparing)
+    {
     <section class="panel subsegment-breakdown" aria-labelledby="subsegments-heading">
         <div class="panel-heading"><div><h2 id="subsegments-heading">Sub-segments</h2><p class="muted">Each section keeps its own history. Results below belong only to the selected parent effort.</p></div></div>
         <StatusMessage Message="@_relationshipStatus" IsError="@_relationshipFailed" />
@@ -108,10 +156,11 @@ else
             <p class="muted compact-note">Removing a section here keeps the segment, its history, and its other parent links.</p>
         }
     </section>
+    }
 
     <section class="panel">
         <div class="panel-heading">
-            <div><h2>Effort comparison</h2><p class="muted">Repeated passes remain separate. Speed and pace use the saved segment distance divided by elapsed time. Select a row to inspect its exact recorded stream slice.</p></div>
+            <div><h2>Effort history</h2><p class="muted">Repeated passes remain separate. Speed and pace use the saved segment distance divided by elapsed time. Select a row to inspect its exact recorded stream slice.</p></div>
             <label class="compact-select"><span>Sort by</span><select @bind="_sort"><option value="rank">Rank</option><option value="date">Newest</option><option value="elapsed">Elapsed time</option><option value="speed">Speed / pace</option><option value="heart-rate">Heart rate</option><option value="power">Power</option></select></label>
         </div>
         @if (_segment.Efforts.Count == 0)
@@ -147,7 +196,7 @@ else
     </section>
 
     var selected = _segment.Efforts.FirstOrDefault(x => x.Id == _segment.SelectedEffortId);
-    @if (selected is not null && _segment.SelectedEffortPoints.Count > 1)
+    @if (!IsComparing && selected is not null && _segment.SelectedEffortPoints.Count > 1)
     {
         <section class="panel-heading chart-controls">
             <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@selected.StartTime.ToLocalTime().ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
@@ -181,8 +230,17 @@ else
     [Parameter] public Guid Id { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "effort")] public Guid? EffortId { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "section")] public Guid? SectionId { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "view")] public string? View { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "baseline")] public string? BaselineId { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "comparison")] public string? ComparisonId { get; set; }
 
     private SegmentDetail? _segment;
+    private SegmentComparisonResult? _comparisonResult;
+    private string? _comparisonLoadError;
+    private CancellationTokenSource? _loadCancellation;
+    private bool IsComparing => View == "compare";
+    private bool CanSwap => _loaded && Guid.TryParse(BaselineId, out var baseline) && Guid.TryParse(ComparisonId, out var comparison) &&
+        baseline != comparison && _segment!.Efforts.Any(effort => effort.Id == baseline) && _segment.Efforts.Any(effort => effort.Id == comparison);
     private string _sort = "rank";
     private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
     private bool _loaded;
@@ -195,6 +253,9 @@ else
     private Guid? _selectedSectionId;
     private Guid? _loadedId;
     private Guid? _loadedEffortId;
+    private string? _loadedView;
+    private string? _loadedBaseline;
+    private string? _loadedComparison;
     private int _loadVersion;
     private bool _removing;
     private string? _relationshipStatus;
@@ -222,7 +283,8 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
-        if (_loaded && _loadedId == Id && _loadedEffortId == EffortId && _segment is not null)
+        if (_loaded && _loadedId == Id && _loadedEffortId == EffortId && _loadedView == View &&
+            _loadedBaseline == BaselineId && _loadedComparison == ComparisonId && _segment is not null)
         {
             UpdateSectionSelection();
             return;
@@ -231,6 +293,7 @@ else
         _recomputeFailed = false;
         _relationshipStatus = null;
         _relationshipFailed = false;
+        if (_loadedId != Id) _segment = null;
         await LoadAsync();
     }
 
@@ -240,21 +303,59 @@ else
         var version = ++_loadVersion;
         var id = Id;
         var effortId = EffortId;
+        var view = View;
+        var baseline = BaselineId;
+        var comparison = ComparisonId;
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        _loadCancellation = new CancellationTokenSource();
+        var token = _loadCancellation.Token;
         _loaded = false;
         _loadError = null;
+        _comparisonLoadError = null;
         try
         {
-            var segment = await SegmentService.GetAsync(id, effortId);
+            SegmentDetail? segment;
+            SegmentComparisonResult? result = null;
+            if (view == "compare")
+            {
+                result = await SegmentService.GetComparisonAsync(id,
+                    Guid.TryParse(baseline, out var baselineGuid) ? baselineGuid : Guid.Empty,
+                    Guid.TryParse(comparison, out var comparisonGuid) ? comparisonGuid : Guid.Empty, token);
+                segment = result?.Detail;
+            }
+            else segment = await SegmentService.GetAsync(id, effortId, token);
             if (version != _loadVersion) return;
+            _comparisonResult = result;
             ApplySegment(segment);
             _loadedId = id;
             _loadedEffortId = effortId;
+            _loadedView = view;
+            _loadedBaseline = baseline;
+            _loadedComparison = comparison;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch
         {
             if (version != _loadVersion) return;
-            _segment = null;
-            _loadError = "The segment could not be loaded. Try again.";
+            _comparisonResult = null;
+            if (view == "compare")
+            {
+                try
+                {
+                    var metadata = await SegmentService.GetComparisonAsync(id, Guid.Empty, Guid.Empty, token);
+                    if (version != _loadVersion) return;
+                    ApplySegment(metadata?.Detail);
+                    _comparisonLoadError = "The comparison could not be loaded. Retry, or choose another effort.";
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+                catch { if (version == _loadVersion) _loadError = "The segment could not be loaded. Try again."; }
+            }
+            else
+            {
+                _segment = null;
+                _loadError = "The segment could not be loaded. Try again.";
+            }
         }
         finally { if (version == _loadVersion) _loaded = true; }
     }
@@ -262,16 +363,16 @@ else
     {
         var version = _loadVersion;
         var id = Id;
-        var effortId = EffortId;
         _recomputing = true;
         _recomputeStatus = null;
         _recomputeFailed = false;
         try
         {
             await SegmentService.RecomputeAsync(id);
-            var segment = await SegmentService.GetAsync(id, effortId);
             if (version != _loadVersion) return;
-            ApplySegment(segment);
+            version++;
+            await LoadAsync();
+            if (version != _loadVersion) return;
             _recomputeStatus = "Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.";
         }
         catch
@@ -294,6 +395,54 @@ else
     private void SelectSection(Guid sectionId) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("section", sectionId), replace: true);
 
     private string EffortUrl(Guid effortId) => $"/segments/{Id}?effort={effortId}" + (_selectedSectionId.HasValue ? $"&section={_selectedSectionId}" : string.Empty);
+
+    private bool HasUnknownSelection(string? value) => !string.IsNullOrEmpty(value) &&
+        (!Guid.TryParse(value, out var id) || !_segment!.Efforts.Any(effort => effort.Id == id));
+
+    private static string? EffortSelectionValue(string? value) => Guid.TryParse(value, out var id) ? id.ToString() : value;
+
+    private string EffortLabel(SegmentEffortSummary effort)
+    {
+        var pass = _segment!.Efforts.Where(value => value.ActivityId == effort.ActivityId)
+            .OrderBy(value => value.StartPointIndex).TakeWhile(value => value.Id != effort.Id).Count() + 1;
+        return $"#{effort.Rank} · {effort.StartTime.ToLocalTime():g} · Pass {pass} · {Format.Duration(effort.ElapsedSeconds)}";
+    }
+
+    private void InspectEffort() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+    {
+        ["view"] = null, ["baseline"] = null, ["comparison"] = null
+    }));
+
+    private void EnterComparison()
+    {
+        if (IsComparing || _segment is null) return;
+        var selected = _segment.Efforts.FirstOrDefault(effort => effort.Id == _segment.SelectedEffortId);
+        var best = _segment.Efforts.FirstOrDefault(effort => effort.Id != selected?.Id &&
+            effort.ElapsedSeconds == _segment.Summary.BestElapsedSeconds);
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["view"] = "compare", ["effort"] = EffortId ?? selected?.Id,
+            ["baseline"] = best?.Id ?? selected?.Id, ["comparison"] = best is null ? null : selected?.Id
+        }));
+    }
+
+    private void ChangeBaseline(ChangeEventArgs args) => ChangePair(args.Value?.ToString(), ComparisonId);
+    private void ChangeComparison(ChangeEventArgs args) => ChangePair(BaselineId, args.Value?.ToString());
+    private void SwapEfforts() => ChangePair(ComparisonId, BaselineId);
+    private void ChangePair(string? baseline, string? comparison) => Navigation.NavigateTo(
+        Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["view"] = "compare", ["baseline"] = string.IsNullOrEmpty(baseline) ? null : baseline,
+            ["comparison"] = string.IsNullOrEmpty(comparison) ? null : comparison
+        }));
+
+    public void Dispose()
+    {
+        ++_loadVersion;
+        _loadCancellation?.Cancel();
+        _loadCancellation?.Dispose();
+        GC.SuppressFinalize(this);
+    }
 
     private async Task RemoveSection(Guid childId)
     {

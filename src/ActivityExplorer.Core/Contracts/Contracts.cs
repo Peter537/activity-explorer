@@ -100,6 +100,7 @@ public interface ISegmentService
 {
     Task<IReadOnlyList<SegmentSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default);
     Task<SegmentDetail?> GetAsync(Guid id, Guid? effortId = null, CancellationToken cancellationToken = default);
+    Task<SegmentComparisonResult?> GetComparisonAsync(Guid segmentId, Guid baselineEffortId, Guid comparisonEffortId, CancellationToken cancellationToken = default);
     Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(CreateSegmentPathRequest request, CancellationToken cancellationToken = default);
     Task RecomputeAsync(Guid segmentId, CancellationToken cancellationToken = default);

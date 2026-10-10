@@ -35,6 +35,12 @@ public sealed partial class SegmentService(
     public async Task<SegmentDetail?> GetAsync(Guid id, Guid? effortId = null, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        return await GetDetailAsync(db, id, effortId, includeSelectedStream: true, cancellationToken);
+    }
+
+    private async Task<SegmentDetail?> GetDetailAsync(
+        ExplorerDbContext db, Guid id, Guid? effortId, bool includeSelectedStream, CancellationToken cancellationToken)
+    {
         var segment = await db.Segments.AsNoTracking().Include(x => x.Owner).SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (segment is null) return null;
         var efforts = await db.SegmentEfforts.AsNoTracking().Include(x => x.Activity)
@@ -53,7 +59,7 @@ public sealed partial class SegmentService(
             .ToListAsync(cancellationToken);
         var selected = efforts.FirstOrDefault(x => x.Id == effortId) ?? efforts.FirstOrDefault();
         IReadOnlyList<TrackPoint> selectedPoints = [];
-        if (selected is not null)
+        if (includeSelectedStream && selected is not null)
         {
             var payload = await db.ActivityStreams.AsNoTracking()
                 .Where(x => x.ActivityId == selected.ActivityId).Select(x => x.CompressedPayload).SingleOrDefaultAsync(cancellationToken);

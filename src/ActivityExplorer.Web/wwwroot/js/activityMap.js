@@ -172,6 +172,67 @@ window.activityExplorerMap = (() => {
         refreshInspectionLayer(entry);
     }
 
+    function refreshComparisonLayers(entry, markersOnly = false) {
+        if (entry.disposed) return;
+        if (!entry.map.isStyleLoaded()) {
+            if (!entry.comparisonPending) {
+                entry.comparisonPending = true;
+                entry.map.once("idle", () => {
+                    entry.comparisonPending = false;
+                    refreshComparisonLayers(entry);
+                });
+            }
+            return;
+        }
+        const sides = [
+            ["comparison-baseline", entry.options.baselineComparisonTrack, "#246b59", false, entry.comparisonInspection?.baseline],
+            ["comparison-effort", entry.options.comparisonTrack, "#3366cc", true, entry.comparisonInspection?.comparison]
+        ];
+        for (const [name, track, color, dashed, point] of sides) {
+            if (!markersOnly || !entry.map.getSource(name)) {
+                const data = projectionLines(track);
+                if (entry.map.getSource(name)) entry.map.getSource(name).setData(data);
+                else if (track) {
+                    entry.map.addSource(name, { type: "geojson", data });
+                    entry.map.addLayer({
+                        id: name, type: "line", source: name,
+                        paint: { "line-color": color, "line-width": 4, "line-opacity": 0.95,
+                            ...(dashed ? { "line-dasharray": [2, 1.5] } : {}) }
+                    });
+                }
+            }
+            const marker = `${name}-inspection`;
+            const markerData = {
+                type: "FeatureCollection",
+                features: track && point && Number.isFinite(point.latitude) && Number.isFinite(point.longitude)
+                    ? [{ type: "Feature", geometry: { type: "Point", coordinates: [point.longitude, point.latitude] }, properties: { sourcePosition: point.sourcePosition } }]
+                    : []
+            };
+            if (entry.map.getSource(marker)) entry.map.getSource(marker).setData(markerData);
+            else if (track) {
+                entry.map.addSource(marker, { type: "geojson", data: markerData });
+                entry.map.addLayer({
+                    id: marker, type: "circle", source: marker,
+                    paint: { "circle-radius": dashed ? 5 : 9, "circle-color": dashed ? color : "#ffffff",
+                        "circle-stroke-width": dashed ? 2 : 3, "circle-stroke-color": dashed ? "#ffffff" : color }
+                });
+            }
+        }
+    }
+
+    function setComparisonInspection(entry, detail) {
+        entry.comparisonInspection = detail;
+        const container = entry.map.getContainer();
+        container.dataset.comparisonRevision = String((entry.comparisonRevision || 0) + 1);
+        entry.comparisonRevision = Number(container.dataset.comparisonRevision);
+        for (const [name, value] of [["comparisonDistance", detail?.distanceMeters],
+            ["comparisonBaselinePosition", detail?.baseline?.sourcePosition], ["comparisonPosition", detail?.comparison?.sourcePosition]]) {
+            if (Number.isFinite(value)) container.dataset[name] = String(value);
+            else delete container.dataset[name];
+        }
+        refreshComparisonLayers(entry, true);
+    }
+
     function refreshSectionLayers(entry) {
         if (entry.disposed) return;
         if (!entry.map.isStyleLoaded()) {
@@ -295,6 +356,7 @@ window.activityExplorerMap = (() => {
         }
         if (!selectionOnly) refreshSectionLayers(entry);
         refreshInspectionLayer(entry);
+        refreshComparisonLayers(entry);
     }
 
     async function refresh(entry) {
@@ -353,6 +415,9 @@ window.activityExplorerMap = (() => {
                 entry.inspectionGroup = group;
                 entry.inspectionHandler = event => setInspection(entry, event.detail?.sourceIndex);
                 group.addEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
+                entry.comparisonInspectionHandler = event => setComparisonInspection(entry, event.detail);
+                group.addEventListener("activity-explorer:comparison-inspection", entry.comparisonInspectionHandler);
+                setComparisonInspection(entry, group.comparisonInspection);
             }
         }
         map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
@@ -454,6 +519,22 @@ window.activityExplorerMap = (() => {
         refreshTrackLayers(entry, true);
     }
 
+    function updateComparison(id, baseline, comparison) {
+        const entry = maps.get(id);
+        if (!entry) return;
+        entry.options.baselineComparisonTrack = baseline;
+        entry.options.comparisonTrack = comparison;
+        entry.comparisonInspection = entry.inspectionGroup?.comparisonInspection;
+        refreshComparisonLayers(entry);
+    }
+
+    function updateHighlight(id, coordinates) {
+        const entry = maps.get(id);
+        if (!entry) return;
+        entry.options.highlightCoordinates = coordinates || [];
+        refreshTrackLayers(entry, true);
+    }
+
     function destroy(id) {
         const entry = maps.get(id);
         if (entry) {
@@ -461,6 +542,8 @@ window.activityExplorerMap = (() => {
             entry.request?.abort();
             if (entry.inspectionGroup && entry.inspectionHandler)
                 entry.inspectionGroup.removeEventListener("activity-explorer:segment-inspection", entry.inspectionHandler);
+            if (entry.inspectionGroup && entry.comparisonInspectionHandler)
+                entry.inspectionGroup.removeEventListener("activity-explorer:comparison-inspection", entry.comparisonInspectionHandler);
             for (const marker of entry.sectionMarkers?.values() || []) marker.remove();
             entry.map.remove();
             maps.delete(id);
@@ -469,5 +552,5 @@ window.activityExplorerMap = (() => {
 
     function reload(id) { const entry = maps.get(id); if (entry) return refresh(entry); }
 
-    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, updateActivity, updateActivitySelection, destroy, reload };
+    return { create, addCenterPoint, undo, clear, updateSelection, updateSections, updateActivity, updateActivitySelection, updateComparison, updateHighlight, destroy, reload };
 })();

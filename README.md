@@ -25,6 +25,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Awards retrospective metric badges, related calendar editions, points, and progressive levels per profile, with monthly snapshots and activity evidence. See [Badges and levels](docs/badges.md).
 - Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Organizes nested, shared sub-segments with map highlights and per-pass results inside the selected parent effort, including closed loops and repeated laps.
+- Compares two segment efforts with a distance-aligned time gap, paired sensor charts, synchronized map inspection, and corresponding child-pass results. See [Comparing two efforts](docs/segments.md#comparing-two-efforts).
 - Uses locally vendored MapLibre with a blank basemap by default; OpenFreeMap is a persistent, explicit global opt-in.
 - Watches optional local folders without moving or deleting the files in them.
 
