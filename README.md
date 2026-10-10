@@ -19,6 +19,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Shows activity count, distance, moving time, and ascent for the complete filtered result, with shared date shortcuts on Activities and World Map.
 - Organizes activities with profile-owned tags and named saved searches, and reviews exact batches of tag or gear changes before applying them atomically.
 - Compares training periods, charts weekly or monthly progress across five summary metrics, and opens daily activity lists from a monthly training calendar.
+- Tracks personal distance, moving-time, ascent, activity-count, and active-day goals with recurring editions, pace guides, history, and contributing activities.
 - Charts each activity’s best benchmark attempt and the best result so far within a selected period, separately for each profile.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
@@ -57,6 +58,20 @@ Select one profile on **Activities** to manage tags, filter by **Tags — match 
 Saved searches retain filters, sorting, and the chosen date period. Opening a relative period resolves it again; custom dates stay fixed. Use **Replace with applied filters** to update a search explicitly. A deleted tag blocks that search until you choose replacement tags or explicitly save its removal. Tag bookmarks opened under another profile offer a profile-switch action.
 
 Select activities across pages, then choose **Edit selected**, or use **Edit all matching** for the applied filter. Review tag additions/removals and unchanged, set, or cleared gear before applying. The review fixes the exact activity list; later imports are excluded. Any intervening activity edit invalidates the whole review and requires a refresh. Gear changes protect local metadata from import enrichment; tag-only changes do not. Deletion remains a separate action.
+
+## Personal goals
+
+Open **Goals**, then **New goal**, and choose the owner explicitly. Set a name, one sport or all sports, and a positive target in kilometres, hours, metres, activities, or days. Activities and active days require whole numbers. Choose an inclusive one-off range or weekly, monthly, or yearly recurrence. Dates use the owner's current reporting timezone; weeks start Monday. Past and future starts are supported. A partial first edition runs from the effective date to the period's end and keeps the full target.
+
+Each edition shows its target, actual amount, percentage, remaining amount, and contributing activities. Active days count distinct local activity-start dates, without a minimum-duration rule. All matching stored summaries count, including future-dated activities inside the edition's dates. Progress can exceed 100%; only the bar stops at 100%. Upcoming, Active, or Ended describes the period separately from whether the target is reached.
+
+Active editions show two guides: the target multiplied by completed local days divided by edition days, and the remaining amount divided by remaining days. Today is unfinished and included in remaining days. These are guides, not predictions; upcoming and ended editions omit them.
+
+Name, target, and sport are editable; metric, recurrence, and dates remain fixed. **Edit this edition** preserves any scheduled future definition. **Edit next editions** changes the next and following editions. Before the first start, **Edit initial definition** changes the initial definition. One-off goals remain editable until their range ends; ended definitions stay fixed. The editor shows the effective dates before saving. If another edit or a calendar boundary makes the form stale, reload the goal before retrying.
+
+**Archive goal** retains history and the complete current edition while stopping later editions. Archiving before the first start prevents all editions from beginning. There is no delete or reactivate action. Imports, corrections, deletions, transfers, and timezone changes can revise progress even for historical editions; saved targets remain unchanged.
+
+The Goals list has Current and upcoming, All, and Archived views. **All profiles** shows separate owner-labelled goals. Detail links retain the selected edition and history/contributor pages through refresh and Back/Forward. The dashboard's **Current goals** shows up to six active editions ordered by ending date, including an archived goal until its current edition ends. It follows the profile selector and each goal's own dates and sport, independently of dashboard filters.
 
 ## Docker Compose
 

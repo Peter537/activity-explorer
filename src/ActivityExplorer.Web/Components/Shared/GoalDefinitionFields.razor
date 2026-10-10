@@ -1,0 +1,8 @@
+<label><span>Goal name</span><input @bind="Value.Name" required maxlength="120" /></label>
+<label><span>Sport</span><select @bind="Value.Sport"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+<div class="goal-target-field"><label for="goal-target"><span>Target</span></label><input id="goal-target" type="number" @bind="Value.Target" required min="0" step="@(Metric is GoalMetric.ActivityCount or GoalMetric.ActiveDays ? "1" : "any")" aria-describedby="goal-target-unit" /><small id="goal-target-unit">@GoalDisplay.Unit(Metric) · greater than zero</small></div>
+
+@code {
+    [Parameter, EditorRequired] public GoalFormValues Value { get; set; } = new();
+    [Parameter] public GoalMetric Metric { get; set; }
+}

@@ -1,0 +1,4 @@
+.current-goal + .current-goal { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 20px; }
+.goal-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; margin-bottom: 8px; }
+.goal-heading h3 { margin: 0; overflow-wrap: anywhere; }
+.goal-heading > span { color: var(--muted); }

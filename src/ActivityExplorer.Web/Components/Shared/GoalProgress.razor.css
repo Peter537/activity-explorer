@@ -1,0 +1,9 @@
+.goal-amounts, .goal-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.goal-amounts strong { font-size: 1.35rem; }
+.goal-amounts > :last-child { margin-left: auto; }
+.goal-amounts, .goal-status, .goal-dates { overflow-wrap: anywhere; }
+progress { display: block; width: 100%; height: 12px; margin: 12px 0; accent-color: var(--green); }
+.goal-status { font-size: .9rem; }
+.goal-dates { color: var(--muted); font-size: .9rem; margin: 8px 0 0; }
+.goal-guide { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.goal-guide p { margin-bottom: 6px; }

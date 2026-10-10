@@ -1,0 +1,214 @@
+@page "/goals/{Id:guid}"
+@implements IDisposable
+@inject IGoalService Goals
+@inject NavigationManager Navigation
+@inject ILogger<GoalDetailPage> Logger
+
+<PageTitle>@(_detail?.Edition?.Definition.Name ?? _detail?.Goal.Definition.Name ?? "Goal") - Activity Explorer</PageTitle>
+<div class="goal-detail-header"><PageHeader Title="@(_detail?.Edition?.Definition.Name ?? _detail?.Goal.Definition.Name ?? "Goal")"><Actions><a class="button" href="/goals">Back to goals</a><button class="button" @onclick="ReloadAsync" disabled="@(_loading || _saving)">Refresh goal</button></Actions></PageHeader></div>
+@if (_loading) { <p class="loading" role="status">Loading goal...</p> }
+else if (_loadError is not null) { <section class="notice error" role="alert"><p>@_loadError</p><button class="button" @onclick="ReloadAsync">Try again</button><a class="button" href="/profiles">Open Profiles</a></section> }
+else if (_detail is null) { <section class="empty-state"><h2>Goal unavailable</h2><p>This goal or its profile may have been removed.</p><a class="button" href="/goals">View goals</a></section> }
+else
+{
+    var goal = _detail.Goal;
+    <p class="goal-metadata">@goal.OwnerName · @goal.TimeZoneId · @GoalDisplay.Label(goal.Schedule.Metric) · @GoalDisplay.Recurrence(goal.Schedule.Recurrence)</p>
+    @if (_success is not null) { <p class="notice" role="status">@_success</p> }
+    @if (goal.Archived) { <p class="notice">Archived. No further editions will begin; an edition already in progress keeps its full date range.</p> }
+    @if (_detail.Edition is { } edition)
+    {
+        <section class="panel" aria-label="Edition progress"><h2>Edition progress</h2><GoalProgress Edition="edition" Metric="goal.Schedule.Metric" ShowPace="true" /></section>
+    }
+    else if (QueryEdition is not null) { <p class="notice error" role="alert">This edition is unavailable. <a href="@GoalDisplay.Url(Id)">Open the current or latest edition</a>.</p> }
+    else { <p class="notice">This goal was archived before its first edition began.</p> }
+    <p class="muted">Progress uses all stored activity summaries in the edition’s dates, including future-dated entries. Imports, corrections, deletions, transfers, and reporting timezone changes can revise past results.</p>
+
+    @if (!_editing && !_confirmArchive)
+    {
+        <div class="goal-actions">
+            @if (_detail.EditableEdition is { } editable && _detail.Edition?.Key == editable.Key)
+            {
+                @if (editable.State == GoalPeriodState.Upcoming)
+                {
+                    <button class="button" @ref="_initialEditButton" @onclick="() => BeginEdit(goal.Schedule.Recurrence == GoalRecurrence.Once ? GoalEditScope.ThisEdition : GoalEditScope.NextEditions)">Edit initial definition</button>
+                }
+                else
+                {
+                    <button class="button" @ref="_currentEditButton" @onclick="() => BeginEdit(GoalEditScope.ThisEdition)">Edit this edition</button>
+                    @if (_detail.NextEditionStart.HasValue && !goal.Archived) { <button class="button" @ref="_nextEditButton" @onclick="() => BeginEdit(GoalEditScope.NextEditions)">Edit next editions</button> }
+                }
+            }
+            @if (!goal.Archived) { <button class="button" @ref="_archiveButton" @onclick="BeginArchive">Archive goal</button> }
+        </div>
+    }
+    @if (_actionError is not null) { <p class="notice error" role="alert">@_actionError <button class="button" @onclick="ReloadAsync" disabled="@_saving">Reload goal</button></p> }
+    @if (_editing)
+    {
+        <section class="panel" aria-label="Edit goal">
+            <h2 tabindex="-1" @ref="_editorHeading">@(_editScope == GoalEditScope.ThisEdition ? "Edit this edition" : _detail.EditableEdition?.State == GoalPeriodState.Upcoming ? "Edit initial definition" : "Edit next editions")</h2>
+            <p>@EditDates</p>
+            <form @onsubmit="SaveAsync" @onsubmit:preventDefault><fieldset disabled="@_saving">
+                <div class="goal-fields"><GoalDefinitionFields Value="_values" Metric="goal.Schedule.Metric" /></div>
+                <div class="goal-actions"><button class="button primary" type="submit">@(_saving ? "Saving..." : "Save goal")</button><button class="button" type="button" @onclick="CancelEdit">Cancel edit</button></div>
+            </fieldset></form>
+        </section>
+    }
+    @if (_confirmArchive)
+    {
+        <section class="notice" aria-label="Archive goal confirmation"><h2 tabindex="-1" @ref="_editorHeading">Archive @goal.Definition.Name?</h2><p>@ArchiveConsequence History and its saved targets remain available. Archival cannot be reversed.</p><div class="goal-actions"><button class="button primary" @onclick="ArchiveAsync" disabled="@_saving">Stop future editions</button><button class="button" @onclick="CancelArchive" disabled="@_saving">Cancel archive</button></div></section>
+    }
+    @if (_detail.NextDefinition is { } next && _detail.NextEditionStart is { } nextStart && _detail.EditableEdition?.State == GoalPeriodState.Active)
+    {
+        <p class="next-goal"><strong>Next edition from @nextStart.ToString("dd MMM yyyy"):</strong> @next.Name · @(next.Sport?.ToString() ?? "All sports") · @GoalDisplay.Amount(goal.Schedule.Metric, next.Target)</p>
+    }
+    <section class="panel" aria-label="Edition history">
+        <h2>Edition history</h2>
+        @if (_detail.History.Count == 0) { <p>No editions have begun.</p> }
+        else
+        {
+            <table class="goal-history"><thead><tr><th>Dates</th><th>Target</th><th>Actual</th><th>Status</th></tr></thead><tbody>
+            @foreach (var past in _detail.History)
+            {
+                <tr><td data-label="Dates"><a href="@GoalDisplay.Url(Id, past.Key, _detail.HistoryPage)" aria-current="@(past.Key == _detail.Edition?.Key ? "true" : null)">@GoalDisplay.Range(past)</a><small>@past.Definition.Name · @(past.Definition.Sport?.ToString() ?? "All sports")</small></td><td data-label="Target">@GoalDisplay.Amount(goal.Schedule.Metric, past.Definition.Target)</td><td data-label="Actual">@GoalDisplay.Amount(goal.Schedule.Metric, past.Actual)</td><td data-label="Status">@past.State · @(past.Achieved ? "Target reached" : "Target not reached")</td></tr>
+            }
+            </tbody></table>
+            <nav class="goal-pagination" aria-label="Edition history pages">
+                @if (_detail.HistoryPage > 1) { <a class="button" href="@GoalDisplay.Url(Id, _detail.Edition?.Key, _detail.HistoryPage - 1, _detail.ContributionPage)">Previous editions</a> }
+                <span>Page @_detail.HistoryPage of @Pages(_detail.HistoryCount) · @_detail.HistoryCount editions</span>
+                @if (_detail.HistoryPage < Pages(_detail.HistoryCount)) { <a class="button" href="@GoalDisplay.Url(Id, _detail.Edition?.Key, _detail.HistoryPage + 1, _detail.ContributionPage)">Next editions</a> }
+            </nav>
+        }
+    </section>
+    @if (_detail.Edition is not null)
+    {
+        <section class="panel" aria-label="Contributing activities">
+            <h2>Contributing activities</h2>
+            <p class="muted">Matching stored summaries, grouped by the activity’s start date in @goal.TimeZoneId.@if (goal.Schedule.Metric == GoalMetric.ActiveDays) { <text> Each local date counts once, regardless of how many activities it contains.</text> }</p>
+            @if (_detail.Contributions.Count == 0) { <p>No matching activities in this edition.</p> }
+            @foreach (var day in _detail.Contributions)
+            {
+                <div class="contribution-day"><div class="day-heading"><h3>@day.Date.ToString("dd MMM yyyy")</h3><strong>@(goal.Schedule.Metric == GoalMetric.ActiveDays ? "1 active day" : GoalDisplay.Amount(goal.Schedule.Metric, day.Amount))</strong></div>
+                    <ul>@foreach (var activity in day.Activities)
+                    {
+                        <li><a href="@($"/activities/{activity.ActivityId}")">@activity.Title</a><span>@activity.Sport</span>@if (goal.Schedule.Metric != GoalMetric.ActiveDays) { <span>@GoalDisplay.Amount(goal.Schedule.Metric, activity.Amount)</span> }</li>
+                    }</ul>
+                </div>
+            }
+            @if (_detail.ContributionCount > 0)
+            {
+                <nav class="goal-pagination" aria-label="Contributing activity pages">
+                    @if (_detail.ContributionPage > 1) { <a class="button" href="@GoalDisplay.Url(Id, _detail.Edition.Key, _detail.HistoryPage, _detail.ContributionPage - 1)">Previous activities</a> }
+                    <span>Page @_detail.ContributionPage of @Pages(_detail.ContributionCount) · @_detail.ContributionCount dates</span>
+                    @if (_detail.ContributionPage < Pages(_detail.ContributionCount)) { <a class="button" href="@GoalDisplay.Url(Id, _detail.Edition.Key, _detail.HistoryPage, _detail.ContributionPage + 1)">Next activities</a> }
+                </nav>
+            }
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    [SupplyParameterFromQuery(Name = "edition")] public string? QueryEdition { get; set; }
+    [SupplyParameterFromQuery(Name = "historyPage")] public string? QueryHistoryPage { get; set; }
+    [SupplyParameterFromQuery(Name = "contributionPage")] public string? QueryContributionPage { get; set; }
+    private GoalDetail? _detail;
+    private string? _loadError, _actionError, _success;
+    private bool _loading, _saving, _disposed, _editing, _confirmArchive, _focusEditor;
+    private GoalFormValues _values = new();
+    private GoalEditScope _editScope;
+    private ElementReference _editorHeading, _initialEditButton, _currentEditButton, _nextEditButton, _archiveButton;
+    private string? _returnFocus;
+    private int _revision;
+    private CancellationTokenSource? _load;
+    private readonly CancellationTokenSource _lifetime = new();
+    protected override Task OnParametersSetAsync() { _success = null; return ReloadAsync(); }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusEditor) { _focusEditor = false; await _editorHeading.FocusAsync(); }
+        if (_returnFocus is { } target)
+        {
+            _returnFocus = null;
+            await (target == "archive" ? _archiveButton : target == "initial" ? _initialEditButton : target == "next" ? _nextEditButton : _currentEditButton).FocusAsync();
+        }
+    }
+    private async Task ReloadAsync()
+    {
+        _load?.Cancel();
+        using var load = new CancellationTokenSource(); _load = load;
+        var revision = ++_revision; _loading = true; _loadError = null; _actionError = null; _detail = null; _editing = false; _confirmArchive = false;
+        try
+        {
+            DateOnly? edition = null;
+            if (!string.IsNullOrEmpty(QueryEdition))
+            {
+                if (!DateOnly.TryParseExact(QueryEdition, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+                    throw new ArgumentException("The edition date must use yyyy-MM-dd. Open Goals to choose a valid edition.");
+                edition = parsed;
+            }
+            var result = await Goals.GetDetailAsync(Id, edition, Page(QueryHistoryPage), Page(QueryContributionPage), load.Token);
+            if (!_disposed && revision == _revision) _detail = result;
+        }
+        catch (OperationCanceledException) when (load.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not load goal");
+            if (!_disposed && revision == _revision) _loadError = exception is ArgumentException or InvalidOperationException ? exception.Message : "This goal could not be loaded. Try again.";
+        }
+        finally { if (revision == _revision) { _loading = false; _load = null; } }
+    }
+    private static int Page(string? value) => int.TryParse(value, out var page) && page > 0 ? page : 1;
+    private static int Pages(int count) => Math.Max(1, (count + GoalDetail.PageSize - 1) / GoalDetail.PageSize);
+    private void BeginEdit(GoalEditScope scope)
+    {
+        _editScope = scope;
+        _values = GoalFormValues.From(_detail!.Goal.Schedule.Metric, scope == GoalEditScope.ThisEdition ? _detail.EditableEdition!.Definition : _detail.NextDefinition!);
+        _editing = true; _actionError = null; _success = null; _focusEditor = true;
+    }
+    private void CancelEdit()
+    {
+        _editing = false; _actionError = null;
+        _returnFocus = _detail?.EditableEdition?.State == GoalPeriodState.Upcoming ? "initial" : _editScope == GoalEditScope.NextEditions ? "next" : "current";
+    }
+    private void CancelArchive() { _confirmArchive = false; _returnFocus = "archive"; }
+    private void BeginArchive() { _confirmArchive = true; _actionError = null; _success = null; _focusEditor = true; }
+    private string EditDates => _editScope == GoalEditScope.ThisEdition
+        ? $"Applies only to {GoalDisplay.Range(_detail!.EditableEdition!)}. Future targets stay unchanged."
+        : $"Applies from {(_detail!.EditableEdition?.State == GoalPeriodState.Upcoming ? _detail.EditableEdition.Start : _detail.NextEditionStart):dd MMM yyyy} and to following editions. Earlier definitions stay unchanged.";
+    private string ArchiveConsequence => _detail!.EditableEdition?.State == GoalPeriodState.Active
+        ? $"The current edition continues through {_detail.EditableEdition.End:dd MMM yyyy}."
+        : _detail.EditableEdition?.State == GoalPeriodState.Upcoming ? "The first edition will not begin." : "This goal’s editions have ended.";
+    private async Task SaveAsync()
+    {
+        if (_saving || _detail?.EditableEdition is null) return;
+        var goal = _detail.Goal;
+        await MutateAsync(() => Goals.EditAsync(new(goal.OwnerId, goal.Id, goal.MutationVersion,
+            _detail.EditableEdition.Key, _editScope, _values.Definition(goal.Schedule.Metric), _detail.EditableEdition.State), _lifetime.Token), "Goal saved.");
+    }
+    private async Task ArchiveAsync()
+    {
+        if (_saving || _detail is null) return;
+        var goal = _detail.Goal;
+        var key = _detail.EditableEdition?.Key ?? _detail.History.FirstOrDefault()?.Key ?? _detail.Edition?.Key;
+        if (!key.HasValue) { _actionError = "Reload the goal before archiving."; return; }
+        var state = _detail.EditableEdition?.State ?? _detail.History.FirstOrDefault()?.State ?? _detail.Edition!.State;
+        await MutateAsync(() => Goals.ArchiveAsync(new(goal.OwnerId, goal.Id, goal.MutationVersion, key.Value, state), _lifetime.Token), "Goal archived. Its history is retained.");
+    }
+    private async Task MutateAsync(Func<Task> mutation, string message)
+    {
+        _saving = true; _actionError = null;
+        var revision = _revision;
+        try
+        {
+            await mutation();
+            if (!_disposed && revision == _revision) { await ReloadAsync(); _success = message; }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not update goal");
+            if (!_disposed && revision == _revision) _actionError = exception is ArgumentException or InvalidOperationException ? exception.Message : "The goal could not be saved. Your entries are kept; try again.";
+        }
+        finally { _saving = false; }
+    }
+    public void Dispose() { _disposed = true; _revision++; _load?.Cancel(); _load = null; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

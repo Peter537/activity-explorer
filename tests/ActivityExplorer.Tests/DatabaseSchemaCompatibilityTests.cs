@@ -6,6 +6,39 @@ namespace ActivityExplorer.Tests;
 public sealed class DatabaseSchemaCompatibilityTests
 {
     [Fact]
+    public async Task Goal_upgrade_is_additive_idempotent_and_cascades_definitions_with_their_owner()
+    {
+        var directory = TestSupport.NewDirectory();
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(directory, "legacy-goals.db")}").Options;
+        await using var db = new ExplorerDbContext(options);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE "Owners" ("Id" TEXT NOT NULL PRIMARY KEY);
+            CREATE TABLE "Activities" ("Id" TEXT NOT NULL PRIMARY KEY, "Title" TEXT NOT NULL);
+            INSERT INTO "Owners" VALUES ('owner'), ('other');
+            INSERT INTO "Activities" VALUES ('activity', 'Preserved title');
+            """);
+        await DatabaseInitializer.EnsureGoalsSchemaAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO "Goals" VALUES ('goal', 'owner', 0, 1, '2026-10-07', NULL, NULL, 2);
+            INSERT INTO "Goals" VALUES ('retained', 'other', 3, 0, '2026-10-01', '2026-10-31', NULL, 0);
+            INSERT INTO "GoalDefinitionRevisions" VALUES ('goal', '2026-10-05', 'Current', 1, 20000);
+            INSERT INTO "GoalDefinitionRevisions" VALUES ('goal', '2026-10-12', 'Future', NULL, 30000);
+            INSERT INTO "GoalDefinitionRevisions" VALUES ('retained', '2026-10-01', 'Other goal', NULL, 10);
+            """);
+        await DatabaseInitializer.EnsureGoalsSchemaAsync(db);
+        Assert.Equal("Preserved title", await ScalarAsync<string>(db, "SELECT \"Title\" FROM \"Activities\""));
+        Assert.Equal(2L, await ScalarAsync<long>(db, "SELECT \"MutationVersion\" FROM \"Goals\" WHERE \"Id\" = 'goal'"));
+        Assert.Equal(3L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"GoalDefinitionRevisions\""));
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"GoalDefinitionRevisions\" VALUES ('goal', '2026-10-12', 'Duplicate boundary', NULL, 50000)"));
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Owners\" WHERE \"Id\" = 'owner'");
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"Goals\""));
+        Assert.Equal("Other goal", await ScalarAsync<string>(db, "SELECT \"Name\" FROM \"GoalDefinitionRevisions\""));
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"Activities\""));
+    }
+
+    [Fact]
     public async Task Organization_upgrade_is_additive_idempotent_and_keeps_saved_deleted_tag_references()
     {
         var directory = TestSupport.NewDirectory();

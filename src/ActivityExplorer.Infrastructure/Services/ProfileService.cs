@@ -80,6 +80,7 @@ public sealed class ProfileService(
             db.ActivityTags.RemoveRange(db.ActivityTags.Where(x => x.Activity!.OwnerId == ownerId || x.Tag!.OwnerId == ownerId));
             db.Tags.RemoveRange(db.Tags.Where(x => x.OwnerId == ownerId));
             db.SavedSearches.RemoveRange(db.SavedSearches.Where(x => x.OwnerId == ownerId));
+            db.Goals.RemoveRange(db.Goals.Where(x => x.OwnerId == ownerId));
             db.Activities.RemoveRange(db.Activities.Where(x => x.OwnerId == ownerId));
             db.ImportBatches.RemoveRange(db.ImportBatches.Where(x => x.OwnerId == ownerId));
             db.WatchedFolders.RemoveRange(db.WatchedFolders.Where(x => x.OwnerId == ownerId));
@@ -152,6 +153,24 @@ public sealed class ProfileService(
             criteria = JsonSerializer.Deserialize<SavedSearchCriteria>(x.CriteriaJson)
                 ?? throw new InvalidOperationException($"Saved search '{x.Name}' has unreadable criteria.")
         }).ToArray();
+        var goals = await db.Goals.AsNoTracking().Where(x => x.OwnerId == ownerId)
+            .OrderBy(x => x.Id).Select(x => new
+            {
+                x.Id,
+                x.Metric,
+                x.Recurrence,
+                x.Start,
+                x.End,
+                x.ArchiveFromEdition,
+                x.MutationVersion,
+                definitions = x.Definitions.OrderBy(definition => definition.EffectiveFromEdition).Select(definition => new
+                {
+                    definition.EffectiveFromEdition,
+                    definition.Name,
+                    definition.Sport,
+                    definition.Target
+                }).ToArray()
+            }).ToArrayAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var payload = JsonSerializer.Serialize(new
         {
@@ -162,7 +181,8 @@ public sealed class ProfileService(
             activities,
             tags,
             activityTags,
-            savedSearches
+            savedSearches,
+            goals
         }, ExportJsonOptions);
         return new ProfileExport($"{SafeName(owner.DisplayName)}-activity-explorer.json", payload);
     }

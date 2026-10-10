@@ -25,10 +25,17 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
     public DbSet<Tag> Tags => Set<Tag>();
     public DbSet<ActivityTag> ActivityTags => Set<ActivityTag>();
     public DbSet<SavedSearch> SavedSearches => Set<SavedSearch>();
+    public DbSet<PersonalGoal> Goals => Set<PersonalGoal>();
+    public DbSet<GoalDefinitionRevision> GoalDefinitionRevisions => Set<GoalDefinitionRevision>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
+        modelBuilder.Entity<PersonalGoal>().HasIndex(x => x.OwnerId);
+        modelBuilder.Entity<PersonalGoal>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<GoalDefinitionRevision>().HasKey(x => new { x.GoalId, x.EffectiveFromEdition });
+        modelBuilder.Entity<GoalDefinitionRevision>().HasOne(x => x.Goal).WithMany(x => x.Definitions)
+            .HasForeignKey(x => x.GoalId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Tag>().HasIndex(x => new { x.OwnerId, x.NormalizedName }).IsUnique();
         modelBuilder.Entity<Tag>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<SavedSearch>().HasIndex(x => new { x.OwnerId, x.NormalizedName }).IsUnique();

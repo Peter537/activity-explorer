@@ -1,0 +1,66 @@
+@page "/goals"
+@implements IDisposable
+@inject IGoalService GoalService
+@inject ProfileState Profiles
+@inject NavigationManager Navigation
+@inject ILogger<Goals> Logger
+
+<PageTitle>Goals - Activity Explorer</PageTitle>
+<PageHeader Title="Goals"><Actions><a class="button primary" href="/goals/new">New goal</a></Actions></PageHeader>
+<div class="filter-bar"><label><span>Goal view</span><select value="@_view" @onchange="ChangeView"><option value="current">Current and upcoming</option><option value="all">All</option><option value="archived">Archived</option></select></label><button class="button" @onclick="LoadAsync" disabled="@_loading">Refresh goals</button></div>
+@if (_loading) { <p class="loading" role="status">Loading goals...</p> }
+else if (_error is not null) { <section class="notice error" role="alert"><p>@_error</p><button class="button" @onclick="LoadAsync">Try again</button></section> }
+else if (_goals.Count == 0)
+{
+    <section class="empty-state"><h2>No goals in this view</h2><p>Set a target for your distance, moving time, ascent, activities, or active days.</p><a class="button primary" href="/goals/new">Create a goal</a>@if (_view != "all") { <a class="button" href="/goals?view=all">View all goals</a> }</section>
+}
+else
+{
+    <div class="goal-list">
+    @foreach (var item in _goals)
+    {
+        <article class="panel" @key="item.Goal.Id">
+            <div class="panel-heading"><h2><a href="@GoalDisplay.Url(item.Goal.Id)">@item.Goal.Definition.Name</a></h2><span>@GoalDisplay.Recurrence(item.Goal.Schedule.Recurrence)</span></div>
+            <p class="goal-owner">@item.Goal.OwnerName · @item.Goal.TimeZoneId@if (item.Goal.Archived) { <text> · Archived</text> }</p>
+            @if (item.Error is not null) { <p class="notice error">@item.Error <a href="/profiles">Open Profiles</a></p> }
+            else if (item.Edition is not null) { <GoalProgress Edition="item.Edition" Metric="item.Goal.Schedule.Metric" /> }
+            else { <p>This goal was archived before its first edition began.</p> }
+        </article>
+    }
+    </div>
+}
+<p class="muted">Progress uses current activity summaries. Imports, corrections, deletions, transfers, and reporting timezone changes can change results, including past editions.</p>
+
+@code {
+    [SupplyParameterFromQuery(Name = "view")] public string? QueryView { get; set; }
+    private string _view = "current";
+    private IReadOnlyList<GoalSummary> _goals = [];
+    private bool _loading, _disposed;
+    private string? _error;
+    private int _revision;
+    private CancellationTokenSource? _load;
+    protected override void OnInitialized() => Profiles.Changed += ProfileChanged;
+    protected override Task OnParametersSetAsync() { _view = QueryView is "all" or "archived" ? QueryView : "current"; return LoadAsync(); }
+    private void ChangeView(ChangeEventArgs args) => Navigation.NavigateTo("/goals?view=" + args.Value);
+    private async Task LoadAsync()
+    {
+        _load?.Cancel();
+        using var load = new CancellationTokenSource(); _load = load;
+        var revision = ++_revision; _loading = true; _error = null; _goals = [];
+        try
+        {
+            var view = _view == "all" ? GoalListView.All : _view == "archived" ? GoalListView.Archived : GoalListView.CurrentAndUpcoming;
+            var result = await GoalService.ListAsync(Profiles.SelectedOwnerId, view, load.Token);
+            if (!_disposed && revision == _revision) _goals = result;
+        }
+        catch (OperationCanceledException) when (load.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not load goals");
+            if (!_disposed && revision == _revision) _error = exception is ArgumentException or InvalidOperationException ? exception.Message : "Goals could not be loaded. Try again.";
+        }
+        finally { if (revision == _revision) { _loading = false; _load = null; } }
+    }
+    private void ProfileChanged() => _ = InvokeAsync(async () => { if (_disposed) return; var task = LoadAsync(); StateHasChanged(); await task; if (!_disposed) StateHasChanged(); });
+    public void Dispose() { _disposed = true; _revision++; _load?.Cancel(); _load = null; Profiles.Changed -= ProfileChanged; }
+}

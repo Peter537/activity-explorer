@@ -1,0 +1,16 @@
+<div class="goal-progress">
+    <div class="goal-amounts"><strong>@GoalDisplay.Amount(Metric, Edition.Actual)</strong><span>of @GoalDisplay.Amount(Metric, Edition.Definition.Target)</span><span>@GoalDisplay.Number(Edition.Percentage)%</span></div>
+    <progress max="100" value="@Math.Clamp(Edition.Percentage, 0, 100).ToString(CultureInfo.InvariantCulture)" aria-label="@($"{Edition.Definition.Name}: {GoalDisplay.Number(Edition.Percentage)} percent")"></progress>
+    <div class="goal-status"><strong>@(Edition.Achieved ? "Target reached" : "Target not reached")</strong><span>@Edition.State · @GoalDisplay.Amount(Metric, Edition.Remaining) remaining</span></div>
+    <p class="goal-dates">@GoalDisplay.Range(Edition) · @(Edition.Definition.Sport?.ToString() ?? "All sports")</p>
+    @if (ShowPace && Edition.PaceTarget.HasValue)
+    {
+        <div class="goal-guide"><p><strong>Linear pace guide:</strong> @GoalDisplay.Amount(Metric, Edition.PaceTarget.Value) after @Edition.CompletedDays completed calendar days.</p><p>@GoalDisplay.Amount(Metric, Edition.RemainingPerDay!.Value) remaining per day over @Edition.RemainingDays days, including today. A guide, not a prediction.</p></div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public GoalEdition Edition { get; set; } = null!;
+    [Parameter] public GoalMetric Metric { get; set; }
+    [Parameter] public bool ShowPace { get; set; }
+}

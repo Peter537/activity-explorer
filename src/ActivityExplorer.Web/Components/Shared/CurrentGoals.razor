@@ -1,0 +1,64 @@
+@implements IDisposable
+@inject IGoalService Goals
+@inject ProfileState Profiles
+@inject ILogger<CurrentGoals> Logger
+
+<section class="panel current-goals" aria-label="Current goals">
+    <div class="panel-heading"><h2>Current goals</h2><a href="/goals">View all goals</a></div>
+    <p class="muted">Goals use their own sport and dates, independently of dashboard filters.</p>
+    @if (_loading) { <p role="status">Loading goals...</p> }
+    else if (_error is not null) { <div class="notice error" role="alert"><p>@_error</p><button class="button" @onclick="LoadAsync">Retry goals</button></div> }
+    else if (_goals.Count == 0) { <p>No current goals. <a href="/goals/new">Create a goal</a> or <a href="/goals">view upcoming goals</a>.</p> }
+    else
+    {
+        @foreach (var item in _goals)
+        {
+            <article class="current-goal" @key="item.Goal.Id">
+                <div class="goal-heading"><h3><a href="@GoalDisplay.Url(item.Goal.Id)">@item.Goal.Definition.Name</a></h3><span>@item.Goal.OwnerName@if (item.Goal.Archived) { <text> · Archived after this edition</text> }</span></div>
+                @if (item.Error is not null) { <p class="notice error">@item.Error</p> }
+                else if (item.Edition is not null) { <GoalProgress Edition="item.Edition" Metric="item.Goal.Schedule.Metric" /> }
+            </article>
+        }
+    }
+</section>
+
+@code {
+    [Parameter] public int RefreshKey { get; set; }
+    private int _lastRefresh = -1;
+    private IReadOnlyList<GoalSummary> _goals = [];
+    private string? _error;
+    private bool _loading, _disposed;
+    private int _revision;
+    private CancellationTokenSource? _load;
+    protected override void OnInitialized() => Profiles.Changed += ProfileChanged;
+    protected override Task OnParametersSetAsync()
+    {
+        if (_lastRefresh == RefreshKey) return Task.CompletedTask;
+        _lastRefresh = RefreshKey;
+        return LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        _load?.Cancel();
+        using var load = new CancellationTokenSource();
+        _load = load;
+        var revision = ++_revision;
+        _loading = true; _error = null; _goals = [];
+        try
+        {
+            var items = await Goals.ListAsync(Profiles.SelectedOwnerId, cancellationToken: load.Token);
+            if (!_disposed && revision == _revision)
+                _goals = items.Where(x => x.Error is not null || x.Edition?.State == GoalPeriodState.Active)
+                    .OrderBy(x => x.Edition?.End).ThenBy(x => x.Goal.OwnerName).ThenBy(x => x.Goal.Definition.Name).Take(6).ToArray();
+        }
+        catch (OperationCanceledException) when (load.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not load current goals");
+            if (!_disposed && revision == _revision) _error = "Goals could not be loaded. Try again.";
+        }
+        finally { if (revision == _revision) { _loading = false; _load = null; } }
+    }
+    private void ProfileChanged() => _ = InvokeAsync(async () => { if (_disposed) return; var task = LoadAsync(); StateHasChanged(); await task; if (!_disposed) StateHasChanged(); });
+    public void Dispose() { _disposed = true; _revision++; _load?.Cancel(); _load = null; Profiles.Changed -= ProfileChanged; }
+}

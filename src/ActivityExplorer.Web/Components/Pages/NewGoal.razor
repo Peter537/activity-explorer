@@ -1,0 +1,81 @@
+@page "/goals/new"
+@implements IDisposable
+@inject IGoalService Goals
+@inject ProfileState Profiles
+@inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ILogger<NewGoal> Logger
+
+<PageTitle>New goal - Activity Explorer</PageTitle>
+<PageHeader Title="New goal"><Actions><a class="button" href="/goals">Back to goals</a></Actions></PageHeader>
+<section class="panel">
+    <form class="goal-form" @onsubmit="CreateAsync" @onsubmit:preventDefault>
+        <fieldset disabled="@_saving">
+            <legend>Goal definition</legend>
+            <div class="goal-fields">
+                <label><span>Goal owner</span><select @bind="_owner" @bind:after="OwnerChanged" required><option value="">Choose a profile</option>@foreach (var profile in Profiles.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+                <label><span>Metric</span><select @bind="_metric">@foreach (var metric in Enum.GetValues<GoalMetric>()) { <option value="@metric">@GoalDisplay.Label(metric)</option> }</select></label>
+                <GoalDefinitionFields Value="_values" Metric="_metric" />
+                <label><span>Repeats</span><select @bind="_recurrence">@foreach (var recurrence in Enum.GetValues<GoalRecurrence>()) { <option value="@recurrence">@GoalDisplay.Recurrence(recurrence)</option> }</select></label>
+                <label><span>Start date</span><input type="date" @bind="_start" required /></label>
+                @if (_recurrence == GoalRecurrence.Once) { <label><span>End date</span><input type="date" @bind="_end" required /></label> }
+            </div>
+            <p class="muted">@(_recurrence == GoalRecurrence.Once ? "Both dates are included." : "The first edition keeps the full target and counts from the start date to the calendar period’s end. Weeks start on Monday.") Dates use the goal owner’s reporting timezone. Metric, recurrence, and dates stay fixed after creation.</p>
+            @if (_error is not null) { <p class="notice error" role="alert">@_error</p> }
+            <div class="goal-actions"><button class="button primary" type="submit">@(_saving ? "Creating goal..." : "Create goal")</button><a class="button" href="/goals">Cancel</a></div>
+        </fieldset>
+    </form>
+</section>
+
+@code {
+    private GoalFormValues _values = new();
+    private GoalMetric _metric;
+    private GoalRecurrence _recurrence = GoalRecurrence.Weekly;
+    private string _owner = "";
+    private DateTime? _start, _end;
+    private DateTime? _defaultStart;
+    private bool _saving, _disposed;
+    private string? _error;
+    private readonly CancellationTokenSource _lifetime = new();
+    protected override async Task OnInitializedAsync()
+    {
+        await Profiles.InitializeAsync();
+        _owner = Profiles.SelectedOwnerId?.ToString() ?? "";
+        OwnerChanged();
+    }
+    private void OwnerChanged()
+    {
+        _error = null;
+        try
+        {
+            var owner = Profiles.Profiles.FirstOrDefault(x => x.Id.ToString() == _owner);
+            var today = TimeZoneInfo.ConvertTime(Clock.GetUtcNow(), ReportingTimeZone.Resolve(owner?.TimeZoneId)).Date;
+            if (!_start.HasValue || _start == _defaultStart) _start = today;
+            if (!_end.HasValue || _end == _defaultStart) _end = today;
+            _defaultStart = today;
+        }
+        catch (InvalidOperationException exception) { _error = exception.Message; }
+    }
+    private async Task CreateAsync()
+    {
+        if (_saving) return;
+        _saving = true; _error = null;
+        try
+        {
+            if (!Guid.TryParse(_owner, out var owner)) throw new ArgumentException("Choose a profile for this goal.");
+            if (!_start.HasValue || _recurrence == GoalRecurrence.Once && !_end.HasValue) throw new ArgumentException("Enter the goal’s dates.");
+            var schedule = new GoalSchedule(_metric, _recurrence, DateOnly.FromDateTime(_start.Value),
+                _recurrence == GoalRecurrence.Once ? DateOnly.FromDateTime(_end!.Value) : null);
+            var id = await Goals.CreateAsync(new(owner, schedule, _values.Definition(_metric)), _lifetime.Token);
+            if (!_disposed) Navigation.NavigateTo(GoalDisplay.Url(id));
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            Logger.LogError(exception, "Could not create goal");
+            if (!_disposed) _error = exception is ArgumentException or InvalidOperationException ? exception.Message : "The goal could not be saved. Your entries are kept; try again.";
+        }
+        finally { _saving = false; }
+    }
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

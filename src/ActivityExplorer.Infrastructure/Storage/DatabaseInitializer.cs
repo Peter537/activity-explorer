@@ -20,6 +20,7 @@ public sealed class DatabaseInitializer(
         await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
         await EnsureSegmentLinksAsync(db, cancellationToken);
         await EnsureOrganizationSchemaAsync(db, cancellationToken);
+        await EnsureGoalsSchemaAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -146,6 +147,35 @@ public sealed class DatabaseInitializer(
         }
         if (!hasVersion)
             await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Activities\" ADD COLUMN \"MutationVersion\" INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureGoalsSchemaAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "Goals" (
+                "Id" TEXT NOT NULL PRIMARY KEY,
+                "OwnerId" TEXT NOT NULL,
+                "Metric" INTEGER NOT NULL,
+                "Recurrence" INTEGER NOT NULL,
+                "Start" TEXT NOT NULL,
+                "End" TEXT NULL,
+                "ArchiveFromEdition" TEXT NULL,
+                "MutationVersion" INTEGER NOT NULL,
+                FOREIGN KEY ("OwnerId") REFERENCES "Owners" ("Id") ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS "IX_Goals_OwnerId" ON "Goals" ("OwnerId");
+            CREATE TABLE IF NOT EXISTS "GoalDefinitionRevisions" (
+                "GoalId" TEXT NOT NULL,
+                "EffectiveFromEdition" TEXT NOT NULL,
+                "Name" TEXT NOT NULL,
+                "Sport" INTEGER NULL,
+                "Target" REAL NOT NULL,
+                PRIMARY KEY ("GoalId", "EffectiveFromEdition"),
+                FOREIGN KEY ("GoalId") REFERENCES "Goals" ("Id") ON DELETE CASCADE
+            );
+            """, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
 

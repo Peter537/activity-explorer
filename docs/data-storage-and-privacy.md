@@ -51,9 +51,17 @@ Imports and ordinary metadata edits retain tags. Reassigning an activity maps it
 
 Profile summary exports include `tags`, `activityTags`, and `savedSearches` with typed criteria, in the same read transaction as the existing export fields. The export schema version remains 1. Startup adds these organization tables and an activity mutation-version column idempotently to supported databases, with existing versions initialized to zero. This upgrade preserves activities and technical data.
 
+## Personal goals
+
+The local `Goals` table stores owner, metric, recurrence, effective start, optional one-off end, archive cutoff, and mutation version. `GoalDefinitionRevisions` stores name, optional sport filter, target, and the calendar edition start from which that definition applies. Distance and ascent targets use metres, moving time uses seconds, and activity/day targets use counts. Goal names and targets are private local metadata. Startup adds both tables idempotently to supported databases without changing activities or badges.
+
+Editions, progress, achievement, guides, and contributing activity lists are calculated from current summaries and the owner's current reporting timezone. They are not saved snapshots. Imports, corrections, deletions, transfers, and timezone changes can revise historical progress; no streams or originals are read for these calculations. Goals remain with their owner when activities transfer, and the next read reflects the changed contributions for both owners.
+
+Archiving keeps definition history and the complete active edition, then prevents future editions from starting. Archiving before the first start prevents all editions. There is no individual goal deletion or reactivation in this phase. Profile deletion removes its goals and revisions. Profile summary exports add `goals`, including schedules, archive cutoffs, mutation versions, and ordered `definitions`, in the existing consistent transaction and with export schema version 1. Derived progress is omitted. Goals require no network service or background worker. See [Personal goals](../README.md#personal-goals) for editing and progress rules.
+
 ## Badge settings
 
-Profiles also store an optional reporting timezone, defaulting to Europe/Copenhagen. Changing it updates activity reporting dates, date filters, and badge calendar interpretation without rewriting imported timestamps or source offsets. Filtered totals and badge results are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).
+Profiles also store an optional reporting timezone, defaulting to Europe/Copenhagen. Changing it updates activity reporting dates, date filters, goals, and badge calendar interpretation without rewriting imported timestamps or source offsets. Filtered totals and badge results are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).
 
 ## Network behavior
 

@@ -1,0 +1,7 @@
+.goal-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.goal-list h2, .goal-owner { overflow-wrap: anywhere; }
+.goal-owner { color: var(--muted); font-size: .9rem; }
+.panel-heading { flex-wrap: wrap; gap: 8px 16px; }
+.panel-heading > span { color: var(--muted); }
+.empty-state .button { margin: 6px; }
+@media (max-width: 1120px) { .goal-list { grid-template-columns: 1fr; } }
