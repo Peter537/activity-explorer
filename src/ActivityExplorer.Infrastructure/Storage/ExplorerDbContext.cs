@@ -22,10 +22,20 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
     public DbSet<WatchedFolder> WatchedFolders => Set<WatchedFolder>();
     public DbSet<ApplicationSetting> ApplicationSettings => Set<ApplicationSetting>();
     public DbSet<FileOperationJournal> FileOperations => Set<FileOperationJournal>();
+    public DbSet<Tag> Tags => Set<Tag>();
+    public DbSet<ActivityTag> ActivityTags => Set<ActivityTag>();
+    public DbSet<SavedSearch> SavedSearches => Set<SavedSearch>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
+        modelBuilder.Entity<Tag>().HasIndex(x => new { x.OwnerId, x.NormalizedName }).IsUnique();
+        modelBuilder.Entity<Tag>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<SavedSearch>().HasIndex(x => new { x.OwnerId, x.NormalizedName }).IsUnique();
+        modelBuilder.Entity<SavedSearch>().HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ActivityTag>().HasKey(x => new { x.ActivityId, x.TagId });
+        modelBuilder.Entity<ActivityTag>().HasOne(x => x.Activity).WithMany(x => x.Tags).HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ActivityTag>().HasOne(x => x.Tag).WithMany().HasForeignKey(x => x.TagId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ImportBatch>().HasIndex(x => new { x.OwnerId, x.CreatedAtUtc });
         modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.Sha256 }).IsUnique();
         modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.ExternalId });

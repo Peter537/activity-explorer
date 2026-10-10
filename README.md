@@ -17,6 +17,7 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Deduplicates exact files and equivalent activities across formats while retaining provenance.
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
 - Shows activity count, distance, moving time, and ascent for the complete filtered result, with shared date shortcuts on Activities and World Map.
+- Organizes activities with profile-owned tags and named saved searches, and reviews exact batches of tag or gear changes before applying them atomically.
 - Compares training periods, charts weekly or monthly progress across five summary metrics, and opens daily activity lists from a monthly training calendar.
 - Charts each activity’s best benchmark attempt and the best result so far within a selected period, separately for each profile.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
@@ -48,6 +49,14 @@ dotnet run --project src/ActivityExplorer.Web
 Open [http://localhost:8342](http://localhost:8342), create a profile, and open **Imports**. Choose **Complete Garmin history**, **Recent files**, or **Local inbox**. Work continues in a durable background queue, and reports remain available after completion.
 
 On Bash shells, the same dotnet commands work unchanged.
+
+## Organizing activities
+
+Select one profile on **Activities** to manage tags, filter by **Tags — match any**, or save an applied search. **All profiles** still shows activity tags. Names are unique within a profile, ignoring surrounding whitespace and letter case. Tags can also be edited separately on activity detail.
+
+Saved searches retain filters, sorting, and the chosen date period. Opening a relative period resolves it again; custom dates stay fixed. Use **Replace with applied filters** to update a search explicitly. A deleted tag blocks that search until you choose replacement tags or explicitly save its removal. Tag bookmarks opened under another profile offer a profile-switch action.
+
+Select activities across pages, then choose **Edit selected**, or use **Edit all matching** for the applied filter. Review tag additions/removals and unchanged, set, or cleared gear before applying. The review fixes the exact activity list; later imports are excluded. Any intervening activity edit invalidates the whole review and requires a refresh. Gear changes protect local metadata from import enrichment; tag-only changes do not. Deletion remains a separate action.
 
 ## Docker Compose
 

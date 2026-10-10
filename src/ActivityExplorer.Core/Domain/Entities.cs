@@ -119,6 +119,8 @@ public sealed class Activity
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public ActivityStream? Stream { get; set; }
+    public long MutationVersion { get; set; }
+    public List<ActivityTag> Tags { get; set; } = [];
     public List<ActivityLap> Laps { get; set; } = [];
     public List<SourceFile> SourceFiles { get; set; } = [];
     public List<ActivityMetric> Metrics { get; set; } = [];

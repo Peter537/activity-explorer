@@ -6,6 +6,38 @@ namespace ActivityExplorer.Tests;
 public sealed class DatabaseSchemaCompatibilityTests
 {
     [Fact]
+    public async Task Organization_upgrade_is_additive_idempotent_and_keeps_saved_deleted_tag_references()
+    {
+        var directory = TestSupport.NewDirectory();
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(directory, "legacy-organization.db")}").Options;
+        await using var db = new ExplorerDbContext(options);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE "Owners" ("Id" TEXT NOT NULL PRIMARY KEY);
+            CREATE TABLE "Activities" ("Id" TEXT NOT NULL PRIMARY KEY, "Title" TEXT NOT NULL);
+            INSERT INTO "Owners" VALUES ('owner');
+            INSERT INTO "Activities" VALUES ('activity', 'Preserved title');
+            """);
+        await DatabaseInitializer.EnsureOrganizationSchemaAsync(db);
+        await db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO "Tags" VALUES ('tag', 'owner', 'Commute', 'COMMUTE');
+            INSERT INTO "ActivityTags" VALUES ('activity', 'tag');
+            INSERT INTO "SavedSearches" VALUES ('saved', 'owner', 'Saved', 'SAVED', '{{"TagId":"tag"}}');
+            """);
+        await DatabaseInitializer.EnsureOrganizationSchemaAsync(db);
+        Assert.Equal("Preserved title", await ScalarAsync<string>(db, "SELECT \"Title\" FROM \"Activities\""));
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT \"MutationVersion\" FROM \"Activities\""));
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"ActivityTags\""));
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => db.Database.ExecuteSqlRawAsync("INSERT INTO \"Tags\" VALUES ('duplicate', 'owner', 'commute', 'COMMUTE')"));
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Tags\" WHERE \"Id\" = 'tag'");
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"ActivityTags\""));
+        Assert.Equal(1L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"Activities\""));
+        Assert.Contains("tag", await ScalarAsync<string>(db, "SELECT \"CriteriaJson\" FROM \"SavedSearches\""), StringComparison.Ordinal);
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Owners\" WHERE \"Id\" = 'owner'");
+        Assert.Equal(0L, await ScalarAsync<long>(db, "SELECT COUNT(*) FROM \"SavedSearches\""));
+    }
+
+    [Fact]
     public async Task Adds_segment_links_idempotently_and_cascades_only_relationships()
     {
         var directory = TestSupport.NewDirectory();

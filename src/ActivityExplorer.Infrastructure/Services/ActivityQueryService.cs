@@ -31,6 +31,11 @@ public sealed partial class ActivityQueryService(
         var pageSize = Math.Clamp(filter.PageSize, 1, 100);
         var activities = await ApplySort(query.Include(x => x.Owner), filter.Sort)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        var activityIds = activities.Select(x => x.Id).ToArray();
+        var tags = await db.ActivityTags.AsNoTracking().Include(x => x.Tag)
+            .Where(x => activityIds.Contains(x.ActivityId)).ToListAsync(cancellationToken);
+        var tagsByActivity = tags.ToLookup(x => x.ActivityId);
+        foreach (var activity in activities) activity.Tags = tagsByActivity[activity.Id].ToList();
         await transaction.CommitAsync(cancellationToken);
         return new(activities.Select(ToSummary).ToArray(), totals.ActivityCount, page, pageSize, totals,
             effective with { Page = page, PageSize = pageSize });
@@ -59,6 +64,7 @@ public sealed partial class ActivityQueryService(
             .Include(x => x.Laps)
             .Include(x => x.SourceFiles)
             .Include(x => x.Metrics)
+            .Include(x => x.Tags).ThenInclude(x => x.Tag)
             .AsSplitQuery()
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (activity is null) return null;
@@ -249,8 +255,13 @@ public sealed partial class ActivityQueryService(
     {
         ValidateMetric(request);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var activity = await db.Activities.SingleOrDefaultAsync(x => x.Id == activityId, cancellationToken)
+        var oldOwner = await db.Activities.AsNoTracking().Where(x => x.Id == activityId)
+            .Select(x => (Guid?)x.OwnerId).SingleOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("Activity was not found.");
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([oldOwner], cancellationToken);
+        var activity = await db.Activities.SingleOrDefaultAsync(x => x.Id == activityId, cancellationToken);
+        if (activity is null || activity.OwnerId != oldOwner)
+            throw new InvalidOperationException("The activity changed. Refresh it and try again.");
         var key = NormalizeMetricKey(request.Key, request.Label);
         if (await db.ActivityMetrics.AnyAsync(x => x.ActivityId == activityId && x.Key == key && x.Origin == ActivityMetricOrigin.Manual, cancellationToken))
             throw new InvalidOperationException("A custom metric with this key already exists.");
@@ -266,6 +277,8 @@ public sealed partial class ActivityQueryService(
             Origin = ActivityMetricOrigin.Manual
         };
         db.ActivityMetrics.Add(metric);
+        activity.MutationVersion++;
+        activity.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
         return metric.Id;
     }
@@ -274,6 +287,13 @@ public sealed partial class ActivityQueryService(
     {
         ValidateMetric(request);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var oldOwner = await db.Activities.AsNoTracking().Where(x => x.Id == activityId)
+            .Select(x => (Guid?)x.OwnerId).SingleOrDefaultAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Activity was not found.");
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([oldOwner], cancellationToken);
+        var activity = await db.Activities.SingleOrDefaultAsync(x => x.Id == activityId, cancellationToken);
+        if (activity is null || activity.OwnerId != oldOwner)
+            throw new InvalidOperationException("The activity changed. Refresh it and try again.");
         var metric = await db.ActivityMetrics
             .SingleOrDefaultAsync(x => x.Id == metricId && x.ActivityId == activityId && x.Origin == ActivityMetricOrigin.Manual, cancellationToken)
             ?? throw new InvalidOperationException("The editable custom metric was not found.");
@@ -286,16 +306,27 @@ public sealed partial class ActivityQueryService(
         metric.TextValue = Clean(request.TextValue);
         metric.Unit = Clean(request.Unit);
         metric.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        activity.MutationVersion++;
+        activity.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task DeleteMetricAsync(Guid activityId, Guid metricId, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var oldOwner = await db.Activities.AsNoTracking().Where(x => x.Id == activityId)
+            .Select(x => (Guid?)x.OwnerId).SingleOrDefaultAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Activity was not found.");
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([oldOwner], cancellationToken);
+        var activity = await db.Activities.SingleOrDefaultAsync(x => x.Id == activityId, cancellationToken);
+        if (activity is null || activity.OwnerId != oldOwner)
+            throw new InvalidOperationException("The activity changed. Refresh it and try again.");
         var metric = await db.ActivityMetrics
             .SingleOrDefaultAsync(x => x.Id == metricId && x.ActivityId == activityId && x.Origin == ActivityMetricOrigin.Manual, cancellationToken)
             ?? throw new InvalidOperationException("The editable custom metric was not found.");
         db.ActivityMetrics.Remove(metric);
+        activity.MutationVersion++;
+        activity.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
 
@@ -319,8 +350,11 @@ public sealed partial class ActivityQueryService(
 
         var activity = await db.Activities
             .Include(x => x.Stream).Include(x => x.Laps).Include(x => x.SourceFiles).Include(x => x.Metrics)
+            .Include(x => x.Tags).ThenInclude(x => x.Tag)
             .AsSplitQuery()
-            .SingleAsync(x => x.Id == id, cancellationToken);
+            .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (activity is null || activity.OwnerId != oldOwner)
+            throw new InvalidOperationException("The activity changed. Refresh it and try again.");
         if (!await db.Owners.AnyAsync(x => x.Id == request.OwnerId, cancellationToken))
             throw new InvalidOperationException("The selected profile was not found.");
 
@@ -329,6 +363,7 @@ public sealed partial class ActivityQueryService(
         activity.GearName = Clean(request.GearName);
         activity.UserEdited = true;
         activity.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        activity.MutationVersion++;
         if (oldOwner == request.OwnerId)
         {
             await db.SaveChangesAsync(cancellationToken);
@@ -406,6 +441,23 @@ public sealed partial class ActivityQueryService(
                 source.StoredPath = pathMap[source.StoredPath];
             }
             foreach (var metric in activity.Metrics) metric.OwnerId = request.OwnerId;
+            var sourceTags = activity.Tags.Select(x => x.Tag!).ToArray();
+            var normalizedNames = sourceTags.Select(x => x.Name.Trim().ToUpperInvariant()).Distinct().ToArray();
+            var destinationTags = await db.Tags.Where(x => x.OwnerId == request.OwnerId && normalizedNames.Contains(x.NormalizedName))
+                .ToDictionaryAsync(x => x.NormalizedName, cancellationToken);
+            db.ActivityTags.RemoveRange(activity.Tags);
+            activity.Tags.Clear();
+            foreach (var sourceTag in sourceTags)
+            {
+                var normalizedName = sourceTag.Name.Trim().ToUpperInvariant();
+                if (!destinationTags.TryGetValue(normalizedName, out var destinationTag))
+                {
+                    destinationTag = new Tag { OwnerId = request.OwnerId, Name = sourceTag.Name.Trim(), NormalizedName = normalizedName };
+                    db.Tags.Add(destinationTag);
+                    destinationTags.Add(normalizedName, destinationTag);
+                }
+                activity.Tags.Add(new ActivityTag { ActivityId = id, TagId = destinationTag.Id, Tag = destinationTag });
+            }
             db.SegmentEfforts.RemoveRange(await db.SegmentEfforts
                 .Where(x => x.ActivityId == id).ToListAsync(cancellationToken));
             await db.SaveChangesAsync(cancellationToken);
@@ -433,6 +485,15 @@ public sealed partial class ActivityQueryService(
 
     private async Task<ActivityFilter> ResolveFilterAsync(ExplorerDbContext db, ActivityFilter filter, CancellationToken cancellationToken)
     {
+        var tagIds = filter.TagIds?.Distinct().Order().ToArray() ?? [];
+        if (tagIds.Length > 0)
+        {
+            if (!filter.OwnerId.HasValue)
+                throw new ArgumentException("Select one profile to filter by tags.", nameof(filter));
+            var validCount = await db.Tags.CountAsync(x => x.OwnerId == filter.OwnerId && tagIds.Contains(x.Id), cancellationToken);
+            if (validCount != tagIds.Length)
+                throw new InvalidOperationException("One or more selected tags were deleted or belong to another profile. Remove or replace them before applying this search.");
+        }
         var selection = ReportingDateQuery.Selection(filter.Period, filter.From, filter.To);
         ReportingDates.Validate(selection);
         var asOf = filter.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
@@ -443,7 +504,8 @@ public sealed partial class ActivityQueryService(
             From = selection.Preset == ReportingPreset.Custom ? selection.From : null,
             To = selection.Preset == ReportingPreset.Custom ? selection.To : null,
             AsOfUtc = asOf,
-            ResolvedPeriods = periods
+            ResolvedPeriods = periods,
+            TagIds = tagIds
         };
     }
 
@@ -451,6 +513,11 @@ public sealed partial class ActivityQueryService(
     {
         if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
         if (filter.Sport.HasValue) query = query.Where(x => x.Sport == filter.Sport);
+        if (filter.TagIds is { Count: > 0 })
+        {
+            var tagIds = filter.TagIds.ToArray();
+            query = query.Where(x => x.Tags.Any(tag => tagIds.Contains(tag.TagId)));
+        }
         query = ReportingDateQuery.Apply(query, filter.ResolvedPeriods!);
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
@@ -500,5 +567,10 @@ public sealed partial class ActivityQueryService(
     private static ActivitySummary ToSummary(Activity x) => new(
         x.Id, x.OwnerId, x.Owner?.DisplayName ?? "Unknown profile", x.Title, x.Sport, x.StartTimeUtc,
         x.DistanceMeters, x.MovingTimeSeconds, x.ElevationGainMeters, x.AveragePowerWatts,
-        x.DeviceName, x.HasGps, x.HasPower);
+        x.DeviceName, x.HasGps, x.HasPower)
+    {
+        Tags = x.Tags.OrderBy(tag => tag.Tag!.Name).ThenBy(tag => tag.TagId)
+            .Select(tag => new TagSummary(tag.TagId, tag.Tag!.Name)).ToArray(),
+        MutationVersion = x.MutationVersion
+    };
 }

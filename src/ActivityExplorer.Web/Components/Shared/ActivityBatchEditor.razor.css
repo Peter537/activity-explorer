@@ -1,0 +1,5 @@
+.batch-editor { margin-bottom: 18px; overflow-wrap: anywhere; }
+.batch-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+.batch-fields label { min-width: 0; }
+.batch-editor .button-row { flex-wrap: wrap; }
+@media (max-width: 600px) { .batch-fields { grid-template-columns: minmax(0, 1fr); } }

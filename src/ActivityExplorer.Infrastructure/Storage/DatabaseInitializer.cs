@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace ActivityExplorer.Infrastructure.Storage;
@@ -18,6 +19,7 @@ public sealed class DatabaseInitializer(
         await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
         await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
         await EnsureSegmentLinksAsync(db, cancellationToken);
+        await EnsureOrganizationSchemaAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -101,6 +103,50 @@ public sealed class DatabaseInitializer(
             );
             CREATE INDEX IF NOT EXISTS "IX_SegmentLinks_ChildSegmentId" ON "SegmentLinks" ("ChildSegmentId");
             """, cancellationToken);
+    }
+
+    internal static async Task EnsureOrganizationSchemaAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "Tags" (
+                "Id" TEXT NOT NULL PRIMARY KEY,
+                "OwnerId" TEXT NOT NULL,
+                "Name" TEXT NOT NULL,
+                "NormalizedName" TEXT NOT NULL,
+                FOREIGN KEY ("OwnerId") REFERENCES "Owners" ("Id") ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_Tags_OwnerId_NormalizedName" ON "Tags" ("OwnerId", "NormalizedName");
+            CREATE TABLE IF NOT EXISTS "ActivityTags" (
+                "ActivityId" TEXT NOT NULL,
+                "TagId" TEXT NOT NULL,
+                PRIMARY KEY ("ActivityId", "TagId"),
+                FOREIGN KEY ("ActivityId") REFERENCES "Activities" ("Id") ON DELETE CASCADE,
+                FOREIGN KEY ("TagId") REFERENCES "Tags" ("Id") ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ActivityTags_TagId" ON "ActivityTags" ("TagId");
+            CREATE TABLE IF NOT EXISTS "SavedSearches" (
+                "Id" TEXT NOT NULL PRIMARY KEY,
+                "OwnerId" TEXT NOT NULL,
+                "Name" TEXT NOT NULL,
+                "NormalizedName" TEXT NOT NULL,
+                "CriteriaJson" TEXT NOT NULL,
+                FOREIGN KEY ("OwnerId") REFERENCES "Owners" ("Id") ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_SavedSearches_OwnerId_NormalizedName" ON "SavedSearches" ("OwnerId", "NormalizedName");
+            """, cancellationToken);
+        var hasVersion = false;
+        await using (var command = db.Database.GetDbConnection().CreateCommand())
+        {
+            command.Transaction = transaction.GetDbTransaction();
+            command.CommandText = "PRAGMA table_info('Activities')";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                if (reader.GetString(1) == "MutationVersion") hasVersion = true;
+        }
+        if (!hasVersion)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"Activities\" ADD COLUMN \"MutationVersion\" INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task ReportUntrackedOriginalsAsync(ExplorerDbContext db, CancellationToken cancellationToken)

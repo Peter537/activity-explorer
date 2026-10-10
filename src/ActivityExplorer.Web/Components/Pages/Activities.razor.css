@@ -1,5 +1,12 @@
 .activity-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 16px; margin: 0 0 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
 .activity-totals dt { color: var(--muted); font-size: 12px; }
+.organization-controls { border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.tag-filter { flex: 1 0 100%; min-width: 0; }
+.activity-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.activity-tags > span { background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 11px; overflow-wrap: anywhere; max-width: 100%; }
+.bulk-action-buttons { max-width: 75%; }
+.deletion-actions { display: flex; flex-wrap: wrap; gap: 8px; border-left: 1px solid var(--line); padding-left: 8px; }
+@media (max-width: 800px) { .bulk-actions { align-items: stretch; flex-direction: column; } .bulk-action-buttons { max-width: none; justify-content: flex-start; } .deletion-actions { border-left: 0; padding-left: 0; } }
 .activity-totals dd { margin: 3px 0 0; font-size: clamp(1.1rem, 2vw, 1.5rem); font-weight: 700; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .activity-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) {

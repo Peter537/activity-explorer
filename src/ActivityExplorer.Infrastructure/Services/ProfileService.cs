@@ -77,6 +77,9 @@ public sealed class ProfileService(
             db.ActivityLaps.RemoveRange(db.ActivityLaps.Where(x => x.OwnerId == ownerId));
             db.ActivityStreams.RemoveRange(db.ActivityStreams.Where(x => x.OwnerId == ownerId));
             db.SourceFiles.RemoveRange(db.SourceFiles.Where(x => x.OwnerId == ownerId));
+            db.ActivityTags.RemoveRange(db.ActivityTags.Where(x => x.Activity!.OwnerId == ownerId || x.Tag!.OwnerId == ownerId));
+            db.Tags.RemoveRange(db.Tags.Where(x => x.OwnerId == ownerId));
+            db.SavedSearches.RemoveRange(db.SavedSearches.Where(x => x.OwnerId == ownerId));
             db.Activities.RemoveRange(db.Activities.Where(x => x.OwnerId == ownerId));
             db.ImportBatches.RemoveRange(db.ImportBatches.Where(x => x.OwnerId == ownerId));
             db.WatchedFolders.RemoveRange(db.WatchedFolders.Where(x => x.OwnerId == ownerId));
@@ -109,7 +112,9 @@ public sealed class ProfileService(
 
     public async Task<ProfileExport> ExportAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var owner = await db.Owners.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ownerId, cancellationToken)
             ?? throw new InvalidOperationException("Profile was not found.");
         var activities = await db.Activities.AsNoTracking().Where(x => x.OwnerId == ownerId)
@@ -133,13 +138,31 @@ public sealed class ProfileService(
                 x.DeviceName,
                 x.GearName
             }).ToListAsync(cancellationToken);
+        var tags = await db.Tags.AsNoTracking().Where(x => x.OwnerId == ownerId)
+            .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(cancellationToken);
+        var activityTags = await db.ActivityTags.AsNoTracking().Where(x => x.Activity!.OwnerId == ownerId)
+            .OrderBy(x => x.ActivityId).ThenBy(x => x.TagId)
+            .Select(x => new { x.ActivityId, x.TagId }).ToListAsync(cancellationToken);
+        var savedRows = await db.SavedSearches.AsNoTracking().Where(x => x.OwnerId == ownerId)
+            .OrderBy(x => x.Name).ToListAsync(cancellationToken);
+        var savedSearches = savedRows.Select(x => new
+        {
+            x.Id,
+            x.Name,
+            criteria = JsonSerializer.Deserialize<SavedSearchCriteria>(x.CriteriaJson)
+                ?? throw new InvalidOperationException($"Saved search '{x.Name}' has unreadable criteria.")
+        }).ToArray();
+        await transaction.CommitAsync(cancellationToken);
         var payload = JsonSerializer.Serialize(new
         {
             schemaVersion = 1,
             productVersion = "0.1.0",
             exportedAtUtc = DateTimeOffset.UtcNow,
             profile = new { owner.Id, owner.DisplayName, owner.CreatedAtUtc, timeZoneId = owner.TimeZoneId ?? ReportingTimeZone.DefaultId },
-            activities
+            activities,
+            tags,
+            activityTags,
+            savedSearches
         }, ExportJsonOptions);
         return new ProfileExport($"{SafeName(owner.DisplayName)}-activity-explorer.json", payload);
     }

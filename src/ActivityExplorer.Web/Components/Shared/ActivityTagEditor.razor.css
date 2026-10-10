@@ -1,0 +1,12 @@
+.activity-tags { min-width: 0; margin: 0 0 20px; }
+.activity-tags-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.assigned-tags { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; margin: 0; padding: 0; list-style: none; }
+.assigned-tags li { min-width: 0; max-width: 100%; padding: 3px 8px; border-radius: 5px; background: var(--green-soft); color: var(--green-dark); font-size: .85rem; overflow-wrap: anywhere; }
+.tag-editor { margin-top: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.tag-create-form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.tag-create-form label { flex: 1 1 200px; min-width: 0; max-width: 400px; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 560px) {
+    .tag-create-form { align-items: stretch; flex-direction: column; }
+    .tag-create-form label { flex-basis: auto; max-width: none; }
+}

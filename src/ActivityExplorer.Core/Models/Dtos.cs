@@ -12,7 +12,8 @@ public sealed record ActivityFilter(
     string? Search = null, bool? HasPower = null, string? Device = null,
     int Page = 1, int PageSize = 25, string Sort = "start-desc",
     ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null,
-    IReadOnlyList<ResolvedOwnerPeriod>? ResolvedPeriods = null);
+    IReadOnlyList<ResolvedOwnerPeriod>? ResolvedPeriods = null,
+    IReadOnlyList<Guid>? TagIds = null);
 
 public sealed record ActivityTotals(int ActivityCount, double DistanceMeters, double MovingSeconds, double ElevationMeters);
 
@@ -29,7 +30,11 @@ public sealed record ActivityDeletionResult(
 public sealed record ActivitySummary(
     Guid Id, Guid OwnerId, string OwnerName, string Title, SportKind Sport, DateTimeOffset StartTime,
     double DistanceMeters, double MovingSeconds, double ElevationMeters, double? AveragePowerWatts,
-    string? DeviceName, bool HasGps, bool HasPower);
+    string? DeviceName, bool HasGps, bool HasPower)
+{
+    public IReadOnlyList<TagSummary> Tags { get; init; } = [];
+    public long MutationVersion { get; init; }
+}
 
 public sealed record ActivityDetail(
     ActivitySummary Summary, string? Description, string? GearName, double ElapsedSeconds, double? Calories,

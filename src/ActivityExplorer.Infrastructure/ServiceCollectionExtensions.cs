@@ -39,6 +39,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<WatchedFolderWorker>();
 
         services.AddSingleton<IActivityQueryService, ActivityQueryService>();
+        services.AddSingleton<IActivityOrganizationService, ActivityOrganizationService>();
         services.AddHostedService<WatchedFolderSignalWorker>();
         services.AddSingleton<ISegmentMatcher, SegmentMatcher>();
         services.AddSingleton<ISegmentService, SegmentService>();

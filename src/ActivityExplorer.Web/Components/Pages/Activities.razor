@@ -5,13 +5,30 @@
 @using ActivityExplorer.Web.Components.Shared
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
+@inject IActivityOrganizationService Organization
 
 <PageTitle>Activities - Activity Explorer</PageTitle>
 <PageHeader Title="Activities" Summary="Search, filter, and inspect every imported activity." />
+@if (ProfileState.SelectedOwnerId is { } organizationOwner)
+{
+    <div class="organization-controls">
+        <SavedSearches @key="(organizationOwner, nameof(SavedSearches))" OwnerId="organizationOwner" Tags="_tags" Revision="_organizationRevision"
+                       AppliedCriteria="AppliedSearchCriteria" Disabled="@(_busy || _loading || _batchEditing || _deleteConfirming)" OnOpen="criteria => OpenSavedSearch(organizationOwner, criteria)" />
+        <TagManager @key="(organizationOwner, nameof(TagManager))" OwnerId="organizationOwner" Changed="() => OrganizationChanged(organizationOwner)" />
+    </div>
+}
+else
+{
+    <p class="muted">Select one profile to filter tags, use saved searches, or edit activities in bulk.</p>
+}
 <form class="filter-bar" aria-label="Activity filters" @onsubmit="Apply" @onsubmit:preventDefault>
     <label><span>Search</span><input @bind="_search" @bind:event="oninput" @bind:after="FiltersChanged" placeholder="Title or notes" /></label>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
     <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" />
+    @if (ProfileState.SelectedOwnerId.HasValue)
+    {
+        <div class="tag-filter"><TagPicker Tags="_tags" SelectedIds="_tagIds" Changed="TagFiltersChanged" Label="Tags — match any" Disabled="_busy" /></div>
+    }
     <details class="more-filters" open="@HasSecondaryFilters">
         <summary>More filters <span class="filter-count">@SecondaryFilterCount active</span></summary>
         <div class="filter-fields">
@@ -19,10 +36,24 @@
             <label><span>Device</span><input @bind="_device" @bind:event="oninput" @bind:after="FiltersChanged" placeholder="Device name" /></label>
         </div>
     </details>
-    <label><span>Sort</span><select @bind="_sort" @bind:after="SortChanged"><option value="start-desc">Newest</option><option value="start-asc">Oldest</option><option value="distance-desc">Longest</option><option value="duration-desc">Most time</option><option value="elevation-desc">Most elevation</option></select></label>
-    <button class="button primary" type="submit" disabled="@(_busy || _dateError is not null)">Apply filters</button>
+    <label><span>Sort</span><select @bind="_sort" @bind:after="SortChanged"><option value="start-desc">Newest</option><option value="start-asc">Oldest</option><option value="distance-desc">Longest</option><option value="distance-asc">Shortest</option><option value="duration-desc">Most time</option><option value="elevation-desc">Most elevation</option></select></label>
+    <button class="button primary" type="submit" disabled="@(_busy || _dateError is not null || _tagError is not null)">Apply filters</button>
     <button class="button" type="button" disabled="@_busy" @onclick="Reset">Reset</button>
 </form>
+
+<StatusMessage Message="@_tagError" IsError="true" />
+@if (_tagOwner.HasValue && _tagOwner != ProfileState.SelectedOwnerId && _tagIds.Count > 0)
+{
+    @if (ProfileState.Profiles.FirstOrDefault(profile => profile.Id == _tagOwner) is { } bookmarkOwner)
+    {
+        <button class="button" @onclick="SwitchBookmarkProfile">Switch to @bookmarkOwner.DisplayName</button>
+    }
+    <button class="button" @onclick="ClearTagFilters">Remove tag filter</button>
+}
+else if (_tagError is not null)
+{
+    <button class="button" @onclick="ClearTagFilters">Remove tag filter</button>
+}
 
 <StatusMessage Message="@_statusMessage" />
 <StatusMessage Message="@_warningMessage" IsWarning="true" />
@@ -53,17 +84,31 @@
 }
 else if (_result is not null)
 {
-    <div class="bulk-actions" aria-label="Activity deletion actions">
+    <div class="bulk-actions" aria-label="Activity selection and actions">
         <div>
             <strong>@_result.Total.ToString("N0") activities</strong>
             <span aria-live="polite">@SelectedSummary</span>
         </div>
         <div class="bulk-action-buttons">
-            <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming)" @onclick="ToggleCurrentPageSelection">@(AllCurrentPageSelected ? "Clear this page" : "Select this page")</button>
-            <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _selectedIds.Count == 0)" @onclick="BeginSelectedDelete">Delete selected</button>
-            <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming)" @onclick="BeginAllMatchingDelete">Delete all @_result.Total.ToString("N0") matching</button>
+            <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="ToggleCurrentPageSelection">@(AllCurrentPageSelected ? "Clear this page" : "Select this page")</button>
+            @if (_selectedIds.Count > 0) { <button class="button" type="button" disabled="@(_busy || _batchEditing || _deleteConfirming)" @onclick="ClearSelectionAndConfirmation">Clear selection</button> }
+            @if (ProfileState.SelectedOwnerId.HasValue)
+            {
+                <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selectedIds.Count == 0)" @onclick="() => BeginBatch(false)">Edit selected</button>
+                <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="() => BeginBatch(true)">Edit all matching</button>
+            }
+            <div class="deletion-actions" aria-label="Activity deletion actions">
+                <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selectedIds.Count == 0)" @onclick="BeginSelectedDelete">Delete selected</button>
+                <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="BeginAllMatchingDelete">Delete all @_result.Total.ToString("N0") matching</button>
+            </div>
         </div>
     </div>
+    @if (_batchEditing && ProfileState.SelectedOwnerId is { } batchOwner)
+    {
+        var batchGeneration = _batchGeneration;
+        <ActivityBatchEditor @key="_batchGeneration" OwnerId="batchOwner" Tags="_tags" SelectedIds="_batchIds" Filter="_result.EffectiveFilter"
+                             AllMatching="_batchAll" OnApplied="result => BatchApplied(batchOwner, batchGeneration, result)" OnCancel="CancelBatch" OnRefresh="RefreshOrganizationActivities" />
+    }
     @if (_deleteConfirming)
     {
         <ActivityDeleteConfirmation Count="@_pendingDeleteIds.Count" ActivityName="@_pendingActivityName"
@@ -76,13 +121,15 @@ else if (_result is not null)
         {
             <div class="activity-selection-row">
                 <label class="activity-selector">
-                    <input type="checkbox" checked="@_selectedIds.Contains(activity.Id)" disabled="@(ActionsBlocked || _deleteConfirming)"
+                    <input type="checkbox" checked="@_selectedIds.Contains(activity.Id)" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)"
                            @onchange="eventArgs => SetSelected(activity.Id, eventArgs.Value is true)" />
                     <span class="visually-hidden">Select @activity.Title recorded @LocalStart(activity).ToString("g")</span>
                 </label>
                 <a class="activity-row" href="@($"/activities/{activity.Id}")">
                     <span class="sport-icon @activity.Sport.ToString().ToLowerInvariant()" aria-hidden="true">@activity.Sport.ToString()[0]</span>
-                    <span class="activity-title"><strong>@activity.Title</strong><small>@activity.OwnerName - @LocalStart(activity).ToString("g") @if (activity.DeviceName is not null) { <text>- @activity.DeviceName</text> }</small></span>
+                    <span class="activity-title"><strong>@activity.Title</strong><small>@activity.OwnerName - @LocalStart(activity).ToString("g") @if (activity.DeviceName is not null) { <text>- @activity.DeviceName</text> }</small>
+                        @if (activity.Tags.Count > 0) { <span class="activity-tags" aria-label="Tags">@foreach (var tag in activity.Tags) { <span>@tag.Name</span> }</span> }
+                    </span>
                     <span><strong>@Format.Distance(activity.DistanceMeters)</strong><small>distance</small></span>
                     <span><strong>@Format.Duration(activity.MovingSeconds)</strong><small>moving</small></span>
                     @if (activity.Sport == SportKind.Rowing)
@@ -100,9 +147,9 @@ else if (_result is not null)
         </div>
     </section>
     <nav class="pager" aria-label="Activity pages">
-        <button type="button" disabled="@(_result.Page <= 1 || ActionsBlocked)" @onclick="Previous">Previous</button>
+        <button type="button" disabled="@(_result.Page <= 1 || ActionsBlocked || _batchEditing || _deleteConfirming)" @onclick="Previous">Previous</button>
         <span>Page @_result.Page of @_result.TotalPages</span>
-        <button type="button" disabled="@(_result.Page >= _result.TotalPages || ActionsBlocked)" @onclick="Next">Next</button>
+        <button type="button" disabled="@(_result.Page >= _result.TotalPages || ActionsBlocked || _batchEditing || _deleteConfirming)" @onclick="Next">Next</button>
     </nav>
 }
 
@@ -116,11 +163,13 @@ else if (_result is not null)
     [Parameter, SupplyParameterFromQuery(Name = "device")] public string? QueryDevice { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "sort")] public string? QuerySort { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "page")] public int? QueryPage { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "tags")] public string? QueryTags { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "tagOwner")] public string? QueryTagOwner { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "deleted")] public int? QueryDeleted { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "cleanupPending")] public bool? QueryCleanupPending { get; set; }
     [Parameter, SupplyParameterFromQuery(Name = "statisticsPending")] public bool? QueryStatisticsPending { get; set; }
 
-    private static readonly HashSet<string> SortValues = ["start-desc", "start-asc", "distance-desc", "duration-desc", "elevation-desc"];
+    private static readonly HashSet<string> SortValues = ["start-desc", "start-asc", "distance-desc", "distance-asc", "duration-desc", "elevation-desc"];
     private ActivitySearchResult? _result;
     private string _search = "";
     private string _sport = "";
@@ -148,7 +197,7 @@ else if (_result is not null)
     protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
     protected override async Task OnParametersSetAsync()
     {
-        ClearSelectionAndConfirmation();
+        var previousSelectionKey = _result is null ? null : SelectionKey();
         _search = QuerySearch?.Trim() ?? "";
         _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : "";
         _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
@@ -156,6 +205,8 @@ else if (_result is not null)
         _device = QueryDevice?.Trim() ?? "";
         _sort = QuerySort is not null && SortValues.Contains(QuerySort) ? QuerySort : "start-desc";
         _page = Math.Max(1, QueryPage ?? 1);
+        ReadTagQuery();
+        if (previousSelectionKey != SelectionKey()) ClearSelectionAndConfirmation();
         _statusMessage = QueryDeleted is > 0
             ? $"Permanently deleted {QueryDeleted.Value:N0} {(QueryDeleted.Value == 1 ? "activity" : "activities")}."
             : null;
@@ -170,10 +221,10 @@ else if (_result is not null)
     private bool HasSecondaryFilters => SecondaryFilterCount > 0;
     private int SecondaryFilterCount => new[] { !string.IsNullOrWhiteSpace(_power), !string.IsNullOrWhiteSpace(_device) }.Count(value => value);
     private bool? HasPower => _power switch { "yes" => true, "no" => false, _ => null };
-    private bool HasFilters => !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_sport) || HasSecondaryFilters || _dates.Period != "all-time";
-    private bool ActionsBlocked => _busy || _loading || _dirty || _queryFailed || _dateError is not null;
+    private bool HasFilters => !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_sport) || HasSecondaryFilters || _dates.Period != "all-time" || _tagIds.Count > 0;
+    private bool ActionsBlocked => _busy || _loading || _dirty || _queryFailed || _dateError is not null || _tagError is not null;
     private ActivityFilter CurrentFilter() => new(ProfileState.SelectedOwnerId, Sport, _dates.Selection.From, _dates.Selection.To,
-        _search, HasPower, _device, Page: _page, Sort: _sort, Period: _dates.Selection.Preset, AsOfUtc: _asOfUtc);
+        _search, HasPower, _device, Page: _page, Sort: _sort, Period: _dates.Selection.Preset, AsOfUtc: _asOfUtc, TagIds: _tagIds);
 
     private bool ValidateDates()
     {
@@ -208,8 +259,13 @@ else if (_result is not null)
         _errorMessage = null;
         try
         {
+            await LoadOrganization(revision, cancellation.Token);
+            if (revision != _revision) return;
+            if (!ValidateTagFilter()) { _result = null; return; }
             var result = await ActivitiesService.SearchAsync(filter, cancellation.Token);
             if (revision != _revision) return;
+            if (!_periods.OrderBy(period => period.OwnerId).SequenceEqual((result.EffectiveFilter.ResolvedPeriods ?? []).OrderBy(period => period.OwnerId)))
+                ClearSelectionAndConfirmation();
             _result = result;
             _periods = result.EffectiveFilter.ResolvedPeriods ?? [];
             _dirty = _sortOnly = false;
@@ -240,10 +296,10 @@ else if (_result is not null)
         }
     }
 
-    private Task Apply() { if (_busy || _dateError is not null) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page = 1; return NavigateOrLoadAsync(_sortOnly); }
-    private Task Reset() { ClearSelectionAndConfirmation(); _search = _sport = _power = _device = ""; _dates = new(); _sort = "start-desc"; _page = 1; return NavigateOrLoadAsync(); }
-    private Task Previous() { if (ActionsBlocked) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page = Math.Max(1, _page - 1); return NavigateOrLoadAsync(true); }
-    private Task Next() { if (ActionsBlocked) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page++; return NavigateOrLoadAsync(true); }
+    private Task Apply() { if (_busy || _dateError is not null || !ValidateTagFilter()) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page = 1; return NavigateOrLoadAsync(_sortOnly); }
+    private Task Reset() { ClearSelectionAndConfirmation(); _search = _sport = _power = _device = ""; _tagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; _dates = new(); _sort = "start-desc"; _page = 1; return NavigateOrLoadAsync(); }
+    private Task Previous() { if (ActionsBlocked || _batchEditing || _deleteConfirming) return Task.CompletedTask; _page = Math.Max(1, _page - 1); return NavigateOrLoadAsync(true); }
+    private Task Next() { if (ActionsBlocked || _batchEditing || _deleteConfirming) return Task.CompletedTask; _page++; return NavigateOrLoadAsync(true); }
     private Task Retry() => LoadAsync();
 
     private async Task NavigateOrLoadAsync(bool preservePeriod = false)
@@ -263,6 +319,8 @@ else if (_result is not null)
         foreach (var pair in _dates.QueryValues()) Add(pair.Key, pair.Value);
         Add("power", _power);
         Add("device", _device);
+        Add("tags", _tagIds.Count == 0 ? null : string.Join(',', _tagIds.Order()));
+        Add("tagOwner", _tagIds.Count == 0 ? null : _tagOwner?.ToString());
         Add("sort", _sort == "start-desc" ? null : _sort);
         Add("page", _page <= 1 ? null : _page.ToString(CultureInfo.InvariantCulture));
         return values.Count == 0 ? "/activities" : $"/activities?{string.Join('&', values)}";
@@ -323,7 +381,7 @@ else if (_result is not null)
             : null;
         _pendingScopeDescription = _pendingDeleteIds.Count == 1
             ? "You are about to permanently delete the selected activity."
-            : $"You are about to permanently delete {_pendingDeleteIds.Count:N0} selected activities from this page.";
+            : $"You are about to permanently delete {_pendingDeleteIds.Count:N0} selected activities across pages.";
         _deleteConfirming = true;
         _errorMessage = null;
     }
@@ -398,6 +456,7 @@ else if (_result is not null)
 
     private void ClearSelectionAndConfirmation()
     {
+        CancelBatch();
         _selectedIds.Clear();
         _pendingDeleteIds = [];
         _pendingActivityName = null;
@@ -419,6 +478,9 @@ else if (_result is not null)
     private void ProfileChanged() => InvokeAsync(async () =>
     {
         ClearSelectionAndConfirmation();
+        if (!_switchingBookmark) { _tagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; }
+        _switchingBookmark = false;
+        _tags = [];
         _revision++;
         _loadCancellation?.Cancel();
         _loadCancellation = null;

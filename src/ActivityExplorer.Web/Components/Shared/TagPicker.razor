@@ -1,0 +1,36 @@
+<fieldset class="tag-picker" disabled="@Disabled">
+    <legend>@Label</legend>
+    @if (Tags.Count == 0)
+    {
+        <p class="muted">No tags available.</p>
+    }
+    else
+    {
+        <div class="tag-options">
+            @foreach (var tag in Tags)
+            {
+                <label @key="tag.Id" class="tag-option">
+                    <input type="checkbox" checked="@SelectedIds.Contains(tag.Id)" @onchange="args => ToggleAsync(tag.Id, args.Value is true)" />
+                    <span>@tag.Name</span>
+                </label>
+            }
+        </div>
+    }
+</fieldset>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TagSummary> Tags { get; set; } = [];
+    [Parameter] public IReadOnlyList<Guid> SelectedIds { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<Guid>> Changed { get; set; }
+    [Parameter] public string Label { get; set; } = "Tags";
+    [Parameter] public bool Disabled { get; set; }
+
+    private Task ToggleAsync(Guid id, bool selected)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var ids = SelectedIds.ToHashSet();
+        if (selected) ids.Add(id);
+        else ids.Remove(id);
+        return Changed.InvokeAsync(ids.ToArray());
+    }
+}

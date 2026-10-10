@@ -43,6 +43,14 @@ Local segment-path uploads are intentionally different. The endpoint parses one 
 
 SQLite can contain names and notes; timestamps and offsets; location tracks and elevation; speed, heart rate, cadence, power, temperature, respiration, calories, and training fields; routes, local segments and efforts; gear, records, provenance, watched-folder paths, settings, and durable lifecycle journals. Segment efforts store the matched stream indices and derived metrics rather than a duplicate stream. Current effort rows include nullable recorded GPS-polyline distance and a non-null calculation version; segment definition distance and terrain metrics remain on the segment. Segment provenance records source kind and may include a user-supplied base file name and normalized format. Treat the root as private health and location data even when profile names are fictional.
 
+## Tags and saved searches
+
+The database also stores profile-owned tag names, activity-tag assignments, and named saved-search criteria. Criteria include text and device filters, sport, power, tags, sorting, and reporting-date selection; they do not retain pagination, selected activities, confirmation state, or the clock instant used to resolve a relative period. These names and filters are private local metadata.
+
+Imports and ordinary metadata edits retain tags. Reassigning an activity maps its tags to equivalent names in the destination profile, creating missing tags; the source definitions and saved searches remain. Tag deletion removes assignments and leaves saved references visibly in need of repair. Profile deletion removes its organization data. Tag-only editing leaves import enrichment enabled; gear edits use the existing local-metadata protection.
+
+Profile summary exports include `tags`, `activityTags`, and `savedSearches` with typed criteria, in the same read transaction as the existing export fields. The export schema version remains 1. Startup adds these organization tables and an activity mutation-version column idempotently to supported databases, with existing versions initialized to zero. This upgrade preserves activities and technical data.
+
 ## Badge settings
 
 Profiles also store an optional reporting timezone, defaulting to Europe/Copenhagen. Changing it updates activity reporting dates, date filters, and badge calendar interpretation without rewriting imported timestamps or source offsets. Filtered totals and badge results are calculated from activity summaries when read and are not stored in additional tables. The profile JSON export includes the effective `profile.timeZoneId` as additive metadata; existing export fields and schema version remain unchanged. Badge illustrations are local SVG components and make no third-party requests. See [Badges and levels](badges.md).

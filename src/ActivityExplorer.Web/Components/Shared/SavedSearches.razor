@@ -1,0 +1,164 @@
+@inject IActivityOrganizationService Organization
+@implements IDisposable
+
+<details class="saved-searches" @key="OwnerId">
+    <summary>Saved searches <span class="muted">@_searches.Count</span></summary>
+    <StatusMessage Message="@_error" IsError="true" />
+    <StatusMessage Message="@_message" />
+    @if (_loading) { <p role="status">Loading saved searches...</p> }
+    @if (_loadFailed) { <button class="button" @onclick="Load">Retry saved searches</button> }
+    <div class="saved-controls">
+        <label><span id="saved-search-label">Saved search</span><select aria-labelledby="saved-search-label" @bind="_selected" @bind:after="SelectedChanged" disabled="@(_busy || _loading || Disabled)"><option value="">Choose a search</option>@foreach (var search in _searches) { <option value="@search.Id">@search.Name@(search.Error is not null || search.MissingTags.Count > 0 ? " — needs repair" : "")</option> }</select></label>
+        <button class="button" disabled="@(_busy || Disabled || Selected is null)" @onclick="Open">Open search</button>
+        <label><span>Search name</span><input @bind="_name" maxlength="120" disabled="@(_busy || Disabled)" /></label>
+        <button class="button" disabled="@(_busy || Disabled || AppliedCriteria is null)" @onclick="() => Save(false)">Save new search</button>
+    </div>
+    @if (Selected is not null)
+    {
+        <div class="button-row">
+            <button class="button" disabled="@(_busy || Disabled || AppliedCriteria is null)" @onclick="() => Save(true)">Replace with applied filters</button>
+            <button class="button" disabled="@(_busy || Disabled)" @onclick="Rename">Rename search</button>
+            <button class="button danger" disabled="@(_busy || Disabled)" @onclick="() => _deleteReview = true">Delete search</button>
+        </div>
+    }
+    @if (_deleteReview && Selected is { } deleting)
+    {
+        <div class="notice"><p>Delete saved search <strong>@deleting.Name</strong>? Activities and tags are retained.</p><div class="button-row"><button class="button danger" disabled="@(_busy || Disabled)" @onclick="Delete">Confirm delete search</button><button class="button" disabled="@_busy" @onclick="() => _deleteReview = false">Cancel</button></div></div>
+    }
+    @if (_repair is not null)
+    {
+        <section class="search-repair" aria-label="Repair saved search">
+            <h3>Repair @_repair.Name</h3>
+            <p>This search has not been opened. These tags are missing: <strong>@string.Join(", ", _repair.MissingTags.Select(tag => tag.Name))</strong>.</p>
+            <p>Select replacement tags below, or leave them unselected to remove the missing criteria. Other saved filters remain unchanged.</p>
+            <TagPicker Tags="Tags" SelectedIds="_repairTags" Changed="value => _repairTags = value" Label="Repaired search tags — match any" Disabled="@(_busy || Disabled)" />
+            <div class="button-row"><button class="button primary" disabled="@(_busy || Disabled)" @onclick="Repair">Save repaired search and open</button><button class="button" disabled="@_busy" @onclick="() => _repair = null">Cancel repair</button></div>
+        </section>
+    }
+</details>
+
+@code {
+    [Parameter] public Guid OwnerId { get; set; }
+    [Parameter] public int Revision { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public SavedSearchCriteria? AppliedCriteria { get; set; }
+    [Parameter] public IReadOnlyList<TagSummary> Tags { get; set; } = [];
+    [Parameter] public EventCallback<SavedSearchCriteria> OnOpen { get; set; }
+    private IReadOnlyList<SavedSearchSummary> _searches = [];
+    private Guid _loadedOwner;
+    private int _loadedRevision = -1, _generation;
+    private string _selected = "", _name = "";
+    private string? _error, _message;
+    private bool _busy, _loading, _loadFailed, _deleteReview, _disposed;
+    private SavedSearchSummary? _repair;
+    private IReadOnlyList<Guid> _repairTags = [];
+    private SavedSearchSummary? Selected => Guid.TryParse(_selected, out var id) ? _searches.FirstOrDefault(search => search.Id == id) : null;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedOwner == OwnerId && _loadedRevision == Revision) return;
+        if (_loadedOwner != OwnerId) { _selected = _name = ""; _repair = null; _deleteReview = false; }
+        _loadedOwner = OwnerId;
+        _loadedRevision = Revision;
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        var generation = ++_generation;
+        var owner = OwnerId;
+        _loading = true;
+        _loadFailed = false;
+        try
+        {
+            var searches = await Organization.ListSavedSearchesAsync(owner);
+            if (_disposed || generation != _generation || owner != OwnerId) return;
+            _searches = searches;
+            _error = null;
+            if (_repair is not null)
+            {
+                _repair = _searches.FirstOrDefault(search => search.Id == _repair.Id);
+                _repairTags = _repairTags.Where(id => Tags.Any(tag => tag.Id == id)).ToArray();
+            }
+        }
+        catch (Exception exception) { if (generation == _generation) { _error = exception.Message; _loadFailed = true; } }
+        finally { if (generation == _generation) _loading = false; }
+    }
+
+    private void SelectedChanged()
+    {
+        _name = Selected?.Name ?? "";
+        _repair = null;
+        _deleteReview = false;
+        _error = _message = null;
+    }
+
+    private Task Open() => Run(async () =>
+    {
+        await Load();
+        if (_disposed || _loadFailed) return;
+        var search = Selected ?? throw new InvalidOperationException("The saved search no longer exists.");
+        if (search.Criteria is null || search.Error is not null) throw new InvalidOperationException(search.Error ?? "This search cannot be opened. Replace it with applied filters or delete it.");
+        if (search.MissingTags.Count > 0)
+        {
+            _repair = search;
+            _repairTags = search.Criteria.Tags.Where(tag => Tags.Any(known => known.Id == tag.Id)).Select(tag => tag.Id).ToArray();
+            return;
+        }
+        await OnOpen.InvokeAsync(search.Criteria);
+        _message = $"Opened {search.Name}.";
+    });
+
+    private Task Save(bool replace) => Run(async () =>
+    {
+        if (AppliedCriteria is null) throw new InvalidOperationException("Apply valid filters before saving a search.");
+        var id = await Organization.SaveSavedSearchAsync(OwnerId, _name, AppliedCriteria, replace ? Selected?.Id : null);
+        _selected = id.ToString();
+        _repair = null;
+        await Load();
+        _message = "Saved search.";
+    });
+
+    private Task Rename() => Run(async () =>
+    {
+        if (Selected is null) return;
+        await Organization.RenameSavedSearchAsync(OwnerId, Selected.Id, _name);
+        await Load();
+        _message = "Renamed search.";
+    });
+
+    private Task Delete() => Run(async () =>
+    {
+        if (Selected is null) return;
+        await Organization.DeleteSavedSearchAsync(OwnerId, Selected.Id);
+        _selected = _name = "";
+        _repair = null;
+        _deleteReview = false;
+        await Load();
+        _message = "Deleted saved search. Activities are unchanged.";
+    });
+
+    private Task Repair() => Run(async () =>
+    {
+        if (_repair?.Criteria is null) return;
+        var criteria = _repair.Criteria with { Tags = _repairTags.Select(id => new SavedTagReference(id, Tags.Single(tag => tag.Id == id).Name)).ToArray() };
+        await Organization.SaveSavedSearchAsync(OwnerId, _repair.Name, criteria, _repair.Id);
+        _repair = null;
+        await Load();
+        if (_disposed) return;
+        await OnOpen.InvokeAsync(criteria);
+        _message = "Repaired and opened saved search.";
+    });
+
+    private async Task Run(Func<Task> action)
+    {
+        if (_busy || Disabled) return;
+        _busy = true;
+        _error = _message = null;
+        try { await action(); }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    public void Dispose() { _disposed = true; _generation++; }
+}

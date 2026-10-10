@@ -36,6 +36,16 @@ Core defines `ReportingPreset`, `ReportingDateSelection`, and `ResolvedOwnerPeri
 
 Activities and World Map share the date input component. Public URLs preserve relative preset slugs or fixed custom dates. Sorting, pagination, and deletion preparation reuse the displayed effective filter; applying filters, profile changes, and page reloads resolve periods again. Internal map activity requests carry the captured reference instant across viewport changes. Edited controls are separate from applied results, and superseded activity loads cannot replace newer results. Reporting uses existing summary fields and profile timezone settings without a schema migration.
 
+## Activity organization
+
+`IActivityOrganizationService` owns tag management, assignments, versioned saved criteria, and batch preparation/application. Tags and saved-search names use trimmed display spelling and unique owner/invariant-uppercase keys. Assignments have a composite activity/tag key and cascade only when their activity or tag is deleted. Razor consumes organization DTOs rather than EF entities.
+
+Tag filters require one owner, validate every tag's ownership, and join the shared activity predicate before rows, complete totals, matching IDs, or deletion snapshots are resolved. Multiple tags match any selected tag. Saved criteria include search, sport, power, device, tag IDs and last-known names, sort, and reporting-date selection. They exclude pagination, captured clocks, resolved dates, and transient selections/reviews. Unsupported or malformed criteria fail visibly; missing tags require explicit repair and save.
+
+Activities carry a zero-initialized integer mutation version. Metadata edits, manual metrics, imports/replacements, transfers, assignments, gear edits, and assigned-tag rename/deletion advance it under owner mutation locks. Derived record and segment recomputation does not. Imports and ordinary metadata updates preserve assignments; tag-only edits leave `UserEdited` unchanged.
+
+Batch preparation returns copied, read-only collections of exact IDs, mutation versions, operations, and reviewed tag identities/names. Application holds the owner lock and one transaction, validates all members before writing, processes sets in chunks of 500, and commits once. Missing, moved, or changed members reject the whole operation. Gear changes use the existing trimmed 160-character field and set `UserEdited`; organization changes do not recalculate technical data. Cross-page selections remain within the same applied criteria and resolved reporting periods.
+
 ## Progress reporting
 
 `DashboardQuery` and `TrainingCalendarQuery` use the existing activity query service. Both project stored summary fields after owner, sport, and owner-local reporting-date filtering. Profile settings, selected/comparison summaries, and dashboard record highlights are read in a consistent SQLite transaction. No stream, geometry, or original-file reads are needed. Daily grouping supplies totals, distinct active dates, Monday-start weeks, and calendar-month buckets. Calendar dates and activity-list links share Phase 1’s inclusive date contract.
@@ -85,6 +95,10 @@ erDiagram
     OwnerProfile ||--o{ ImportBatch : owns
     ImportBatch ||--o{ SourceFile : records
     OwnerProfile ||--o{ Activity : owns
+    OwnerProfile ||--o{ Tag : owns
+    OwnerProfile ||--o{ SavedSearch : owns
+    Activity ||--o{ ActivityTag : has
+    Tag ||--o{ ActivityTag : labels
     OwnerProfile ||--o{ Route : owns
     OwnerProfile ||--o{ Segment : owns
     Activity ||--o| ActivityStream : has
@@ -104,11 +118,13 @@ erDiagram
 
 Segment-path uploads bypass the activity queue. `SegmentPathReader` accepts one GPX, FIT segment/course, TCX, KML, or GeoJSON line, exposes only geometry and normalized format, and rejects FIT activities or multiple independent paths. The endpoint applies the requested inclusive trim and optional reversal before calling `ISegmentService`. Only the local WKB path and minimal source kind/name/format provenance are stored; staged and original path files are not retained.
 
-The initializer creates the current schema when the database does not yet exist. Additive compatibility steps idempotently add segment provenance, effort-metric columns, and the segment-link table to supported earlier schemas. Existing values remain intact, and startup does not group segments or recalculate their efforts. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. Other older development schemas still require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
+The initializer creates the current schema when the database does not yet exist. Additive compatibility steps idempotently add segment provenance, effort-metric columns, the segment-link and organization tables, and the activity mutation-version column to supported earlier schemas. Existing values remain intact, and startup does not group segments or recalculate their efforts. Startup then reports untracked originals, marks abandoned running imports interrupted, and recovers lifecycle journal state. Other older development schemas still require a fresh data root and reimport. A complete data-root backup still requires stopping the app.
 
 ## Activity transfer and deletion
 
 Activity reassignment acquires both owner locks and preflights natural fingerprint, Garmin/Strava IDs, provider/hash, and provider/external-ID collisions. A collision blocks; no automatic merge occurs. Originals copy and hash-verify first. The transaction creates a completed target transfer batch, moves activity-owned rows and source provenance, clears source links from routes/segments that remain with the old profile, and removes stale efforts. Journal commits then remove unreferenced old copies, and both owners' statistics and segments are recomputed.
+
+After acquiring both locks, reassignment revalidates the source owner. Inside the ownership transaction it maps assignments to destination tags by normalized name, creating missing definitions. Source tag definitions and saved searches stay with their owner. Activity deletion cascades assignments; profile deletion removes its tags and saved searches. Profile export reads activities, tags, assignments, and typed saved criteria in one consistent transaction, retaining the existing fields and export schema version 1.
 
 Activity deletion resolves either selected IDs or an exact filtered-ID snapshot before confirmation, using the displayed resolved date windows. Filter edits clear selection and confirmation and block deletion until successfully applied. Later imports cannot enter an existing confirmation. Deletion then acquires every affected owner lock and rejects missing or changed IDs atomically. Originals with no remaining provenance reference move to per-file quarantine before the database transaction. The transaction removes activity provenance and activities; cascades remove streams, laps, metrics, and efforts; saved routes and segments keep their definitions but lose source links; affected segment ranks are repaired; and current record snapshots are removed. After commit, quarantine cleanup and per-owner record recomputation run independently, and Activities refreshes rows and totals. Incomplete file cleanup remains journaled for startup recovery, while missing current record snapshots cause the statistics repair worker to retry.
 

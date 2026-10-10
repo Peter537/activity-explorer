@@ -1,0 +1,97 @@
+@inject IActivityOrganizationService Organization
+
+<section class="panel batch-editor" aria-label="Bulk activity editor" aria-busy="@_busy">
+    <h2 @ref="_heading" tabindex="-1">@(_review is null ? "Edit activities" : "Review activity changes")</h2>
+    <StatusMessage Message="@_error" IsError="true" />
+    @if (_review is null)
+    {
+        <p>@(AllMatching ? "Prepare an exact snapshot of the applied search." : $"Edit {SelectedIds.Count:N0} selected activities across pages.")</p>
+        <div class="batch-fields">
+            <TagPicker Tags="Tags" SelectedIds="_add" Changed="value => _add = value" Label="Add tags" Disabled="_busy" />
+            <TagPicker Tags="Tags" SelectedIds="_remove" Changed="value => _remove = value" Label="Remove tags" Disabled="_busy" />
+            <label><span id="batch-gear-label">Gear change</span><select aria-labelledby="batch-gear-label" @bind="_gearMode" disabled="@_busy"><option value="@GearEditMode.Unchanged">Leave unchanged</option><option value="@GearEditMode.Set">Set gear</option><option value="@GearEditMode.Clear">Clear gear</option></select></label>
+            @if (_gearMode == GearEditMode.Set)
+            {
+                <label><span>Gear name</span><input @bind="_gear" maxlength="160" disabled="@_busy" /></label>
+            }
+        </div>
+        <div class="button-row">
+            <button class="button primary" disabled="@_busy" @onclick="Prepare">Review changes</button>
+            <button class="button" disabled="@_busy" @onclick="OnCancel">Cancel editing</button>
+        </div>
+    }
+    else
+    {
+        <p><strong>@_review.Members.Count.ToString("N0") activities</strong> in this exact snapshot. Activities imported after this review are excluded.</p>
+        <ul>
+            @if (_review.AddTags.Count > 0) { <li>Add tags: @string.Join(", ", _review.AddTags.Select(tag => tag.Name))</li> }
+            @if (_review.RemoveTags.Count > 0) { <li>Remove tags: @string.Join(", ", _review.RemoveTags.Select(tag => tag.Name))</li> }
+            @if (_review.Changes.GearMode == GearEditMode.Set) { <li>Set gear to: @_review.Changes.GearName</li> }
+            @if (_review.Changes.GearMode == GearEditMode.Clear) { <li>Clear gear</li> }
+        </ul>
+        <div class="button-row">
+            <button class="button primary" disabled="@(_busy || _stale)" @onclick="Apply">Apply changes</button>
+            <button class="button" disabled="@_busy" @onclick="ChangeEdits">Change edits</button>
+            <button class="button" disabled="@_busy" @onclick="OnCancel">Cancel editing</button>
+        </div>
+    }
+    @if (_error is not null) { <button class="button" disabled="@_busy" @onclick="OnRefresh">Refresh activities</button> }
+</section>
+
+@code {
+    [Parameter] public Guid OwnerId { get; set; }
+    [Parameter] public IReadOnlyList<Guid> SelectedIds { get; set; } = [];
+    [Parameter] public bool AllMatching { get; set; }
+    [Parameter] public ActivityFilter? Filter { get; set; }
+    [Parameter] public IReadOnlyList<TagSummary> Tags { get; set; } = [];
+    [Parameter] public EventCallback<BatchEditResult> OnApplied { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public EventCallback OnRefresh { get; set; }
+    private IReadOnlyList<Guid> _add = [], _remove = [];
+    private GearEditMode _gearMode;
+    private string _gear = "";
+    private BatchReview? _review;
+    private bool _busy, _stale;
+    private string? _error;
+    private ElementReference _heading;
+    private bool _focusReview;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusReview) return;
+        _focusReview = false;
+        await _heading.FocusAsync();
+    }
+
+    private async Task Prepare()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            _review = await Organization.PrepareBatchAsync(OwnerId, AllMatching ? null : SelectedIds.ToArray(),
+                AllMatching ? Filter : null, new(_add, _remove, _gearMode, _gear));
+            _stale = false;
+            _focusReview = true;
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task Apply()
+    {
+        if (_busy || _stale || _review is null) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var result = await Organization.ApplyBatchAsync(_review);
+            await OnApplied.InvokeAsync(result);
+        }
+        catch (Exception exception) { _error = $"Nothing changed. {exception.Message}"; _stale = true; }
+        finally { _busy = false; }
+    }
+
+    private void ChangeEdits() { _review = null; _stale = false; _error = null; }
+}

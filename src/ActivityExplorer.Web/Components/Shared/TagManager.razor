@@ -1,0 +1,255 @@
+@inject IActivityOrganizationService Organization
+@implements IDisposable
+
+<details class="tag-manager">
+    <summary @ref="_summary">Manage tags</summary>
+    <div class="tag-manager-content" aria-busy="@_busy">
+        <StatusMessage Message="@_message" IsError="@_error" />
+        @if (!_loaded)
+        {
+            <p role="status">Loading tags...</p>
+        }
+        else if (_loadFailed)
+        {
+            <button class="button" type="button" disabled="@_busy" @onclick="LoadAsync">Try again</button>
+        }
+        else
+        {
+            <form class="tag-name-form" @onsubmit="CreateAsync" @onsubmit:preventDefault>
+                <label><span>New tag name</span><input maxlength="80" @bind="_newName" disabled="@_busy" /></label>
+                <button class="button" type="submit" disabled="@_busy">@(_busy ? "Working..." : "Create tag")</button>
+            </form>
+            @if (_tags.Count == 0)
+            {
+                <p class="muted">No tags in this profile yet.</p>
+            }
+            @foreach (var tag in _tags)
+            {
+                <div @key="tag.Id" class="managed-tag">
+                    @if (_renamingId == tag.Id)
+                    {
+                        <form class="tag-name-form" @onsubmit="RenameAsync" @onsubmit:preventDefault>
+                            <label><span>Tag name</span><input @ref="_renameInput" maxlength="80" @bind="_renameName" disabled="@_busy" /></label>
+                            <div class="button-row">
+                                <button class="button primary" type="submit" disabled="@_busy">Save name</button>
+                                <button class="button" type="button" disabled="@_busy" @onclick="CancelEdit">Cancel</button>
+                            </div>
+                        </form>
+                    }
+                    else
+                    {
+                        <div class="tag-description"><strong>@tag.Name</strong><small>@tag.ActivityCount.ToString("N0") @(tag.ActivityCount == 1 ? "activity" : "activities")</small></div>
+                        <div class="button-row">
+                            <button class="button" type="button" aria-label="@($"Rename tag {tag.Name}")" disabled="@_busy" @onclick="() => BeginRename(tag)">Rename</button>
+                            <button class="button danger" type="button" aria-label="@($"Delete tag {tag.Name}")" disabled="@_busy" @onclick="() => BeginDelete(tag)">Delete</button>
+                        </div>
+                    }
+                </div>
+            }
+            @if (_deleting is not null)
+            {
+                <section class="tag-delete-review" aria-labelledby="@_deleteHeadingId">
+                    <h3 id="@_deleteHeadingId">Delete tag “@_deleting.Name”?</h3>
+                    <p>This removes the tag from @_deleting.ActivityCount.ToString("N0") @(_deleting.ActivityCount == 1 ? "activity" : "activities"). Activities remain in your library.</p>
+                    @if (_deleting.SavedSearchCount > 0)
+                    {
+                        <p>@_deleting.SavedSearchCount.ToString("N0") saved @(_deleting.SavedSearchCount == 1 ? "search will" : "searches will") need repair before they can run again.</p>
+                        <ul aria-label="Affected saved searches">
+                            @foreach (var searchName in _affectedSearches)
+                            {
+                                <li>@searchName</li>
+                            }
+                        </ul>
+                    }
+                    else
+                    {
+                        <p>No saved searches use this tag.</p>
+                    }
+                    <div class="button-row">
+                        <button @ref="_deleteButton" class="button danger solid" type="button" disabled="@_busy" @onclick="DeleteAsync">@(_busy ? "Deleting..." : "Permanently delete tag")</button>
+                        <button class="button" type="button" disabled="@_busy" @onclick="CancelEdit">Cancel</button>
+                    </div>
+                </section>
+            }
+        }
+    </div>
+</details>
+
+@code {
+    [Parameter, EditorRequired] public Guid OwnerId { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private IReadOnlyList<TagSummary> _tags = [];
+    private IReadOnlyList<string> _affectedSearches = [];
+    private Guid? _loadedOwner;
+    private Guid? _renamingId;
+    private TagSummary? _deleting;
+    private string _newName = "", _renameName = "";
+    private string? _message;
+    private bool _loaded, _busy, _loadFailed, _error, _disposed;
+    private bool _focusRename, _focusDelete, _focusSummary;
+    private ElementReference _renameInput, _deleteButton, _summary;
+    private readonly string _deleteHeadingId = $"tag-delete-{Guid.NewGuid():N}";
+    private CancellationTokenSource _cancellation = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedOwner == OwnerId) return;
+        await _cancellation.CancelAsync();
+        _cancellation.Dispose();
+        _cancellation = new();
+        _loadedOwner = OwnerId;
+        _newName = "";
+        _renamingId = null;
+        _deleting = null;
+        _focusRename = _focusDelete = _focusSummary = false;
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusRename) { _focusRename = false; await _renameInput.FocusAsync(); }
+        if (_focusDelete) { _focusDelete = false; await _deleteButton.FocusAsync(); }
+        if (_focusSummary) { _focusSummary = false; await _summary.FocusAsync(); }
+    }
+
+    private async Task LoadAsync()
+    {
+        var owner = OwnerId;
+        var token = _cancellation.Token;
+        _busy = true;
+        _loaded = false;
+        _message = null;
+        _loadFailed = false;
+        try
+        {
+            var tags = await Organization.ListTagsAsync(owner, token);
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _tags = tags;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch
+        {
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _message = "Tags could not be loaded. Try again.";
+            _error = _loadFailed = true;
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) { _busy = false; _loaded = true; }
+        }
+    }
+
+    private void BeginRename(TagSummary tag)
+    {
+        _deleting = null;
+        _renamingId = tag.Id;
+        _renameName = tag.Name;
+        _message = null;
+        _focusRename = true;
+    }
+
+    private async Task BeginDelete(TagSummary tag)
+    {
+        if (_busy) return;
+        var owner = OwnerId;
+        var token = _cancellation.Token;
+        _renamingId = null;
+        _deleting = null;
+        _affectedSearches = [];
+        await LoadAsync();
+        if (_disposed || token.IsCancellationRequested || OwnerId != owner || _loadFailed) return;
+        var current = _tags.FirstOrDefault(candidate => candidate.Id == tag.Id);
+        if (current is null)
+        {
+            _message = "This tag is no longer available. The tag list has been refreshed.";
+            _error = true;
+            return;
+        }
+        _busy = true;
+        try
+        {
+            var searches = await Organization.ListSavedSearchesAsync(owner, token);
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _affectedSearches = searches.Where(search => search.Criteria?.Tags.Any(reference => reference.Id == tag.Id) == true)
+                .Select(search => search.Name).ToArray();
+            _deleting = current with { SavedSearchCount = _affectedSearches.Count };
+            _focusDelete = true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch
+        {
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _message = "Saved searches could not be checked. Try deleting the tag again.";
+            _error = true;
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) _busy = false;
+        }
+    }
+
+    private void CancelEdit()
+    {
+        _renamingId = null;
+        _deleting = null;
+        _focusSummary = true;
+    }
+
+    private Task CreateAsync() => MutateAsync(async (owner, token) =>
+    {
+        await Organization.CreateTagAsync(owner, _newName, token);
+    }, "Tag created.", true);
+
+    private Task RenameAsync() => _renamingId is Guid id
+        ? MutateAsync((owner, token) => Organization.RenameTagAsync(owner, id, _renameName, token), "Tag renamed.")
+        : Task.CompletedTask;
+
+    private Task DeleteAsync() => _deleting is { } tag
+        ? MutateAsync((owner, token) => Organization.DeleteTagAsync(owner, tag.Id, token), "Tag deleted.")
+        : Task.CompletedTask;
+
+    private async Task MutateAsync(Func<Guid, CancellationToken, Task> mutation, string success, bool clearName = false)
+    {
+        if (_busy) return;
+        var owner = OwnerId;
+        var token = _cancellation.Token;
+        _busy = true;
+        _message = null;
+        _error = false;
+        try
+        {
+            await mutation(owner, token);
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            if (clearName) _newName = "";
+            _renamingId = null;
+            _deleting = null;
+            _message = success;
+            _focusSummary = !clearName;
+            var tags = await Organization.ListTagsAsync(owner, token);
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _tags = tags;
+            await Changed.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _error = true;
+            _message = exception is ArgumentException or InvalidOperationException
+                ? exception.Message : "The tag change could not be completed. Try again.";
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) _busy = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _cancellation.Cancel();
+        _cancellation.Dispose();
+        GC.SuppressFinalize(this);
+    }
+}

@@ -324,6 +324,7 @@ public sealed class ImportProcessor(
     private static void EnrichActivity(
         Activity target, ParsedActivity source, SourceKind sourceKind, string incomingName)
     {
+        var previousMutationVersion = target.MutationVersion;
         if (!target.UserEdited && sourceKind == SourceKind.StravaArchive)
         {
             target.Title = source.Title;
@@ -353,10 +354,13 @@ public sealed class ImportProcessor(
         }
         if (source.IsIndoor.HasValue) target.IsIndoor = source.IsIndoor.Value;
         target.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        target.MutationVersion = previousMutationVersion + 1;
     }
 
     internal static void ReplaceTechnicalData(Activity target, ParsedActivity source, int parserVersion = FitActivityImporter.CurrentParserVersion)
     {
+        target.MutationVersion++;
+        target.UpdatedAtUtc = DateTimeOffset.UtcNow;
         var bounds = GeometryCodec.Bounds(source.Points);
         var geometry = GeometryCodec.ToWkb(source.Points);
         target.Sport = source.Sport;

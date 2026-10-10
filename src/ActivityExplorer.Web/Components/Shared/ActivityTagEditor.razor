@@ -1,0 +1,203 @@
+@inject IActivityOrganizationService Organization
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<section class="activity-tags" aria-label="Activity tags">
+    <div class="activity-tags-heading">
+        <strong>Tags</strong>
+        @if (Tags.Count == 0)
+        {
+            <span class="muted">No tags assigned.</span>
+        }
+        else
+        {
+            <ul class="assigned-tags" aria-label="Assigned tags">
+                @foreach (var tag in Tags)
+                {
+                    <li @key="tag.Id">@tag.Name</li>
+                }
+            </ul>
+        }
+        <button @ref="_editButton" class="button" type="button" aria-expanded="@(_editing ? "true" : "false")" aria-controls="@_editorId" disabled="@_busy" @onclick="ToggleEditorAsync">@(_editing ? "Cancel tag changes" : "Edit tags")</button>
+    </div>
+    @if (_editing)
+    {
+        <div id="@_editorId" class="tag-editor" aria-busy="@_busy">
+            <StatusMessage Message="@_message" IsError="@_error" />
+            @if (!_loaded)
+            {
+                <p role="status">Loading tags...</p>
+            }
+            else if (_loadFailed)
+            {
+                <button class="button" type="button" disabled="@_busy" @onclick="LoadTagsAsync">Try again</button>
+            }
+            else
+            {
+                <TagPicker Tags="_available" SelectedIds="_selectedIds" Changed="SelectTags" Label="Tags for this activity" Disabled="_busy" />
+                <form class="tag-create-form" @onsubmit="CreateTagAsync" @onsubmit:preventDefault>
+                    <label><span>New tag name</span><input maxlength="80" @bind="_newName" disabled="@_busy" /></label>
+                    <button class="button" type="submit" disabled="@_busy">Create tag</button>
+                </form>
+                <div class="button-row">
+                    <button class="button primary" type="button" disabled="@_busy" @onclick="SaveAsync">@(_busy ? "Saving..." : "Save tags")</button>
+                    @if (_error)
+                    {
+                        <button class="button" type="button" disabled="@_busy" @onclick="ReloadActivity">Reload activity</button>
+                    }
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid OwnerId { get; set; }
+    [Parameter, EditorRequired] public Guid ActivityId { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<TagSummary> Tags { get; set; } = [];
+    [Parameter] public long MutationVersion { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private IReadOnlyList<TagSummary> _available = [];
+    private IReadOnlyList<Guid> _selectedIds = [];
+    private (Guid Owner, Guid Activity, long Version)? _identity;
+    private string _newName = "";
+    private string? _message;
+    private bool _editing, _loaded, _loadFailed, _busy, _error, _disposed, _focusEdit;
+    private ElementReference _editButton;
+    private readonly string _editorId = $"activity-tag-editor-{Guid.NewGuid():N}";
+    private CancellationTokenSource _cancellation = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var identity = (OwnerId, ActivityId, MutationVersion);
+        if (_identity == identity) return;
+        await _cancellation.CancelAsync();
+        _cancellation.Dispose();
+        _cancellation = new();
+        _identity = identity;
+        _selectedIds = Tags.Select(tag => tag.Id).ToArray();
+        _editing = _busy = false;
+        _message = null;
+        _newName = "";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusEdit) return;
+        _focusEdit = false;
+        await _editButton.FocusAsync();
+    }
+
+    private async Task ToggleEditorAsync()
+    {
+        if (_busy) return;
+        _editing = !_editing;
+        _message = null;
+        _newName = "";
+        _selectedIds = Tags.Select(tag => tag.Id).ToArray();
+        if (_editing) await LoadTagsAsync();
+        else _focusEdit = true;
+    }
+
+    private async Task LoadTagsAsync()
+    {
+        var token = _cancellation.Token;
+        _busy = true;
+        _loaded = false;
+        _loadFailed = false;
+        _message = null;
+        try
+        {
+            var tags = await Organization.ListTagsAsync(OwnerId, token);
+            if (_disposed || token.IsCancellationRequested) return;
+            _available = tags;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch
+        {
+            if (_disposed || token.IsCancellationRequested) return;
+            _error = _loadFailed = true;
+            _message = "Tags could not be loaded. Try again.";
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested) { _busy = false; _loaded = true; }
+        }
+    }
+
+    private void SelectTags(IReadOnlyList<Guid> ids) => _selectedIds = ids;
+
+    private async Task CreateTagAsync()
+    {
+        if (_busy) return;
+        var token = _cancellation.Token;
+        var owner = OwnerId;
+        _busy = true;
+        _message = null;
+        _error = false;
+        try
+        {
+            var id = await Organization.CreateTagAsync(owner, _newName, token);
+            if (_disposed || token.IsCancellationRequested) return;
+            _newName = "";
+            _selectedIds = [.. _selectedIds, id];
+            var tags = await Organization.ListTagsAsync(owner, token);
+            if (_disposed || token.IsCancellationRequested) return;
+            _available = tags;
+            _message = "Tag created and selected. Save tags to apply it to this activity.";
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (_disposed || token.IsCancellationRequested) return;
+            _error = true;
+            _message = exception is ArgumentException or InvalidOperationException
+                ? exception.Message : "The tag could not be created. Try again.";
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested) _busy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_busy) return;
+        var token = _cancellation.Token;
+        _busy = true;
+        _message = null;
+        _error = false;
+        try
+        {
+            await Organization.SetActivityTagsAsync(OwnerId, ActivityId, _selectedIds, MutationVersion, token);
+            if (_disposed || token.IsCancellationRequested) return;
+            _editing = false;
+            await Changed.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (_disposed || token.IsCancellationRequested) return;
+            _error = true;
+            _message = exception is ArgumentException or InvalidOperationException
+                ? $"Nothing changed. {exception.Message}" : "Activity tags could not be saved. Try again or reload the activity.";
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested) _busy = false;
+        }
+    }
+
+    private void ReloadActivity() => Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+
+    public ValueTask FocusAsync() => _editButton.FocusAsync();
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _cancellation.Cancel();
+        _cancellation.Dispose();
+        GC.SuppressFinalize(this);
+    }
+}

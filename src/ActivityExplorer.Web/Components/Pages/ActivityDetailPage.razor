@@ -37,6 +37,8 @@ else
             <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming)" @onclick="BeginDelete">Delete activity</button>
         </Actions>
     </PageHeader>
+    <ActivityTagEditor @ref="_tagEditor" OwnerId="_activity.Summary.OwnerId" ActivityId="Id" Tags="_activity.Summary.Tags"
+                       MutationVersion="_activity.Summary.MutationVersion" Changed="TagsChangedAsync" />
     <nav class="section-jumps" aria-label="Activity sections">
         @if (HasMap) { <a href="@ActivityUrl("activity-map")">Map</a> }
         <a href="@ActivityUrl("activity-streams")">Streams</a>
@@ -50,7 +52,7 @@ else
                                     Busy="@_deleteBusy" OnConfirm="ConfirmDelete" OnCancel="CancelDelete" />
     }
     <StatusMessage Message="@_deleteMessage" IsError="true" />
-    @if (_message is not null) { <div class="notice">@_message</div> }
+    @if (_message is not null) { <div class="notice" role="status">@_message</div> }
     <section class="metric-grid five">
         <MetricCard Label="Distance" Value="@Format.Distance(_activity.Summary.DistanceMeters)" />
         <MetricCard Label="Moving time" Value="@Format.Duration(_activity.Summary.MovingSeconds)" />
@@ -251,11 +253,25 @@ else
     private CancellationTokenSource? _loadCancellation;
     private CancellationTokenSource? _rangeCancellation;
     private bool _disposed;
+    private ActivityTagEditor? _tagEditor;
+    private bool _focusTagEditor;
 
 
 
     protected override Task OnParametersSetAsync() => LoadActivityAsync(false);
     private Task LoadAsync() => LoadActivityAsync(true);
+    private async Task TagsChangedAsync()
+    {
+        _message = "Activity tags saved.";
+        await LoadAsync();
+        _focusTagEditor = true;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusTagEditor || !_loaded || _activity is null || _tagEditor is null) return;
+        _focusTagEditor = false;
+        await _tagEditor.FocusAsync();
+    }
     private async Task LoadActivityAsync(bool force)
     {
         if (!force && _loaded && _loadedId == Id)
@@ -468,17 +484,28 @@ else
 
     private async Task DeleteMetric(Guid metricId)
     {
-        await Activities.DeleteMetricAsync(Id, metricId);
-        _message = "Custom metric deleted.";
-        if (_editingMetricId == metricId) CancelMetricEdit();
-        await LoadAsync();
+        try
+        {
+            await Activities.DeleteMetricAsync(Id, metricId);
+            _message = "Custom metric deleted.";
+            if (_editingMetricId == metricId) CancelMetricEdit();
+            await LoadAsync();
+        }
+        catch (InvalidOperationException exception) { _message = exception.Message; }
     }
 
 
     private async Task Save()
     {
-        await Activities.UpdateAsync(Id, new UpdateActivityRequest(_title, _description, _gear, _ownerId));
-        _message = "Activity metadata saved locally."; _editing = false; await LoadAsync();
+        try
+        {
+            await Activities.UpdateAsync(Id, new UpdateActivityRequest(_title, _description, _gear, _ownerId));
+            _message = "Activity metadata saved locally."; _editing = false; await LoadAsync();
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            _message = exception.Message;
+        }
     }
 
     private void BeginDelete()
