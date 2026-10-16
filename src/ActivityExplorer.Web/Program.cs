@@ -372,6 +372,10 @@ internal static class MapEndpointHandler
         {
             return Results.BadRequest(new { error = exception.Message });
         }
+        catch (InvalidOperationException exception)
+        {
+            return Results.BadRequest(new { error = exception.Message });
+        }
     }
 }
 
@@ -392,6 +396,17 @@ internal static class MapQueryParser
             : Enum.TryParse<SportKind>(sportText, true, out var sportValue) && Enum.IsDefined(sportValue)
                 ? sportValue
                 : throw new BadHttpRequestException("The map sport is invalid.");
+
+        ActivitySearchSelection search;
+        try
+        {
+            search = ActivitySearchQuery.Parse(request.Query.Select(pair =>
+                new KeyValuePair<string, string?>(pair.Key, pair.Value.ToString())), sport);
+            if ((search.Criteria.TagIds is { Count: > 0 } || search.Criteria.ExcludedTagIds is { Count: > 0 }) &&
+                (!owner.HasValue || search.TagOwner != owner))
+                throw new ArgumentException("Select the saved search's profile before applying its tags.");
+        }
+        catch (ArgumentException exception) { throw new BadHttpRequestException(exception.Message, exception); }
 
         ReportingDateSelection selection;
         try { selection = ReportingDates.Parse(request.Query["period"], request.Query["from"], request.Query["to"]); }
@@ -424,7 +439,7 @@ internal static class MapQueryParser
                 ? zoomValue
                 : throw new BadHttpRequestException("The map zoom must be between 0 and 24.");
         var query = new MapQuery(owner, sport, selection.From, selection.To,
-            Number("west"), Number("south"), Number("east"), Number("north"), zoom, selection.Preset, asOf);
+            Number("west"), Number("south"), Number("east"), Number("north"), zoom, selection.Preset, asOf, search.Criteria);
         var boundCount = new[] { query.West, query.South, query.East, query.North }.Count(value => value.HasValue);
         if (boundCount is not 0 and not 4)
             throw new BadHttpRequestException("Map bounds must include west, south, east, and north.");

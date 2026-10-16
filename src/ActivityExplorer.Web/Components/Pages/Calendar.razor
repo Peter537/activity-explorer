@@ -1,15 +1,33 @@
 @page "/calendar"
+@inherits ActivitySearchViewBase
 @implements IDisposable
 @inject IActivityQueryService Activities
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
+@inject IActivityOrganizationService Organization
 
 <PageTitle>Training calendar - Activity Explorer</PageTitle>
 <PageHeader Title="Training calendar" Summary="See your active days and open the activities behind each one.">
-    <Actions><a class="button" href="@DashboardUrl">Progress dashboard</a></Actions>
+    <Actions>@if (_error is null) { <a class="button" href="@DashboardUrl">Progress dashboard</a> }</Actions>
 </PageHeader>
-
+@if (ProfileState.SelectedOwnerId is { } searchOwner)
+{
+    <SavedSearches @key="searchOwner" OwnerId="searchOwner" Tags="_searchTags" OpenOnly="true" Disabled="_loading" OnOpen="OpenCalendarSearch" />
+}
+@if (_appliedCriteria is not null)
+{
+    <ActivitySearchSummary Criteria="_appliedCriteria" OnClear="ClearCalendarSearch" />
+    @if (ActivitySearchQuery.HasNonSportCriteria(_appliedCriteria)) { <p class="calendar-note">Monthly view of the applied activity search. The displayed month supplies the dates.</p> }
+}
+@if (SearchTagOwner is { } bookmarkOwner && bookmarkOwner != ProfileState.SelectedOwnerId)
+{
+    @if (ProfileState.Profiles.FirstOrDefault(profile => profile.Id == bookmarkOwner) is { } profile)
+    {
+        <button class="button" @onclick="() => ProfileState.Select(bookmarkOwner)">Switch to @profile.DisplayName</button>
+    }
+    <button class="button" @onclick="ClearCalendarSearch">Remove activity search</button>
+}
 <form class="filter-bar calendar-filters" aria-label="Calendar filters" @onsubmit="ApplyAsync" @onsubmit:preventDefault>
     <label><span>Month</span><input type="@MonthInputType" @bind="_monthInput" @bind:after="FilterEdited" aria-invalid="@(_error is not null)" /></label>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FilterEdited"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
@@ -22,6 +40,7 @@
 {
     <p class="notice error" role="alert">@_error @if (_error.Contains("timezone", StringComparison.OrdinalIgnoreCase)) { <a href="/profiles">Choose a timezone in Profiles</a> }</p>
     <button class="button" @onclick="ApplyAsync">Retry loading calendar</button>
+    @if (_appliedCriteria is null && (!SearchTagOwner.HasValue || SearchTagOwner == ProfileState.SelectedOwnerId)) { <button class="button" @onclick="ClearCalendarSearch">Clear activity search</button> }
 }
 @if (_loading) { <p class="loading" role="status">Loading calendar…</p> }
 @if (_displayMonth is { } displayMonth)
@@ -45,7 +64,7 @@
     <p class="calendar-note">@(_calendar.Periods.Count == 1 ? $"Dates use {_calendar.Periods[0].TimeZoneId}." : "Dates use each profile’s reporting timezone; active days count distinct local dates.") Weeks start Monday. Week totals include only days in this month.</p>
     @if (_calendar.Totals.ActivityCount == 0)
     {
-        <p class="notice" role="status">No activities match this month and sport. Choose another month or import more history.</p>
+        <p class="notice" role="status">No activities match this month and the applied filters. Choose another month or adjust the activity search.</p>
     }
     <div class="calendar-content view-@_appliedView">
         <section class="calendar-grid" aria-label="Monthly training calendar">
@@ -119,7 +138,7 @@
     private int _revision;
     private CancellationTokenSource? _cancellation;
     private SportKind? Sport => Enum.TryParse<SportKind>(_sport, true, out var sport) && Enum.IsDefined(sport) ? sport : null;
-    private string DashboardUrl => _appliedSport.HasValue ? $"/?sport={_appliedSport.Value.ToString().ToLowerInvariant()}" : "/";
+    private string DashboardUrl => CalendarDashboardUrl();
     private string MonthInputType => string.IsNullOrWhiteSpace(_monthInput) || TryParseMonth(_monthInput, out _) ? "month" : "text";
 
     protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
@@ -146,6 +165,7 @@
         _error = null;
         _loading = true;
         _calendar = null;
+        _appliedCriteria = null;
         try
         {
             DateOnly? month = null;
@@ -157,10 +177,15 @@
             }
             if (month.HasValue) _displayMonth = month;
             var sport = Sport;
+            var tags = ProfileState.SelectedOwnerId is { } owner ? await Organization.ListTagsAsync(owner, cancellation.Token) : [];
+            if (_disposed || revision != _revision || cancellation.IsCancellationRequested) return;
+            _searchTags = tags;
+            var criteria = ReadSharedCriteria(sport, ProfileState.SelectedOwnerId);
+            _appliedCriteria = criteria;
             var view = _view;
             _appliedSport = sport;
             _appliedView = view;
-            var result = await Activities.GetTrainingCalendarAsync(new(ProfileState.SelectedOwnerId, sport, month, Clock.GetUtcNow()), cancellation.Token);
+            var result = await Activities.GetTrainingCalendarAsync(new(ProfileState.SelectedOwnerId, sport, month, Clock.GetUtcNow(), Criteria: criteria), cancellation.Token);
             if (_disposed || revision != _revision) return;
             _calendar = result;
             _displayMonth = result.Month;
@@ -190,9 +215,13 @@
     }
     private async Task ApplyAsync()
     {
-        var target = BuildUri();
-        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await LoadAsync();
-        else Navigation.NavigateTo(target);
+        try
+        {
+            var target = BuildUri();
+            if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await LoadAsync();
+            else Navigation.NavigateTo(target);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { _error = exception.Message; }
     }
     private Task MoveMonthAsync(int delta)
     {
@@ -211,14 +240,11 @@
     }
     private string BuildUri()
     {
-        var values = new List<string>();
-        if (!string.IsNullOrWhiteSpace(_monthInput)) values.Add($"month={Uri.EscapeDataString(_monthInput)}");
-        if (Sport.HasValue) values.Add($"sport={Sport.Value.ToString().ToLowerInvariant()}");
-        if (_view is "list" or "calendar") values.Add($"view={_view}");
-        return values.Count == 0 ? "/calendar" : $"/calendar?{string.Join('&', values)}";
+        return ActivitySearchQuery.Build("/calendar", ReadSharedCriteria(Sport, ProfileState.SelectedOwnerId),
+            ProfileState.SelectedOwnerId, CalendarFields(_monthInput, _view));
     }
-    private string DayUrl(DateOnly day) => $"/activities?from={IsoDate(day)}&to={IsoDate(day)}" +
-        (_appliedSport.HasValue ? $"&sport={_appliedSport.Value.ToString().ToLowerInvariant()}" : "");
+    private string DayUrl(DateOnly day) => ActivitySearchQuery.Build("/activities", CalendarLinkCriteria, ProfileState.SelectedOwnerId,
+        new Dictionary<string, string?> { ["from"] = IsoDate(day), ["to"] = IsoDate(day) });
     private static string IsoDate(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     private static bool TryParseMonth(string value, out DateOnly month) =>
         DateOnly.TryParseExact(value + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out month);
@@ -229,6 +255,7 @@
         CancelCurrentLoad();
         _revision++;
         _calendar = null;
+        _searchTags = [];
         _ = InvokeAsync(async () =>
         {
             if (_disposed) return;

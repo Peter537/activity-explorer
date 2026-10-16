@@ -18,6 +18,18 @@ public sealed partial class ActivityQueryService(
     ILogger<ActivityQueryService> logger,
     TimeProvider? timeProvider = null) : IActivityQueryService
 {
+    public async Task<ActivityFilterOptions> GetFilterOptionsAsync(Guid? ownerId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var names = await db.Activities.AsNoTracking()
+            .Where(x => !ownerId.HasValue || x.OwnerId == ownerId)
+            .Select(x => new { x.DeviceName, x.GearName }).Distinct().ToArrayAsync(cancellationToken);
+        static string[] Options(IEnumerable<string?> values) => values.Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!.Trim()).Order(StringComparer.Ordinal).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        return new(Options(names.Select(x => x.DeviceName)), Options(names.Select(x => x.GearName)));
+    }
+
     public async Task<ActivitySearchResult> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
@@ -115,7 +127,7 @@ public sealed partial class ActivityQueryService(
             activity.Metrics.OrderBy(x => x.Label)
                 .Select(x => new ActivityMetricSummary(x.Id, x.Key, x.Label, x.NumericValue, x.TextValue, x.Unit, x.Origin, x.UpdatedAtUtc))
                 .ToArray(),
-            activity.Stream is null ? null : TrackCodec.Fingerprint(activity.Stream));
+            activity.Stream is null ? null : TrackCodec.Fingerprint(activity.Stream), activity.NormalizedPowerWatts);
     }
 
     public async Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(
@@ -485,15 +497,8 @@ public sealed partial class ActivityQueryService(
 
     private async Task<ActivityFilter> ResolveFilterAsync(ExplorerDbContext db, ActivityFilter filter, CancellationToken cancellationToken)
     {
-        var tagIds = filter.TagIds?.Distinct().Order().ToArray() ?? [];
-        if (tagIds.Length > 0)
-        {
-            if (!filter.OwnerId.HasValue)
-                throw new ArgumentException("Select one profile to filter by tags.", nameof(filter));
-            var validCount = await db.Tags.CountAsync(x => x.OwnerId == filter.OwnerId && tagIds.Contains(x.Id), cancellationToken);
-            if (validCount != tagIds.Length)
-                throw new InvalidOperationException("One or more selected tags were deleted or belong to another profile. Remove or replace them before applying this search.");
-        }
+        await ImportBatchQuery.ValidateAsync(db, filter.OwnerId, filter.ImportBatchId, cancellationToken);
+        var criteria = await ActivityCriteriaQuery.ResolveAsync(db, filter.OwnerId, filter.GetCriteria(), cancellationToken);
         var selection = ReportingDateQuery.Selection(filter.Period, filter.From, filter.To);
         ReportingDates.Validate(selection);
         var asOf = filter.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
@@ -505,32 +510,23 @@ public sealed partial class ActivityQueryService(
             To = selection.Preset == ReportingPreset.Custom ? selection.To : null,
             AsOfUtc = asOf,
             ResolvedPeriods = periods,
-            TagIds = tagIds
+            Sport = criteria.Sport,
+            Search = criteria.Search,
+            HasPower = criteria.HasPower,
+            Device = criteria.Device,
+            TagIds = criteria.TagIds,
+            Criteria = criteria
         };
     }
 
     private static IQueryable<Activity> ApplyFilter(IQueryable<Activity> query, ActivityFilter filter)
     {
         if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
-        if (filter.Sport.HasValue) query = query.Where(x => x.Sport == filter.Sport);
-        if (filter.TagIds is { Count: > 0 })
-        {
-            var tagIds = filter.TagIds.ToArray();
-            query = query.Where(x => x.Tags.Any(tag => tagIds.Contains(tag.TagId)));
-        }
+        if (filter.ImportBatchId.HasValue)
+            query = query.Where(activity => activity.SourceFiles.Any(source => source.ImportBatchId == filter.ImportBatchId &&
+                source.OwnerId == activity.OwnerId));
         query = ReportingDateQuery.Apply(query, filter.ResolvedPeriods!);
-        if (!string.IsNullOrWhiteSpace(filter.Search))
-        {
-            var term = filter.Search.Trim();
-            query = query.Where(x => x.Title.Contains(term) || (x.Description != null && x.Description.Contains(term)));
-        }
-        if (filter.HasPower.HasValue) query = query.Where(x => x.HasPower == filter.HasPower);
-        if (!string.IsNullOrWhiteSpace(filter.Device))
-        {
-            var device = filter.Device.Trim();
-            query = query.Where(x => x.DeviceName != null && x.DeviceName.Contains(device));
-        }
-        return query;
+        return ActivityCriteriaQuery.Apply(query, filter.GetCriteria());
     }
 
     private static IQueryable<Activity> ApplySort(IQueryable<Activity> query, string sort) => sort switch

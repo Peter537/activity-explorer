@@ -4,6 +4,7 @@
 @inject IImportHistoryService History
 @inject IWatchedFolderService WatchedFolders
 @inject ProfileState ProfileState
+@inject NavigationManager Navigation
 
 <PageTitle>Imports - Activity Explorer</PageTitle>
 <PageHeader Title="Imports" Summary="Stream files into a durable local queue. Accepted activity originals are preserved in private storage." />
@@ -51,29 +52,48 @@
         }
     </article>
 </section>
-<details class="panel import-history">
+<details class="panel import-history" open="@HistoryHasFilters">
     <summary>
         <span>Import history</span>
         <small>@(_history is null ? "Newest imports" : $"{_history.Total} total")</small>
     </summary>
     <div class="import-history-content">
+        <form class="filter-bar" aria-label="Import history filters" @onsubmit="ApplyHistoryFilters" @onsubmit:preventDefault>
+            <label><span>Search imports</span><input type="search" @bind="_historySearch" @bind:event="oninput" @bind:after="HistoryFiltersChanged" /></label>
+            <label><span>Status</span><select @bind="_historyStatus" @bind:after="HistoryFiltersChanged"><option value="">Any status</option>@foreach (var status in Enum.GetValues<ImportStatus>()) { <option value="@status">@StatusText(status)</option> }@if (_historyStatus.Contains(',', StringComparison.Ordinal)) { <option value="@_historyStatus">@_historyStatus</option> }</select></label>
+            <label><span>Warnings</span><select @bind="_historyWarnings" @bind:after="HistoryFiltersChanged"><option value="">Any warnings</option><option value="yes">Has warnings</option><option value="no">No warnings</option></select></label>
+            <label><span>Source</span><select @bind="_historySource" @bind:after="HistoryFiltersChanged"><option value="">Any source</option>@foreach (var source in Enum.GetValues<SourceKind>()) { <option value="@source">@source</option> }</select></label>
+            <label><span>Import type</span><select @bind="_historyKind" @bind:after="HistoryFiltersChanged"><option value="">Any type</option>@foreach (var kind in Enum.GetValues<ImportBatchKind>()) { <option value="@kind">@KindText(kind)</option> }</select></label>
+            <label><span>Imported from</span><input type="date" @bind="_historyFrom" @bind:after="HistoryFiltersChanged" /></label>
+            <label><span>Imported to</span><input type="date" @bind="_historyTo" @bind:after="HistoryFiltersChanged" /></label>
+            <button class="button primary" type="submit">Apply history filters</button><button class="button" type="button" @onclick="ResetHistoryFilters">Reset history filters</button>
+        </form>
+        <p class="muted">Imported dates use each profile’s reporting timezone. Linked results show currently retained source associations.</p>
+        @if (_historyDirty) { <p class="notice" role="status">Apply history filters to update these results.</p> }
         <div class="import-history-toolbar">
             <p class="muted">Newest first. Expand long processing summaries only when you need them.</p>
             <button class="text-button" disabled="@_historyBusy" @onclick="LoadHistory">@(_historyBusy ? "Refreshing history..." : "Refresh")</button>
         </div>
         @if (_historyError is not null) { <StatusMessage Message="@_historyError" IsError="true" /> }
         else if (_history is null) { <div class="loading" role="status">Loading import history...</div> }
-        else if (_history.Items.Count == 0) { <p class="muted">No imports yet.</p> }
+        else if (_history.Items.Count == 0) { <p class="muted">@(HistoryHasFilters ? "No imports match these filters." : "No imports yet.")</p> }
         @foreach (var import in _history?.Items ?? [])
         {
             <article class="import-entry">
                 <div class="import-entry-heading">
-                    <div><strong>@import.DisplayName</strong><small>@import.OwnerName - @ImportKind(import) - @import.CreatedAt.ToLocalTime().ToString("g")</small></div>
+                    <div><strong>@import.DisplayName</strong><small>@import.OwnerName - @ImportKind(import) - @ImportTimeText(import)</small></div>
                     <span class="status-badge @StatusClass(import.Status)" aria-label="Import status: @StatusText(import.Status)">@StatusText(import.Status)</span>
                 </div>
                 <dl class="import-stats">
                     <div><dt>Files</dt><dd>@import.FilesDiscovered</dd></div><div><dt>Created</dt><dd>@import.Created</dd></div><div><dt>Enriched</dt><dd>@import.Updated</dd></div><div><dt>Skipped</dt><dd>@import.Skipped</dd></div>
                 </dl>
+                @if (import.LinkedActivityCount + import.LinkedRouteCount > 0)
+                {
+                    <nav class="workflow-actions" aria-label="Linked import results">
+                        @if (import.LinkedActivityCount > 0) { <a class="button" href="@LinkedImportUrl("/activities", import)">View linked activities</a><span>@import.LinkedActivityCount activities</span> }
+                        @if (import.LinkedRouteCount > 0) { <a class="button" href="@LinkedImportUrl("/routes", import)">View linked routes</a><span>@import.LinkedRouteCount routes</span> }
+                    </nav>
+                }
                 @if (import.Summary is not null)
                 {
                     <details class="import-summary"><summary>View processing summary</summary><p>@import.Summary</p></details>
@@ -82,7 +102,7 @@
         }
         @if (_history is not null && _history.Items.Count < _history.Total)
         {
-            <div class="history-more"><span>Showing @_history.Items.Count of @_history.Total</span><button class="button" disabled="@_historyBusy" @onclick="ShowMore">@(_historyBusy ? "Loading more..." : "Show 10 more")</button></div>
+            <div class="history-more"><span>Showing @_history.Items.Count of @_history.Total</span><button class="button" disabled="@(_historyBusy || _historyDirty)" @onclick="ShowMore">@(_historyBusy ? "Loading more..." : "Show 10 more")</button></div>
         }
     </div>
 </details>
@@ -109,7 +129,7 @@
         ProfileState.Changed += ProfilesChanged;
         await ProfileState.InitializeAsync();
         SetDefaultOwner();
-        await LoadAsync();
+        await LoadFolders();
     }
 
     private void SetDefaultOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
@@ -169,26 +189,29 @@
 
     private async Task LoadHistory()
     {
+        var revision = ++_historyRevision;
         _historyBusy = true;
         _historyError = null;
         try
         {
-            _history = await History.ListAsync(ProfileState.SelectedOwnerId, _historyLimit);
+            if (_historyQueryError is not null) throw new ArgumentException(_historyQueryError);
+            var history = await History.SearchAsync(_appliedHistory with { OwnerId = ProfileState.SelectedOwnerId }, _historyLimit);
+            if (!_disposed && revision == _historyRevision) _history = history;
         }
         catch (Exception exception)
         {
-            _historyError = $"Import history could not be loaded: {exception.Message}";
+            if (!_disposed && revision == _historyRevision) { _history = null; _historyError = $"Import history could not be loaded: {exception.Message}"; }
         }
         finally
         {
-            _historyBusy = false;
+            if (revision == _historyRevision) _historyBusy = false;
         }
     }
 
     private async Task ShowMore()
     {
         _historyLimit += 10;
-        await LoadHistory();
+        await NavigateHistory();
     }
     private async Task LoadFolders() => _folders = await WatchedFolders.ListAsync(null);
     private async Task LoadAsync() => await Task.WhenAll(LoadHistory(), LoadFolders());
@@ -248,7 +271,13 @@
         _pollingTask = null;
     }
 
-    private void ProfilesChanged() => InvokeAsync(async () => { SetDefaultOwner(); _historyLimit = 10; _history = null; await LoadAsync(); StateHasChanged(); });
-    public async ValueTask DisposeAsync() { ProfileState.Changed -= ProfilesChanged; await StopPollingAsync(); }
+    private void ProfilesChanged() => InvokeAsync(async () =>
+    {
+        SetDefaultOwner(); _historyLimit = 10; _history = null;
+        if (HistoryLimit is not null && _historyQueryError is null) { await LoadFolders(); await NavigateHistory(); }
+        else await LoadAsync();
+        StateHasChanged();
+    });
+    public async ValueTask DisposeAsync() { _disposed = true; _historyRevision++; ProfileState.Changed -= ProfilesChanged; await StopPollingAsync(); }
     private sealed record UploadManyResponse(IReadOnlyList<Guid> Ids);
 }

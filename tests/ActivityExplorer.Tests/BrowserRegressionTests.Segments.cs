@@ -164,10 +164,10 @@ public sealed partial class BrowserRegressionTests
 
             await page.GotoAsync(origin + $"/segments/{otherParent}/subsegments/new", navigation);
             await page.GetByRole(AriaRole.Button, new() { Name = "Use existing segment", Exact = true }).ClickAsync();
-            await page.GetByLabel("Existing segment").SelectOptionAsync(reverse.ToString());
+            await page.GetByRole(AriaRole.Combobox, new() { Name = "Existing segment", Exact = true }).SelectOptionAsync(reverse.ToString());
             await Assertions.Expect(page.GetByRole(AriaRole.Alert)).ToContainTextAsync("same direction");
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Attach segment", Exact = true })).ToHaveCountAsync(0);
-            await page.GetByLabel("Existing segment").SelectOptionAsync(child.ToString());
+            await page.GetByRole(AriaRole.Combobox, new() { Name = "Existing segment", Exact = true }).SelectOptionAsync(child.ToString());
             await Assertions.Expect(page.GetByRole(AriaRole.Region, new() { Name = "Parent and existing sub-segment preview" })).ToBeVisibleAsync();
             await page.GetByRole(AriaRole.Button, new() { Name = "Attach segment", Exact = true }).ClickAsync();
             await Assertions.Expect(page).ToHaveURLAsync(origin + $"/segments/{otherParent}?section={child}");
@@ -200,7 +200,8 @@ public sealed partial class BrowserRegressionTests
             var before = (await segments.GetAsync(child))!.Efforts.Select(effort => effort.Id).Order().ToArray();
             await childRow.GetByRole(AriaRole.Button, new() { NameRegex = new Regex("^Remove from this segment") }).ClickAsync();
             await Assertions.Expect(childRow).ToHaveCountAsync(0);
-            await Assertions.Expect(page.GetByRole(AriaRole.Status)).ToContainTextAsync("history and other links were kept");
+            await Assertions.Expect(page.GetByRole(AriaRole.Status).Filter(new() { HasTextString = "Section removed from this segment." }))
+                .ToContainTextAsync("history and other links were kept");
             var detached = (await segments.GetAsync(child))!;
             Assert.Equal(before, detached.Efforts.Select(effort => effort.Id).Order());
             Assert.Equal(otherParent, Assert.Single(detached.Parents).Id);

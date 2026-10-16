@@ -14,7 +14,7 @@
             <ul class="assigned-tags" aria-label="Assigned tags">
                 @foreach (var tag in Tags)
                 {
-                    <li @key="tag.Id">@tag.Name</li>
+                    <li @key="tag.Id"><a href="@ActivitySearchQuery.Build("/activities", new(TagIds: [tag.Id]), OwnerId)">@tag.Name</a></li>
                 }
             </ul>
         }

@@ -337,6 +337,17 @@ public sealed partial class BrowserRegressionTests
             await AssertNoDocumentOverflowAsync(page, "Records at 200% text size");
             await Assertions.Expect(cycling).ToBeVisibleAsync();
             await page.EvaluateAsync("document.documentElement.style.removeProperty('font-size'); document.body.style.removeProperty('font-size')");
+            await page.GotoAsync(origin + "/records?sport=rowing&period=custom&from=2020-01-01&to=2030-12-31",
+                new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Rowing");
+            Assert.Equal(["Cycling", "Running", "Walking", "Rowing"],
+                (await selector.GetByRole(AriaRole.Link).AllTextContentsAsync()).Select(text => text.Trim()).ToArray());
+            await page.GetByRole(AriaRole.Combobox, new() { Name = "Period", Exact = true }).SelectOptionAsync("all-time");
+            await page.GetByRole(AriaRole.Button, new() { Name = "Apply record period", Exact = true }).ClickAsync();
+            await Assertions.Expect(page).ToHaveURLAsync(origin + "/records");
+            await Assertions.Expect(page.Locator(".records-panel h2")).ToHaveTextAsync("Running");
+            Assert.Equal(["Cycling", "Running", "Walking"],
+                (await selector.GetByRole(AriaRole.Link).AllTextContentsAsync()).Select(text => text.Trim()).ToArray());
             await page.GotoAsync(origin, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             var dashboardRecord = page.Locator(".record-row").Filter(new LocatorFilterOptions { HasTextString = "Cycling · 5 min progress" });
             await Assertions.Expect(dashboardRecord).ToContainTextAsync(

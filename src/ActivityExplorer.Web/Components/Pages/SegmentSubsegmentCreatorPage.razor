@@ -40,9 +40,11 @@ else
             }
             else
             {
+                <label><span>Search existing segments</span><input type="search" maxlength="240" disabled="@(_busy || _previewing)" @bind="_candidateSearch" @bind:event="oninput" /></label>
+                <p class="muted" role="status">@CandidateMatchCount of @_candidates.Count segments match.@if (SelectedOutsideCandidateSearch) { <text> The selected segment is kept below.</text> }</p>
                 <label><span>Existing segment</span><select disabled="@(_busy || _previewing)" @bind="_existingId" @bind:after="PreviewAsync">
                     <option value="">Choose a segment</option>
-                    @foreach (var candidate in _candidates)
+                    @foreach (var candidate in VisibleCandidates)
                     {
                         <option value="@candidate.Id">@candidate.Name · @Format.Distance(candidate.DistanceMeters)</option>
                     }
@@ -68,6 +70,12 @@ else
     private IReadOnlyList<SegmentMapSection> _sections = [];
     private SegmentAttachmentPreview? _preview;
     private Guid? _existingId;
+    private string _candidateSearch = "";
+    private bool CandidateMatches(SegmentSummary candidate) => string.IsNullOrWhiteSpace(_candidateSearch) ||
+        candidate.Name.Contains(_candidateSearch.Trim(), StringComparison.OrdinalIgnoreCase);
+    private IEnumerable<SegmentSummary> VisibleCandidates => _candidates.Where(candidate => candidate.Id == _existingId || CandidateMatches(candidate));
+    private int CandidateMatchCount => _candidates.Count(CandidateMatches);
+    private bool SelectedOutsideCandidateSearch => _candidates.Any(candidate => candidate.Id == _existingId && !CandidateMatches(candidate));
     private bool _loaded;
     private bool _busy;
     private bool _previewing;
@@ -88,6 +96,7 @@ else
         _message = null;
         _preview = null;
         _existingId = null;
+        _candidateSearch = "";
         try
         {
             var parent = await Segments.GetAsync(Id);

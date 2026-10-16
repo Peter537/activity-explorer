@@ -14,7 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ActivityExplorer.Tests;
 
-public sealed class GoalServiceTests
+public sealed partial class GoalServiceTests
 {
     [Theory]
     [InlineData(GoalMetric.Distance, null, 10000)]

@@ -150,8 +150,7 @@ public sealed class ProfileService(
         {
             x.Id,
             x.Name,
-            criteria = JsonSerializer.Deserialize<SavedSearchCriteria>(x.CriteriaJson)
-                ?? throw new InvalidOperationException($"Saved search '{x.Name}' has unreadable criteria.")
+            criteria = ReadExportCriteria(x.CriteriaJson, x.Name)
         }).ToArray();
         var goals = await db.Goals.AsNoTracking().Where(x => x.OwnerId == ownerId)
             .OrderBy(x => x.Id).Select(x => new
@@ -189,4 +188,11 @@ public sealed class ProfileService(
 
     private static string SafeName(string value) =>
         string.Concat(value.Select(x => Path.GetInvalidFileNameChars().Contains(x) ? '-' : x)).Trim();
+
+    private static JsonElement ReadExportCriteria(string json, string name)
+    {
+        var criteria = SavedSearchCriteriaJson.TryRead(json)
+            ?? throw new InvalidOperationException($"Saved search '{name}' has unreadable criteria.");
+        return JsonSerializer.Deserialize<JsonElement>(SavedSearchCriteriaJson.Write(criteria));
+    }
 }

@@ -4,6 +4,14 @@ Activity Explorer calculates records only from activity files imported into the 
 
 Only achieved records appear on the **Records** page. The benchmark name opens its attempt history; the activity name underneath opens the source activity. Each result includes its profile, date, and source-data coverage. The table keeps these fields visible when rows restack on narrow screens.
 
+## Records within a period
+
+**All time** is the default and uses the existing lifetime winning snapshots. Choose a relative **Period** or an inclusive **Custom range**, then **Apply record period**, to calculate the best qualifying result for every benchmark within those dates. This finds the period's winners even when the lifetime winners occurred elsewhere. Date membership uses each activity owner's reporting timezone; All profiles keeps separate winners for each owner. Sport and All/Indoor/Outdoor training scope still apply.
+
+Relative presets resolve again on reload or **Refresh records**. Custom bounds can be open-ended; invalid dates and reversed ranges remain visible for correction. For example, `/records?sport=cycling&scope=outdoor&from=2026-01-01&to=2026-01-31` opens January's outdoor cycling winners, while `/records?sport=cycling&period=this-month` resolves the current owner-local month. Benchmark links and **Back to Records** retain this period.
+
+Period calculations show loading and **Cancel calculation**, discard cancelled or superseded work, and offer **Try again** after failure. A cancelled or failed calculation is never presented as a complete result. Period results are read-only and calculated on demand; refresh includes committed imports, corrections, transfers, and deletions without rebuilding or overwriting lifetime snapshots. A sport stays selectable when its selected period has no achieved records.
+
 ## Benchmark attempt history
 
 Open any benchmark to compare qualifying attempts for its sport, selected profile (or All profiles), and training scope. This includes activity records, distance bests, timed distance bests, and power bests. Attempts are ordered strongest first using unrounded values, with 50 rows per page and no overall result limit. Equal results sort by activity date, activity ID, and position in the recorded stream.
@@ -18,23 +26,23 @@ The result is a link to its exact interval in the source activity; the activity 
 
 The activity's **Range summary** describes supported recorded samples with explicit gap and coverage rules; it does not recalculate or replace the benchmark result. See [Selecting an activity range](charts.md#selecting-an-activity-range) for the 30-second continuity rule, weighted sensor averages, and partial-data behavior. The qualification rules below remain unchanged.
 
-The detail route is `/records/attempts`, with sport, kind, and key parameters identifying the benchmark; optional scope, owner, mode, page, view, period, from, and to parameters preserve the view. It has no separate sidebar entry. Direct links, refresh, and browser Back/Forward work normally. Changing profile keeps the benchmark, scope, period, and view, and resets ranked pagination. **Back to Records** restores the sport and scope. Dates use each activity owner’s reporting timezone, following the same inclusive dates and relative presets as Activities. Existing URLs default to All time and strongest-first.
+The detail route is `/records/attempts`, with sport, kind, and key parameters identifying the benchmark; optional scope, owner, mode, page, view, period, from, and to parameters preserve the view. It has no separate sidebar entry. Direct links, refresh, and browser Back/Forward work normally. Changing profile keeps the benchmark, scope, period, and view, and resets ranked pagination. **Back to Records** restores the sport, scope, and period. Dates use each activity owner’s reporting timezone, following the same inclusive dates and relative presets as Activities. Existing URLs default to All time and strongest-first.
 
 Choose **Progress over time** to chart one best qualifying attempt per activity in chronological order, plus the best result so far within the selected period. The complete matching history is used, including activities beyond the first ranked page. All profiles shows separate owner charts so one person’s result cannot become another’s running best. Ties retain the previous best value. Pointer/touch and keyboard inspection show exact formatted results; the chronological table retains activity links. Whole-activity benchmarks participate without inventing an interval. Switching back to strongest-first preserves the selected period and the existing best/multiple choice.
 
 Attempt history is calculated on demand from the current stored summaries and streams; it does not create a second persisted record set. The query filters activities before reading streams and processes payloads in batches of 16 within a consistent read snapshot. Whole-activity records do not read stream payloads. Refresh to include later imports, corrections, transfers, or deletions. Calculations can be cancelled, and loading failures offer a retry instead of presenting an incomplete list or chart as complete. Changing the profile or filters cancels superseded requests.
 
-Attempts use the qualification rules below. Selecting multiple attempts does not relax power coverage requirements or turn a newly cut boundary into a recording gap. The Records overview and dashboard record highlights continue to use the existing derived winning snapshots.
+Attempts use the qualification rules below. Selecting multiple attempts does not relax power coverage requirements or turn a newly cut boundary into a recording gap. The All time Records overview and dashboard lifetime highlights continue to use the existing derived winning snapshots; period overviews calculate their own winners from eligible source activities.
 
 ## Sport selection
 
-The Records page shows one sport at a time. Use the icons and sport names above the tables to switch sports. The selector lists sports with achieved records in All training for the selected profile, in Cycling, Running, Walking, and Rowing order. Sports remain available when you change record scope.
+The Records page shows one sport at a time. Use the icons and sport names above the tables to switch sports. All time lists sports with lifetime record snapshots for the selected profile, in Cycling, Running, Walking, and Rowing order. Period views also include sports with imported activities, so they can calculate results before lifetime snapshots exist. Changing scope keeps the available sports; changing period updates availability for that calculation.
 
-Without an explicit sport choice, the page opens the available sport with the most imported activities across indoor and outdoor training. Ties use the selector order. All profiles counts stored activities across all profiles. A sport without calculated records cannot become the default.
+Without an explicit sport choice, the page opens the available sport with the most imported activities across indoor and outdoor training. Ties use the selector order. All profiles counts stored activities across all profiles. This choice is independent of whether that sport has a winner in the selected period.
 
 Selecting a sport adds its lowercase name to the URL, for example `/records?sport=rowing&scope=indoor`. Refresh and browser Back or Forward restore explicit choices. Changing scope preserves the sport. Changing profile also preserves it when available; otherwise the page removes the sport parameter and selects the new profile's default. Unsupported sport values are removed independently of scope. No last-used sport preference is stored.
 
-When a sport has no records in the selected scope, the page keeps it selected and offers **View all training**. A profile without records shows an import-oriented empty state without the selector.
+When a sport has no records in the selected scope or period, the page keeps it selected and explains the empty result. A profile without activities or lifetime records shows an import-oriented empty state without the selector.
 
 ## Record scope
 

@@ -25,24 +25,41 @@ else
     <label><span>Search</span><input @bind="_search" @bind:event="oninput" @bind:after="FiltersChanged" placeholder="Title or notes" /></label>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
     <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" />
+    <label><span>Tag presence</span><select @bind="_searchInput.TagPresence" @bind:after="FiltersChanged"><option value="any">Any tag presence</option><option value="tagged">Tagged</option><option value="untagged">Untagged</option></select></label>
     @if (ProfileState.SelectedOwnerId.HasValue)
     {
-        <div class="tag-filter"><TagPicker Tags="_tags" SelectedIds="_tagIds" Changed="TagFiltersChanged" Label="Tags — match any" Disabled="_busy" /></div>
+        <div class="tag-filter">
+            <label><span>Tag matching</span><select @bind="_searchInput.TagMode" @bind:after="FiltersChanged"><option value="any">Match any selected tag</option><option value="all">Match all selected tags</option></select></label>
+            <TagPicker Tags="_tags" SelectedIds="_tagIds" Changed="TagFiltersChanged" Label="@(_searchInput.TagMode == "all" ? "Tags — match all" : "Tags — match any")" Disabled="_busy" />
+            <TagPicker Tags="_tags" SelectedIds="_excludedTagIds" Changed="ExcludedTagsChanged" Label="Exclude tags" Disabled="_busy" />
+        </div>
     }
     <details class="more-filters" open="@HasSecondaryFilters">
         <summary>More filters <span class="filter-count">@SecondaryFilterCount active</span></summary>
         <div class="filter-fields">
             <label><span>Power</span><select @bind="_power" @bind:after="FiltersChanged"><option value="">Any</option><option value="yes">Has power</option><option value="no">No power</option></select></label>
-            <label><span>Device</span><input @bind="_device" @bind:event="oninput" @bind:after="FiltersChanged" placeholder="Device name" /></label>
+            <label><span>Device</span><input @bind="_device" @bind:event="oninput" @bind:after="FiltersChanged" placeholder="Device name" list="activity-device-options" /></label>
+            <datalist id="activity-device-options">@foreach (var device in _filterOptions.Devices) { <option value="@device"></option> }</datalist>
+            <ActivitySearchFields Value="_searchInput" Options="_filterOptions" Changed="FiltersChanged" />
         </div>
     </details>
     <label><span>Sort</span><select @bind="_sort" @bind:after="SortChanged"><option value="start-desc">Newest</option><option value="start-asc">Oldest</option><option value="distance-desc">Longest</option><option value="distance-asc">Shortest</option><option value="duration-desc">Most time</option><option value="elevation-desc">Most elevation</option></select></label>
-    <button class="button primary" type="submit" disabled="@(_busy || _dateError is not null || _tagError is not null)">Apply filters</button>
+    <button class="button primary" type="submit" disabled="@(_busy || _dateError is not null || _tagError is not null || _criteriaError is not null)">Apply filters</button>
     <button class="button" type="button" disabled="@_busy" @onclick="Reset">Reset</button>
 </form>
 
 <StatusMessage Message="@_tagError" IsError="true" />
-@if (_tagOwner.HasValue && _tagOwner != ProfileState.SelectedOwnerId && _tagIds.Count > 0)
+<StatusMessage Message="@_criteriaError" IsError="true" />
+<StatusMessage Message="@_importError" IsError="true" />
+@if (HasImportScope)
+{
+    <div class="notice" aria-label="Linked import filter"><p>Showing currently retained activity associations from this import.</p>
+        @if (_importScope is { } importScope && importScope.OwnerId != ProfileState.SelectedOwnerId && ProfileState.Profiles.FirstOrDefault(profile => profile.Id == importScope.OwnerId) is { } importOwner)
+        { <button class="button" @onclick="() => ProfileState.Select(importOwner.Id)">Switch to @importOwner.DisplayName</button> }
+        <button class="button" @onclick="RemoveImportScope">Remove import filter</button><a class="button" href="/imports">Import history</a>
+    </div>
+}
+@if (_tagOwner.HasValue && _tagOwner != ProfileState.SelectedOwnerId && _tagIds.Count + _excludedTagIds.Count > 0)
 {
     @if (ProfileState.Profiles.FirstOrDefault(profile => profile.Id == _tagOwner) is { } bookmarkOwner)
     {
@@ -69,6 +86,14 @@ else if (_tagError is not null)
         <div><dt>Moving time</dt><dd>@Format.Duration(_result.Totals.MovingSeconds)</dd></div>
         <div><dt>Ascent</dt><dd>@($"{_result.Totals.ElevationMeters:N0} m")</dd></div>
     </dl>
+    @if (!ActionsBlocked && !HasImportScope)
+    {
+        <nav class="filter-bar" aria-label="Explore matching activities">
+            <a class="button" href="@SearchViewUrl("/map")">Show matching activities on map</a>
+            <a class="button" href="@SearchViewUrl("/")">View progress</a>
+            <a class="button" href="@SearchViewUrl("/calendar")">View in calendar</a>
+        </nav>
+    }
 }
 
 @if (_result?.Total == 0)
@@ -205,11 +230,12 @@ else if (_result is not null)
         _device = QueryDevice?.Trim() ?? "";
         _sort = QuerySort is not null && SortValues.Contains(QuerySort) ? QuerySort : "start-desc";
         _page = Math.Max(1, QueryPage ?? 1);
+        ReadSearchInput();
         ReadTagQuery();
-        if (previousSelectionKey != SelectionKey()) ClearSelectionAndConfirmation();
+        if (!ValidateImportScope() || previousSelectionKey != SelectionKey()) ClearSelectionAndConfirmation();
         _statusMessage = QueryDeleted is > 0
             ? $"Permanently deleted {QueryDeleted.Value:N0} {(QueryDeleted.Value == 1 ? "activity" : "activities")}."
-            : null;
+            : _preservePeriod ? _statusMessage : null;
         _warningMessage = BuildPendingWarning(QueryCleanupPending == true, QueryStatisticsPending == true);
         _errorMessage = null;
         _dirty = _sortOnly = false;
@@ -219,12 +245,12 @@ else if (_result is not null)
     }
     private SportKind? Sport => Enum.TryParse<SportKind>(_sport, out var value) ? value : null;
     private bool HasSecondaryFilters => SecondaryFilterCount > 0;
-    private int SecondaryFilterCount => new[] { !string.IsNullOrWhiteSpace(_power), !string.IsNullOrWhiteSpace(_device) }.Count(value => value);
+    private int SecondaryFilterCount => SearchExtraCount + new[] { !string.IsNullOrWhiteSpace(_power), !string.IsNullOrWhiteSpace(_device) }.Count(value => value);
     private bool? HasPower => _power switch { "yes" => true, "no" => false, _ => null };
-    private bool HasFilters => !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_sport) || HasSecondaryFilters || _dates.Period != "all-time" || _tagIds.Count > 0;
-    private bool ActionsBlocked => _busy || _loading || _dirty || _queryFailed || _dateError is not null || _tagError is not null;
+    private bool HasFilters => HasImportScope || !string.IsNullOrWhiteSpace(_search) || !string.IsNullOrWhiteSpace(_sport) || HasSecondaryFilters || _dates.Period != "all-time" || _tagIds.Count > 0;
+    private bool ActionsBlocked => _busy || _loading || _dirty || _queryFailed || _dateError is not null || _tagError is not null || _criteriaError is not null || _importError is not null;
     private ActivityFilter CurrentFilter() => new(ProfileState.SelectedOwnerId, Sport, _dates.Selection.From, _dates.Selection.To,
-        _search, HasPower, _device, Page: _page, Sort: _sort, Period: _dates.Selection.Preset, AsOfUtc: _asOfUtc, TagIds: _tagIds);
+        _search, HasPower, _device, Page: _page, Sort: _sort, Period: _dates.Selection.Preset, AsOfUtc: _asOfUtc, TagIds: _tagIds, Criteria: CurrentCriteria(), ImportBatchId: _importScope?.BatchId);
 
     private bool ValidateDates()
     {
@@ -251,7 +277,7 @@ else if (_result is not null)
         var revision = ++_revision;
         _asOfUtc = preservePeriod && _result?.EffectiveFilter.AsOfUtc is { } captured ? captured : Clock.GetUtcNow();
         _queryFailed = false;
-        if (!ValidateDates()) { _result = null; _loading = false; _loadCancellation = null; return; }
+        if (!ValidateImportScope() || !ValidateDates() || !ValidateCriteria()) { _result = null; _loading = false; _loadCancellation = null; return; }
         var filter = preservePeriod && _result is not null
             ? _result.EffectiveFilter with { Page = _page, Sort = _sort }
             : CurrentFilter();
@@ -296,8 +322,8 @@ else if (_result is not null)
         }
     }
 
-    private Task Apply() { if (_busy || _dateError is not null || !ValidateTagFilter()) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page = 1; return NavigateOrLoadAsync(_sortOnly); }
-    private Task Reset() { ClearSelectionAndConfirmation(); _search = _sport = _power = _device = ""; _tagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; _dates = new(); _sort = "start-desc"; _page = 1; return NavigateOrLoadAsync(); }
+    private Task Apply() { if (_busy || _dateError is not null || !ValidateCriteria() || !ValidateTagFilter()) return Task.CompletedTask; ClearSelectionAndConfirmation(); _page = 1; return NavigateOrLoadAsync(_sortOnly); }
+    private Task Reset() { ClearImportScope(); ClearSelectionAndConfirmation(); _search = _sport = _power = _device = ""; _searchInput = new(); _excludedTagIds = []; _criteriaError = _criteriaQueryError = null; _tagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; _dates = new(); _sort = "start-desc"; _page = 1; return NavigateOrLoadAsync(); }
     private Task Previous() { if (ActionsBlocked || _batchEditing || _deleteConfirming) return Task.CompletedTask; _page = Math.Max(1, _page - 1); return NavigateOrLoadAsync(true); }
     private Task Next() { if (ActionsBlocked || _batchEditing || _deleteConfirming) return Task.CompletedTask; _page++; return NavigateOrLoadAsync(true); }
     private Task Retry() => LoadAsync();
@@ -305,7 +331,7 @@ else if (_result is not null)
     private async Task NavigateOrLoadAsync(bool preservePeriod = false)
     {
         _asOfUtc = Clock.GetUtcNow();
-        if (!ValidateDates()) return;
+        if (!ValidateDates() || !ValidateCriteria()) return;
         var target = BuildUri();
         if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await LoadAsync(preservePeriod);
         else { _preservePeriod = preservePeriod; Navigation.NavigateTo(target); }
@@ -314,14 +340,12 @@ else if (_result is not null)
     private string BuildUri()
     {
         var values = new List<string>();
-        Add("q", _search);
-        Add("sport", string.IsNullOrWhiteSpace(_sport) ? null : _sport.ToLowerInvariant());
+        foreach (var pair in ActivitySearchInput.QueryValues(CurrentCriteria())) Add(pair.Key, pair.Value);
         foreach (var pair in _dates.QueryValues()) Add(pair.Key, pair.Value);
-        Add("power", _power);
-        Add("device", _device);
-        Add("tags", _tagIds.Count == 0 ? null : string.Join(',', _tagIds.Order()));
-        Add("tagOwner", _tagIds.Count == 0 ? null : _tagOwner?.ToString());
+        Add("tagOwner", _tagIds.Count + _excludedTagIds.Count == 0 ? null : _tagOwner?.ToString());
         Add("sort", _sort == "start-desc" ? null : _sort);
+        Add("importBatch", QueryImportBatch);
+        Add("importOwner", QueryImportOwner);
         Add("page", _page <= 1 ? null : _page.ToString(CultureInfo.InvariantCulture));
         return values.Count == 0 ? "/activities" : $"/activities?{string.Join('&', values)}";
 
@@ -347,6 +371,7 @@ else if (_result is not null)
         _sortOnly = false;
         _asOfUtc = Clock.GetUtcNow();
         ValidateDates();
+        ValidateCriteria();
     }
     private void SortChanged()
     {
@@ -478,7 +503,7 @@ else if (_result is not null)
     private void ProfileChanged() => InvokeAsync(async () =>
     {
         ClearSelectionAndConfirmation();
-        if (!_switchingBookmark) { _tagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; }
+        if (!_switchingBookmark) { _tagIds = []; _excludedTagIds = []; _tagOwner = null; _tagError = _tagQueryError = null; }
         _switchingBookmark = false;
         _tags = [];
         _revision++;

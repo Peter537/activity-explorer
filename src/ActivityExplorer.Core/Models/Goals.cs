@@ -7,6 +7,12 @@ public enum GoalRecurrence { Once, Weekly, Monthly, Yearly }
 public enum GoalPeriodState { Upcoming, Active, Ended }
 public enum GoalListView { CurrentAndUpcoming, All, Archived }
 public enum GoalEditScope { ThisEdition, NextEditions }
+public enum GoalProgressFilter { Any, TargetReached, TargetNotReached }
+
+public sealed record GoalListFilter(Guid? OwnerId = null, GoalListView View = GoalListView.CurrentAndUpcoming,
+    string? Search = null, SportKind? Sport = null, GoalMetric? Metric = null,
+    GoalProgressFilter Progress = GoalProgressFilter.Any);
+public sealed record GoalEditionLocation(DateOnly Edition, int HistoryPage);
 
 public sealed record GoalDefinition(string Name, SportKind? Sport, double Target);
 public sealed record GoalSchedule(GoalMetric Metric, GoalRecurrence Recurrence, DateOnly Start, DateOnly? End);

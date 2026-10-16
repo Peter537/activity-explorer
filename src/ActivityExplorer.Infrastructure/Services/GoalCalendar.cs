@@ -82,6 +82,25 @@ internal static class GoalCalendar
         return At(schedule, key);
     }
 
+    public static GoalEditionLocation FindEdition(PersonalGoal goal, DateOnly today, DateOnly date)
+    {
+        var count = Count(goal, today);
+        var schedule = Schedule(goal);
+        var key = Key(schedule, date);
+        var period = Selected(goal, today, key);
+        if (count == 0 || date < schedule.Start || period is null || date < period.Start || date > period.End)
+            throw new ArgumentException("Choose a date within an available goal edition. Dates before the goal, after its last available edition, or after its archive cutoff cannot be opened.", nameof(date));
+        var first = Key(schedule, schedule.Start);
+        var index = schedule.Recurrence switch
+        {
+            GoalRecurrence.Weekly => (key.DayNumber - first.DayNumber) / 7,
+            GoalRecurrence.Monthly => (key.Year - first.Year) * 12 + key.Month - first.Month,
+            GoalRecurrence.Yearly => key.Year - first.Year,
+            _ => 0
+        };
+        return new(key, (count - 1 - index) / GoalDetail.PageSize + 1);
+    }
+
     public static GoalDefinition Definition(PersonalGoal goal, DateOnly key)
     {
         var revision = goal.Definitions.Where(x => x.EffectiveFromEdition <= key)

@@ -9,20 +9,28 @@ namespace ActivityExplorer.Infrastructure.Services;
 
 public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> contextFactory, TimeProvider? timeProvider = null) : IMapFeatureService
 {
+    private const int ActivityLimit = 2000;
+    private const int DefinitionLimit = 1000;
+    // A WKB line needs a 9-byte header and at least two 16-byte XY coordinates.
+    private const int MinimumLineGeometryBytes = 41;
     public async Task<MapFeatureCollection> GetActivitiesAsync(MapQuery query, CancellationToken cancellationToken = default)
     {
         Validate(query);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var criteria = await ActivityCriteriaQuery.ResolveAsync(db, query.OwnerId,
+            query.Criteria ?? new(Sport: query.Sport), cancellationToken);
         var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId,
             ReportingDateQuery.Selection(query.Period, query.From, query.To),
             query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken);
-        var source = db.Activities.AsNoTracking().Include(x => x.Owner).Where(x => x.HasGps && x.SimplifiedGeometryWkb != null);
+        var source = db.Activities.AsNoTracking().Include(x => x.Owner).Where(x => x.HasGps &&
+            x.SimplifiedGeometryWkb != null && x.SimplifiedGeometryWkb.Length >= MinimumLineGeometryBytes);
         if (query.OwnerId.HasValue) source = source.Where(x => x.OwnerId == query.OwnerId);
-        if (query.Sport.HasValue) source = source.Where(x => x.Sport == query.Sport);
+        source = ActivityCriteriaQuery.Apply(source, criteria);
         source = ReportingDateQuery.Apply(source, periods);
         source = ApplyBounds(source, query);
-        var rows = await source.OrderByDescending(x => x.StartTimeUtc).Take(2000).ToListAsync(cancellationToken);
+        var matching = await source.CountAsync(cancellationToken);
+        var rows = await source.OrderByDescending(x => x.StartTimeUtc).ThenBy(x => x.Id).Take(ActivityLimit).ToListAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return Collection(rows.Select(x => Feature(
             x.SimplifiedGeometryWkb!,
@@ -35,19 +43,22 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
                 ["owner"] = x.Owner?.DisplayName,
                 ["date"] = x.StartTimeUtc,
                 ["distanceMeters"] = x.DistanceMeters
-            })));
+            })), matching, ActivityLimit);
     }
 
     public async Task<MapFeatureCollection> GetRoutesAsync(MapQuery query, CancellationToken cancellationToken = default)
     {
         Validate(query);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var source = db.Routes.AsNoTracking().Include(x => x.Owner).AsQueryable();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var source = db.Routes.AsNoTracking().Include(x => x.Owner).Where(x => x.GeometryWkb.Length >= MinimumLineGeometryBytes);
         if (query.OwnerId.HasValue) source = source.Where(x => x.OwnerId == query.OwnerId);
         if (query.Sport.HasValue) source = source.Where(x => x.Sport == query.Sport);
         source = ApplyBounds(source, query);
+        var matching = await source.CountAsync(cancellationToken);
         var rows = await source.OrderByDescending(x => x.CreatedAtUtc).ThenBy(x => x.Id)
-            .Take(1000).ToListAsync(cancellationToken);
+            .Take(DefinitionLimit).ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Collection(rows.Select(x => Feature(x.GeometryWkb, new Dictionary<string, object?>
         {
             ["id"] = x.Id,
@@ -56,19 +67,22 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
             ["sport"] = x.Sport.ToString(),
             ["owner"] = x.Owner?.DisplayName,
             ["distanceMeters"] = x.DistanceMeters
-        })));
+        })), matching, DefinitionLimit);
     }
 
     public async Task<MapFeatureCollection> GetSegmentsAsync(MapQuery query, CancellationToken cancellationToken = default)
     {
         Validate(query);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var source = db.Segments.AsNoTracking().Include(x => x.Owner).AsQueryable();
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var source = db.Segments.AsNoTracking().Include(x => x.Owner).Where(x => x.GeometryWkb.Length >= MinimumLineGeometryBytes);
         if (query.OwnerId.HasValue) source = source.Where(x => x.OwnerId == query.OwnerId);
         if (query.Sport.HasValue) source = source.Where(x => x.Sport == query.Sport);
         source = ApplyBounds(source, query);
+        var matching = await source.CountAsync(cancellationToken);
         var rows = await source.OrderByDescending(x => x.CreatedAtUtc).ThenBy(x => x.Id)
-            .Take(1000).ToListAsync(cancellationToken);
+            .Take(DefinitionLimit).ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Collection(rows.Select(x => Feature(x.GeometryWkb, new Dictionary<string, object?>
         {
             ["id"] = x.Id,
@@ -77,7 +91,7 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
             ["sport"] = x.Sport.ToString(),
             ["owner"] = x.Owner?.DisplayName,
             ["distanceMeters"] = x.DistanceMeters
-        })));
+        })), matching, DefinitionLimit);
     }
 
     private static IQueryable<Activity> ApplyBounds(IQueryable<Activity> source, MapQuery query)
@@ -142,6 +156,9 @@ public sealed class MapFeatureService(IDbContextFactory<ExplorerDbContext> conte
         return new MapFeature("Feature", new MapGeometry("LineString", coordinates), properties);
     }
 
-    private static MapFeatureCollection Collection(IEnumerable<MapFeature> features) =>
-        new("FeatureCollection", features.Where(x => x.Geometry.Coordinates.Count > 1).ToArray());
+    private static MapFeatureCollection Collection(IEnumerable<MapFeature> features, int matching, int limit)
+    {
+        var lines = features.Where(x => x.Geometry.Coordinates.Count > 1).ToArray();
+        return new("FeatureCollection", lines, new(lines.Length, matching, limit));
+    }
 }

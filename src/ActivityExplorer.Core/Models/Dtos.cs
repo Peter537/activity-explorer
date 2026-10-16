@@ -13,9 +13,13 @@ public sealed record ActivityFilter(
     int Page = 1, int PageSize = 25, string Sort = "start-desc",
     ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null,
     IReadOnlyList<ResolvedOwnerPeriod>? ResolvedPeriods = null,
-    IReadOnlyList<Guid>? TagIds = null);
+    IReadOnlyList<Guid>? TagIds = null, ActivityCriteria? Criteria = null, Guid? ImportBatchId = null)
+{
+    public ActivityCriteria GetCriteria() => Criteria ?? new(Sport, Search, HasPower, Device, TagIds);
+}
 
 public sealed record ActivityTotals(int ActivityCount, double DistanceMeters, double MovingSeconds, double ElevationMeters);
+public sealed record ActivityFilterOptions(IReadOnlyList<string> Devices, IReadOnlyList<string> Gear);
 
 public sealed record ActivitySearchResult(
     IReadOnlyList<ActivitySummary> Items, int Total, int Page, int PageSize,
@@ -42,7 +46,8 @@ public sealed record ActivityDetail(
     double? AverageCadence, double? MaxPower, double? Kilojoules,
     IReadOnlyList<TrackPoint> Points, IReadOnlyList<LapCandidate> Laps,
     IReadOnlyList<SourceFileSummary> Sources, IReadOnlyList<SegmentEffortSummary> SegmentEfforts,
-    ActivityRichSummary Rich, IReadOnlyList<ActivityMetricSummary> Metrics, string? StreamFingerprint = null);
+    ActivityRichSummary Rich, IReadOnlyList<ActivityMetricSummary> Metrics, string? StreamFingerprint = null,
+    double? NormalizedPower = null);
 
 public sealed record ActivityRichSummary(
     double? TimerSeconds, MovingTimeSource MovingTimeSource,
@@ -70,7 +75,7 @@ public sealed record SegmentEffortSummary(
 public sealed record UpdateActivityRequest(string Title, string? Description, string? GearName, Guid OwnerId);
 
 public sealed record SportTotal(SportKind Sport, int Count, double DistanceMeters, double MovingSeconds, double ElevationMeters);
-public sealed record NamedTotal(string Name, int Count);
+public sealed record NamedTotal(string Name, int Count, bool IsUnassigned = false);
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize)
 {
@@ -80,9 +85,17 @@ public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page,
 public sealed record MapQuery(
     Guid? OwnerId = null, SportKind? Sport = null, DateOnly? From = null, DateOnly? To = null,
     double? West = null, double? South = null, double? East = null, double? North = null, int Zoom = 8,
-    ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null);
+    ReportingPreset? Period = null, DateTimeOffset? AsOfUtc = null, ActivityCriteria? Criteria = null);
 
-public sealed record MapFeatureCollection(string Type, IReadOnlyList<MapFeature> Features)
+public sealed record MapLayerCoverage(int ReturnedCount, int MatchingCount, int Limit)
+{
+    public bool Truncated => MatchingCount > Limit;
+}
+
+public sealed record MapLineLayerStatus(string Layer, bool Loading, bool Failed, int ReturnedCount,
+    int MatchingCount, int Limit, bool Truncated);
+
+public sealed record MapFeatureCollection(string Type, IReadOnlyList<MapFeature> Features, MapLayerCoverage? Coverage = null)
 {
     public static MapFeatureCollection Empty { get; } = new("FeatureCollection", []);
 }
@@ -107,7 +120,8 @@ public sealed record SegmentSummary(
 public sealed record SegmentDetail(
     SegmentSummary Summary, IReadOnlyList<TrackPoint> Points, IReadOnlyList<SegmentEffortSummary> Efforts,
     Guid? SelectedEffortId, IReadOnlyList<TrackPoint> SelectedEffortPoints,
-    IReadOnlyList<SegmentSummary> Parents, IReadOnlyList<SubsegmentDetail> Children);
+    IReadOnlyList<SegmentSummary> Parents, IReadOnlyList<SubsegmentDetail> Children,
+    string? OwnerTimeZoneId = null);
 public sealed record SegmentRelationship(Guid ParentSegmentId, Guid ChildSegmentId);
 public sealed record SegmentPlacement(int StartIndex, int EndIndex, double StartDistanceMeters, double EndDistanceMeters);
 public sealed record SubsegmentDetail(

@@ -5,7 +5,8 @@ namespace ActivityExplorer.Core.Models;
 public sealed record ExplorationScope(Guid? OwnerId = null, SportKind? Sport = null);
 public sealed record ExplorationQuery(
     ExplorationScope Scope, ReportingDateSelection Dates, DateTimeOffset AsOfUtc,
-    bool Cumulative = false, DateOnly? Through = null, DateOnly? HistoryMonth = null, int Page = 1);
+    bool Cumulative = false, DateOnly? Through = null, DateOnly? HistoryMonth = null, int Page = 1,
+    bool NewOnly = false);
 public sealed record ExplorationIndexStatus(int TotalActivities, int IndexedActivities, int LimitedActivities)
 {
     public bool IsComplete => TotalActivities == IndexedActivities;

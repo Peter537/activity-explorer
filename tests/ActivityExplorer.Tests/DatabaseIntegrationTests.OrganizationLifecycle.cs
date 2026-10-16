@@ -162,7 +162,7 @@ public sealed partial class DatabaseIntegrationTests
         {
             Assert.Equal(0, exported.RootElement.GetProperty("activityTags").GetArrayLength());
             var saved = Assert.Single(exported.RootElement.GetProperty("savedSearches").EnumerateArray());
-            Assert.Equal(1, saved.GetProperty("criteria").GetProperty("Version").GetInt32());
+            Assert.Equal(2, saved.GetProperty("criteria").GetProperty("Version").GetInt32());
             Assert.Equal(2, saved.GetProperty("criteria").GetProperty("Tags").GetArrayLength());
         }
 

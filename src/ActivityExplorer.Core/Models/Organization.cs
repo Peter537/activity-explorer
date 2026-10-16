@@ -6,7 +6,21 @@ public sealed record TagSummary(Guid Id, string Name, int ActivityCount = 0, int
 public sealed record SavedTagReference(Guid Id, string Name);
 public sealed record SavedSearchCriteria(
     int Version, SportKind? Sport, string? Search, bool? HasPower, string? Device,
-    IReadOnlyList<SavedTagReference> Tags, string Sort, ReportingDateSelection Dates);
+    IReadOnlyList<SavedTagReference> Tags, string Sort, ReportingDateSelection Dates,
+    ActivityTextMode TextMode = ActivityTextMode.Literal, bool DeviceExact = false,
+    string? Gear = null, bool GearUnassigned = false, bool? IsIndoor = null, bool? HasGps = null,
+    double? MinDistanceMeters = null, double? MaxDistanceMeters = null,
+    double? MinMovingSeconds = null, double? MaxMovingSeconds = null,
+    double? MinAscentMeters = null, double? MaxAscentMeters = null,
+    ActivityTagMode TagMode = ActivityTagMode.Any, IReadOnlyList<SavedTagReference>? ExcludedTags = null,
+    ActivityTagPresence TagPresence = ActivityTagPresence.Any)
+{
+    public ActivityCriteria ToActivityCriteria() => new(
+        Sport, Search, HasPower, Device, Tags.Select(x => x.Id).ToArray(),
+        Version == 1 ? ActivityTextMode.Literal : TextMode, DeviceExact, Gear, GearUnassigned, IsIndoor, HasGps,
+        MinDistanceMeters, MaxDistanceMeters, MinMovingSeconds, MaxMovingSeconds, MinAscentMeters, MaxAscentMeters,
+        TagMode, ExcludedTags?.Select(x => x.Id).ToArray(), TagPresence);
+}
 public sealed record SavedSearchSummary(
     Guid Id, string Name, SavedSearchCriteria? Criteria, string? Error, IReadOnlyList<SavedTagReference> MissingTags);
 public enum GearEditMode { Unchanged, Set, Clear }

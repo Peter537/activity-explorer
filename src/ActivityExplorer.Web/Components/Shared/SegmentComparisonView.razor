@@ -114,6 +114,7 @@
     private IReadOnlyList<ComparisonChart> _charts = [];
     private double _distance;
     private bool _disposed;
+    private bool _jsBound;
     private SportKind Sport => Result.Detail.Summary.Sport;
     private bool HasStoppedSpeed => Result.Samples.Any(sample => sample.Baseline.SpeedMetersPerSecond == 0 || sample.Comparison.SpeedMetersPerSecond == 0);
     private bool Available => Result.UnavailableReason == SegmentComparisonUnavailableReason.None && _inspectionSamples.Count > 1;
@@ -151,6 +152,7 @@
         var result = Result;
         var group = InspectionGroupId;
         if (Available)
+        {
             await JS.InvokeVoidAsync("segmentComparison.bind", _id, group, new
             {
                 distance = _distance,
@@ -163,8 +165,10 @@
                 }),
                 scales = _charts.Select(chart => new { metric = chart.Metric, minimum = chart.Scale.Minimum, maximum = chart.Scale.Maximum })
             });
-        else await JS.InvokeVoidAsync("segmentComparison.unbind", _id);
-        if (_disposed) { await JS.InvokeVoidAsync("segmentComparison.unbind", _id); return; }
+            _jsBound = true;
+        }
+        else await UnbindAsync();
+        if (_disposed) { await UnbindAsync(); return; }
         _bound = result;
         _boundGroup = group;
         if (!ReferenceEquals(Result, result) || InspectionGroupId != group) await InvokeAsync(StateHasChanged);
@@ -195,6 +199,13 @@
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        await UnbindAsync();
+    }
+
+    private async ValueTask UnbindAsync()
+    {
+        if (!_jsBound) return;
+        _jsBound = false;
         try { await JS.InvokeVoidAsync("segmentComparison.unbind", _id); }
         catch (JSDisconnectedException) { }
     }

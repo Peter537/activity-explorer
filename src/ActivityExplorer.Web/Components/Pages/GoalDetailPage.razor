@@ -63,6 +63,13 @@ else
     }
     <section class="panel" aria-label="Edition history">
         <h2>Edition history</h2>
+        <form class="filter-bar goal-edition-finder" aria-label="Find goal edition" @onsubmit="FindEditionAsync" @onsubmit:preventDefault>
+            <label><span>Edition date</span><input type="date" value="@_jumpDate" @onchange="EditionDateChanged" aria-invalid="@(_jumpError is not null)" aria-describedby="goal-edition-date-help" disabled="@(_saving || _jumping || _editing || _confirmArchive)" /></label>
+            <button class="button primary" type="submit" disabled="@(_saving || _jumping || _editing || _confirmArchive)">@(_jumping ? "Finding edition..." : "Find edition")</button>
+            <button class="button" type="button" @onclick="CurrentEdition" disabled="@(_saving || _jumping || _editing || _confirmArchive)">Current / latest edition</button>
+        </form>
+        <p class="muted" id="goal-edition-date-help">Choose a date within an available edition in @goal.TimeZoneId. The matching edition and history page open together.</p>
+        <StatusMessage Message="@_jumpError" IsError="true" />
         @if (_detail.History.Count == 0) { <p>No editions have begun.</p> }
         else
         {
@@ -135,7 +142,7 @@ else
     {
         _load?.Cancel();
         using var load = new CancellationTokenSource(); _load = load;
-        var revision = ++_revision; _loading = true; _loadError = null; _actionError = null; _detail = null; _editing = false; _confirmArchive = false;
+        var revision = ++_revision; _loading = true; _loadError = null; _actionError = null; _jumpError = null; _detail = null; _editing = false; _confirmArchive = false;
         try
         {
             DateOnly? edition = null;
@@ -146,7 +153,11 @@ else
                 edition = parsed;
             }
             var result = await Goals.GetDetailAsync(Id, edition, Page(QueryHistoryPage), Page(QueryContributionPage), load.Token);
-            if (!_disposed && revision == _revision) _detail = result;
+            if (!_disposed && revision == _revision)
+            {
+                _detail = result;
+                _jumpDate = result is null ? "" : (result.Edition?.Start ?? result.Goal.Schedule.Start).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            }
         }
         catch (OperationCanceledException) when (load.IsCancellationRequested) { }
         catch (Exception exception)

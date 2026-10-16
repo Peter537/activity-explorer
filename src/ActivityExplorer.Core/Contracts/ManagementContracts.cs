@@ -15,6 +15,7 @@ public interface IProfileService
 public interface IImportHistoryService
 {
     Task<ImportHistoryPage> ListAsync(Guid? ownerId, int limit = 10, CancellationToken cancellationToken = default);
+    Task<ImportHistoryPage> SearchAsync(ImportHistoryFilter filter, int limit = 10, CancellationToken cancellationToken = default);
     Task<ImportReport?> GetReportAsync(Guid importId, CancellationToken cancellationToken = default);
 }
 

@@ -1,0 +1,12 @@
+@if (Criteria is not null && ActivitySearchQuery.HasNonSportCriteria(Criteria))
+{
+    <section class="notice activity-search-summary" aria-label="Applied activity search">
+        <p><strong>Applied activity search</strong> · @ActivitySearchQuery.Describe(Criteria)</p>
+        <button class="button" type="button" @onclick="() => OnClear.InvokeAsync()">Clear activity search</button>
+    </section>
+}
+
+@code {
+    [Parameter] public ActivityCriteria? Criteria { get; set; }
+    [Parameter] public EventCallback OnClear { get; set; }
+}

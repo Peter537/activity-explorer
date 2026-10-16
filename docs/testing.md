@@ -20,12 +20,13 @@ The test project uses Microsoft Testing Platform v2 and opts out of test-platfor
 Build Release, install the browser pinned by Microsoft.Playwright 1.61.0, then opt in to the isolated test:
 
 ~~~powershell
+$env:PLAYWRIGHT_BROWSERS_PATH = (Join-Path (Get-Location) "artifacts/playwright")
 pwsh tests/ActivityExplorer.Tests/bin/Release/net10.0/playwright.ps1 install chromium
 $env:ACTIVITY_EXPLORER_BROWSER_TESTS = "1"
 dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --filter-class ActivityExplorer.Tests.BrowserRegressionTests
 ~~~
 
-The browser harness launches a real loopback Kestrel process with an isolated data root. Install the pinned Chromium build before running it. Responsive coverage checks primary pages and representative detail routes at 320, 360, 375, 768, 1121, 1280, and 1920 CSS pixels for page-level horizontal overflow.
+The browser harness launches a real loopback Kestrel process with an isolated data root. Use the same `PLAYWRIGHT_BROWSERS_PATH` for installation and tests; the pinned Playwright 1.61.0 package selects Chromium 149.0.7827.55, revision 1228. The repository's `artifacts/` directory is ignored. Responsive coverage checks primary pages and representative detail routes at 320, 360, 375, 768, 1121, 1280, and 1920 CSS pixels for page-level horizontal overflow.
 
 The browser matrix also verifies:
 
@@ -36,7 +37,7 @@ The browser matrix also verifies:
 - goals cover creation of all five metrics and all recurrence types, validation recovery, current/future/initial edits, preserved scheduled definitions, stale forms, archive cancellation and prestart archival, paginated history and grouped active-day evidence, activity links, profiles, refresh, Back/Forward, invalid-timezone recovery, and dashboard filter independence and its six-goal limit; keyboard/touch and 320–1920 pixel checks include 200% text and reduced motion, with synthetic captures under `artifacts/goals-ui/`;
 - exploration exercises first-use indexing, cancellation/resume, limited-source warnings/rechecks, Lines/Frequency/Exploration switching, preserved viewport and complete totals, cell/contributor links, independent monthly history, range/cumulative dates, keyboard slider and touch selection, refresh and Back/Forward, empty/profile scopes, and invalid-input recovery; responsive checks cover 320–1920 pixels, 200% text and reduced motion, with blank-mode network assertions and synthetic captures under `artifacts/exploration-ui/`;
 - the generated component stylesheet is loaded; populated Records data keeps Distance, Timed distance, and Power sections in order, formats timed results as metric distance, preserves activity links and semantic columns, omits unachieved targets, and uses a full-width, left-aligned table at 768, 1121, 1280, and 1920 pixels whose restacked rows retain result, profile, date, and coverage at 320, 360, and 375 pixels;
-- Records shows one sport at a time, defaults to the most active sport with records, retains sport choices across empty scopes, restores explicit sport URLs, and handles unavailable sports and empty profiles;
+- Records shows one sport at a time, defaults to the most active available sport, retains sport choices across empty scopes and periods, restores explicit sport URLs, and handles unavailable sports and empty profiles;
 - benchmark names open attempt history while activity names open their source; attempt history covers all achieved categories, best-only and multiple modes, profile and training-scope context, refresh, Back/Forward, pagination, invalid benchmarks, empty results, retryable stream errors, keyboard operation, enlarged text, and the 320–1920 pixel viewport matrix;
 - `/records?scope=outdoor` and `/records?scope=indoor` survive refresh and browser Back/Forward, invalid scope values normalize to all training, and profile changes preserve scope;
 - dashboard period/sport comparisons reconcile with complete activity totals; YTD defaults, All time, custom dates, zero-baseline percentages, five trend metrics, weekly/monthly grouping, profile changes, refresh, and Back/Forward preserve the selected scope; an explicit twelve-month fixture retains readable axes, exact pointer values, a keyboard slider, and the complete data table;
@@ -58,6 +59,14 @@ The browser matrix also verifies:
 - blank map mode makes no third-party request and non-editable maps render lines without editable point markers.
 
 ## Covered behavior
+
+Shared activity criteria tests reconcile combined text, metric bounds, metadata, and included/excluded tag membership across rows, totals, pages, maps, matching IDs, and bulk snapshots. They cover words across fields, phrases confined to one field, Unicode case folding, legacy literal URLs and version-1 saved criteria without read-time writes, explicit version-2 replacement, missing exclusions, profile ownership, and exact numeric unit round trips. SQLite function-registration tests exercise fresh and pooled connections.
+
+Finding tests cover complete route/segment name and sport scopes, deterministic route sorts and ties, nested segment ancestor context, exact effort/pass selection outside filtered history, and filtered pickers retaining selected entries. Map cases verify complete eligible counts before caps, independent layer requests, new-cell filtering before pagination/grouping, unchanged full-history discoveries, camera restoration, and explicit cell location. Cross-view fixtures reconcile the same criteria across Activities, Lines, both dashboard comparison periods, calendar months/day links, and exact sport/device/gear/Unassigned/tag drilldowns; Frequency retains its independent discovery scope.
+
+Import-history tests find older matches before the visible limit, apply owner-local creation dates and combined statuses, and check current provenance links through deduplication, transfers, and deletions. Goal finding covers displayed definitions, reached/unreached distinctions, unavailable editions, invalid-query recovery, and direct date lookup across Monday, month, year, leap-day, one-off, and archive boundaries without scanning skipped history.
+
+Period-record tests compare independent within-period winners with lifetime snapshots across all benchmark kinds, sports, training scopes, owner-local dates, and deterministic ties. They check read-only snapshots, eligibility filtering before payload reads, batches of at most 16, one decode per activity, summary-only candidates without stream reads, cancellation, stale-request rejection, changes after refresh, and period-preserving attempts/back links. A synthetic 128-activity workload with 301 samples per eligible stream took 1,389 ms in one local run and made nine bounded payload queries. Its 287,222,120 allocated bytes were a cumulative process-wide allocation measurement, not peak or retained memory; the timing is evidence for that fixture, not a general throughput guarantee.
 
 Exploration geometry fixtures cover resampling, repeated laps, crossed cells without samples, grid boundaries/corners, antimeridian paths, coordinate limits, gaps, timestamp/distance resets, the common speed ceiling and cancellation. Source fixtures verify ordered GPS/time matching, GPX/TCX boundaries, FIT timer pauses, conservative break unions, unreadable/missing/hash-mismatched originals and point-only diagnostics without changing canonical streams. SQLite cases cover more than 2,000 activities, complete summaries independent of viewport coarsening, All-profiles unions, owner-local first/new dates and DST, range/cumulative/monthly semantics, stale history outside selected dates, metadata/timezone/transfer/deletion updates, source restoration and new evidence, additive upgrades, atomic checkpoints, cancellation/restart, and competing mixed scopes. Query interception verifies one consistent snapshot with no stream reads during aggregate queries. These checks live in `ExplorationGeometryTests`, `ExplorationSourceTests`, and the `DatabaseIntegrationTests.ExplorationIndex`/`ExplorationQueries` partial files.
 
@@ -101,6 +110,29 @@ Coverage includes:
 All fixtures are synthetic. Never commit real exports, locations, names, device identifiers, credentials, tokens, or health data.
 
 ## Manual smoke test
+
+The search/finding previews use the following opt-in fixture variables. Give each an empty isolated directory, run the corresponding Release test method, then clear the fixture variable before starting the app. Each writes fictional data and a `synthetic-fixture.json` ID manifest; none requires the browser-regression opt-in merely to create its data.
+
+| Preview | Fixture variable | Test method filter |
+| --- | --- | --- |
+| Activity criteria and legacy saved searches | `ACTIVITY_EXPLORER_SEARCH_PREVIEW_DATA` | `*Search_preview_fixture*` |
+| Route/segment/effort finding and organization pickers | `ACTIVITY_EXPLORER_LIBRARY_PREVIEW_DATA` | `*Library_preview_fixture*` |
+| Map limits, layers, and new-cell finding | `ACTIVITY_EXPLORER_MAP_FINDING_PREVIEW_DATA` | `*Map_finding_preview_fixture*` |
+| Shared searches on Lines, Dashboard, and Calendar | `ACTIVITY_EXPLORER_CROSS_VIEW_PREVIEW_DATA` | `*Cross_view_preview_fixture*` |
+| Import-history and goal finding | `ACTIVITY_EXPLORER_FINDING_PREVIEW_DATA` | `Finding_preview_fixture_is_created_only_when_explicitly_requested` |
+| Period-specific Records | `ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA` | `*Period_records_preview_fixture*` |
+
+For example, from the repository root after the Release build:
+
+~~~powershell
+$env:ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA = (Join-Path (Get-Location) "artifacts/period-records-preview")
+dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --filter-method '*Period_records_preview_fixture*'
+Remove-Item Env:ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA
+$env:ACTIVITY_EXPLORER_DATA = (Join-Path (Get-Location) "artifacts/period-records-preview")
+dotnet run --project src/ActivityExplorer.Web --configuration Release --no-build -- --urls http://127.0.0.1:8343
+~~~
+
+Inspect the manifest's profiles and routes in the in-app browser. Check combined filters, reset and invalid-input recovery, exact drilldown membership, refresh and Back/Forward, empty/error/cancellation states, keyboard/touch controls, and the existing responsive/text-enlargement matrix. Keep browser requests local in Blank map mode. Stop the owned preview process afterward and clear `ACTIVITY_EXPLORER_DATA`; preserve the directory only when more inspection is needed. Fixture creation requires an empty directory, so use a new path for another run.
 
 For an exploration preview, set `ACTIVITY_EXPLORER_EXPLORATION_PREVIEW_DATA` to an empty isolated directory and run the Release test with `--filter-method '*Exploration_preview_fixture*'`. The fixture creates 64 fictional GPS activities across two populated profiles, an empty profile, matching local GPX originals, and one activity whose continuity cannot be verified; IDs are in `synthetic-fixture.json`. Clear the fixture variable afterward, point `ACTIVITY_EXPLORER_DATA` at that directory, and launch on loopback. Inspect `/map` in Lines before opening Frequency/Exploration so the first-use build remains observable. Check cancellation/resume, limited-source recheck, all-profile unions, stable totals while panning, cell selection and activity links, range/cumulative controls, new-on-date highlighting and twelve-month discovery history. Check keyboard/touch, refresh and Back/Forward, 320–1920 pixels, 200% text, reduced motion, the console and zero external requests in blank mode. Save synthetic captures under `artifacts/exploration-ui/` and stop the owned preview process afterward.
 

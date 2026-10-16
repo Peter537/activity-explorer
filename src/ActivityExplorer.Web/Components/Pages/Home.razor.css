@@ -16,5 +16,8 @@
 .record-row > span { min-width: 0; overflow-wrap: anywhere; }
 .sport-row { grid-template-columns: 10px minmax(0, 1fr) auto; gap: 8px; }
 .sport-row > span:nth-last-child(-n+2) { grid-column: 3; }
+.compact-row { flex-wrap: wrap; gap: 8px 16px; }
+.compact-row > strong { flex: 1 1 150px; min-width: 0; overflow-wrap: anywhere; }
+.compact-row > a { max-width: 100%; overflow-wrap: anywhere; }
 @media (max-width: 820px) { .progress-trend .panel-heading { align-items: flex-start; flex-direction: column; gap: 15px; } }
 @media (max-width: 560px) { .progress-recent .activity-row { grid-template-columns: 30px minmax(0, 1fr); } .progress-recent .activity-row > span:nth-child(n+3) { grid-column: 2; } .progress-recent .activity-title { grid-row: auto; } }

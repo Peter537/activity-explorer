@@ -27,17 +27,23 @@ The Content Security Policy permits OpenFreeMap network origins only while onlin
 
 ## Viewport behavior
 
-Activity, route, segment, and exploration endpoints validate complete finite west/south/east/north bounds, coordinate ranges, reporting periods, dates, and zoom. Malformed internal requests receive a structured HTTP 400 response rather than becoming a server error. Line responses are owner/sport filtered and capped: at most 2,000 activities, 1,000 routes, and 1,000 segments; activity dates are filtered before the cap. Numeric indexes support route viewport pruning. Exploration totals use the complete scoped history independently of these line limits.
+Activity, route, segment, and exploration endpoints validate complete finite west/south/east/north bounds, coordinate ranges, reporting periods, dates, and zoom. Malformed internal requests receive a structured HTTP 400 response rather than becoming a server error. Line responses are owner/sport filtered and capped: at most 2,000 activities, 1,000 routes, and 1,000 segments. Activity criteria and dates are filtered before the cap. Each layer reports its complete eligible viewport count and returned count, so a capped result is visibly incomplete. Narrow the sport, period, activity search, or viewport to see the relevant lines. Numeric indexes support route viewport pruning. Exploration totals use the complete scoped history independently of these line limits.
 
 MapLibre renders repeated world copies and can therefore report viewport longitudes outside `[-180, 180]`. Before requesting GeoJSON, Activity Explorer wraps those longitudes into the accepted range. A viewport at least 360° wide is sent as the full world (`west=-180`, `east=180`); a narrower viewport crossing the antimeridian uses `west > east`.
 
 Stored geometry continues to use the smallest circular interval, so a short route near ±180° is not treated as spanning the world. Latitude padding for segment candidate searches accounts for longitude scale at high latitude.
 
+Lines has independent **Activities**, **Routes**, and **Segments** switches. Hidden layers make no request; each visible layer has its own loading, empty, error, and limit state. The world map restores its center, zoom, bearing, and pitch after detail navigation or reload within the same browser tab's session. Detail and drawing maps keep their existing fit-to-path behavior.
+
 ## Reporting dates and URLs
 
 Activities and World Map share a **Period** control. In Lines, dates affect activity lines; routes and segments retain their owner/sport filters. Frequency and Exploration Range apply the period to GPS activity visits. Choose **Apply filters** after editing. The map retains its previous results with an unapplied-filter notice until the new selection is valid and applied.
 
-The map reports loading, an empty viewport, or a line-query failure. **Retry map lines** retries a failed query without advancing the selected period. Superseded viewport requests are cancelled so an older response cannot replace the current view.
+Open a saved activity search in Lines or follow **Show matching activities on map** from Activities to copy the complete applied criteria. Text, equipment, numeric bounds, recorded flags, and tags affect activity lines only. The applied-search summary offers a clear action; missing tags or a different tag owner require explicit repair or a profile switch. Criteria are copied into the URL, so later saved-search edits do not alter an open map. [Activity filter parameters](../README.md#activity-filters) use the same units and semantics as Activities.
+
+Frequency and Exploration use their existing profile, sport, and date controls and always inspect full scoped history for first discoveries. They do not apply activity search criteria, even when those parameters remain in a URL after switching views.
+
+The map reports loading, an empty viewport, or a line-query failure per enabled layer. **Retry map lines** retries failed queries without advancing the selected period. Superseded viewport requests are cancelled so an older response cannot replace the current view.
 
 | Period | URL value | Inclusive dates |
 | --- | --- | --- |
@@ -55,7 +61,7 @@ Each activity belongs to its local start date in its owner's **Reporting timezon
 
 A recognized preset takes precedence over supplied `from` and `to`; canonical URLs remove the ignored dates. `period=all-time` and `period=custom` are accepted explicit values. Canonical All time URLs omit date parameters, while custom URLs keep fixed endpoints. Unknown periods, invalid dates, reversed ranges, and unsupported calendar boundaries show validation errors and preserve supplied values. An invalid initial URL does not load unfiltered results. An unavailable timezone links to Profiles for correction.
 
-Refresh, bookmarks, and browser Back/Forward restore the URL selection and resolve relative dates again. Applying filters or changing profile also resolves them again. Activities sorting and pagination retain the captured period; map viewport requests carry an internal `asOf` round-trip UTC timestamp so panning does not advance the displayed period. Public page URLs remain relative and never contain that reference time. World Map also stores `sport` in the URL. Profile selection remains session-wide application context and is not written into public route URLs.
+Refresh, bookmarks, and browser Back/Forward restore the URL selection and resolve relative dates again. Applying filters or changing profile also resolves them again. Activities sorting and pagination retain the captured period; map viewport requests carry an internal `asOf` round-trip UTC timestamp so panning does not advance the displayed period. Public page URLs remain relative and never contain that reference time. World Map also stores `sport` in the URL. Profile selection remains session-wide application context; a tag-specific activity search additionally carries `tagOwner` to validate its scope and offer the intended profile switch.
 
 ## Frequency and exploration
 
@@ -67,6 +73,8 @@ Exploration uses fixed Web Mercator cells at zoom 14, identified by column and r
 
 **Cumulative** includes all scoped history through one selected reporting date, inclusive, and highlights cells **new on that date**. The date input and keyboard-operable slider are bounded by the recorded GPS history. The initial date uses a common applied period end when available, clamped to that history; otherwise it uses the latest GPS date. Range filters remain saved while cumulative mode is active. Switching back to Range restores them.
 
+Exploration's **Cells shown** selector offers **All visited** or **New in period**; cumulative mode uses **New on this date**. The choice narrows both the paginated cell list and map groups before pagination or grouping. Visited/new summary totals and monthly discovery history remain unchanged. Frequency continues to show all visited cells. A selected cell has an explicit **Show on map** action; opening its details alone does not move the camera.
+
 First and last visits are the minimum and maximum owner-local activity-start dates across all history in the profile/sport scope. They describe reporting dates, rather than UTC chronology between owners. **Monthly first discoveries** assigns each union cell once to its earliest reporting month and displays twelve months at a time. It is independent of the range filter; cumulative mode excludes discoveries after its selected date. When relative ranges differ between owners, monthly buckets need not sum to the range's new-cell total.
 
 The public map URL additionally preserves:
@@ -74,6 +82,8 @@ The public map URL additionally preserves:
 | Parameter | Meaning |
 | --- | --- |
 | `view=frequency` or `view=exploration` | Selected view; omitted for Lines |
+| `layers=activities,routes` | Enabled Lines layers; any subset of `activities`, `routes`, `segments`; omit for all, `none` for none |
+| `newOnly=yes` | Show only new cells in Exploration; ignored by Frequency |
 | `coverage=cumulative` | Cumulative exploration; omitted for Range |
 | `through=yyyy-MM-dd` | Fixed cumulative end date |
 | `cell=<integer>` | Selected zoom-14 cell |

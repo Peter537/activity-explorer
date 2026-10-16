@@ -41,3 +41,8 @@
     .map-filters ::deep .reporting-date-filter { flex-basis: 100%; }
     .coverage-controls { align-items: stretch; }
 }
+.map-layer-controls { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 0 0 20px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 10px; }
+.map-layer-controls legend { padding: 0 6px; font-weight: 600; }
+.map-layer-controls label { display: flex; flex-direction: row; gap: 8px; align-items: center; min-height: 44px; }
+.map-layer-controls input { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; padding: 0; accent-color: var(--green); }
+.exploration-cell-filter { display: grid; gap: 6px; max-width: 22rem; margin-bottom: 18px; }

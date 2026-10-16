@@ -148,8 +148,7 @@ else if (_result is not null)
     private int _page = 1;
     private CancellationTokenSource? _loadCancellation;
     private string Title => _sport.HasValue && !string.IsNullOrWhiteSpace(QueryKey) ? $"{_sport} · {QueryKey} attempts" : "Benchmark attempts";
-    private string BackUrl => "/records" + (_sport.HasValue ? $"?sport={_sport.Value.ToString().ToLowerInvariant()}" : "")
-        + (_scope != RecordScope.All ? $"{(_sport.HasValue ? "&" : "?")}scope={_scope.ToString().ToLowerInvariant()}" : "");
+    private string BackUrl => RecordDisplay.RecordsUrl(_sport, _scope, _period);
 
     protected override void OnInitialized() => ProfileState.Changed += Changed;
 
@@ -248,15 +247,8 @@ else if (_result is not null)
 
     private string Url(int page)
     {
-        var url = RecordDisplay.AttemptsUrl(_sport!.Value, _kind!.Value, QueryKey!, _scope, _owner, _multiple, _progress ? 1 : page);
+        var url = RecordDisplay.AttemptsUrl(_sport!.Value, _kind!.Value, QueryKey!, _scope, _owner, _multiple, _progress ? 1 : page, _period);
         if (_progress) url += "&view=progress";
-        if (_period.Preset == ReportingPreset.Custom)
-        {
-            url += "&period=custom";
-            if (_period.From.HasValue) url += $"&from={ReportingDateInput.DateText(_period.From)}";
-            if (_period.To.HasValue) url += $"&to={ReportingDateInput.DateText(_period.To)}";
-        }
-        else if (_period.Preset != ReportingPreset.AllTime) url += $"&period={ReportingDates.ToSlug(_period.Preset)}";
         return url;
     }
     private void ChangeView(ChangeEventArgs args)

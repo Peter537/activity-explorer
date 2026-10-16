@@ -73,6 +73,7 @@ public interface IImportProcessor
 
 public interface IActivityQueryService
 {
+    Task<ActivityFilterOptions> GetFilterOptionsAsync(Guid? ownerId, CancellationToken cancellationToken = default);
     Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(Guid? ownerId, CancellationToken cancellationToken = default);
     Task<ActivitySearchResult> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
     Task<ActivityDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default);
@@ -114,6 +115,7 @@ public interface ISegmentService
 public interface IRouteService
 {
     Task<IReadOnlyList<RouteSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<RouteSummary>> SearchAsync(RouteFilter filter, CancellationToken cancellationToken = default);
     Task<RouteDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Guid> CreateFromActivityAsync(CreateRouteRequest request, CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(CreateRoutePathRequest request, CancellationToken cancellationToken = default);
@@ -126,6 +128,7 @@ public interface IStatisticsService
     Task RecomputeAsync(Guid ownerId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PersonalRecord>> GetRecordsAsync(
         Guid? ownerId, RecordScope scope = RecordScope.All, CancellationToken cancellationToken = default);
+    Task<RecordOverviewResult> GetOverviewAsync(RecordOverviewQuery query, CancellationToken cancellationToken = default);
     Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default);
     Task<RecordHistory?> GetHistoryAsync(RecordHistoryQuery query, CancellationToken cancellationToken = default);
 }

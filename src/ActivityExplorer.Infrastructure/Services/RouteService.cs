@@ -16,12 +16,39 @@ public sealed class RouteService(
     IFileOperationCoordinator fileOperations,
     IOwnerMutationLock ownerMutationLock) : IRouteService
 {
-    public async Task<IReadOnlyList<RouteSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<RouteSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default) =>
+        SearchAsync(new(ownerId), cancellationToken);
+
+    public async Task<IReadOnlyList<RouteSummary>> SearchAsync(RouteFilter filter, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(filter);
+        if (filter.Sport.HasValue && !Enum.IsDefined(filter.Sport.Value))
+            throw new ArgumentException("Choose a valid route sport.", nameof(filter));
+        if (filter.Sort is not ("name-asc" or "name-desc" or "distance-asc" or "distance-desc" or "elevation-asc" or "elevation-desc"))
+            throw new ArgumentException("Choose a valid route order.", nameof(filter));
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await ImportBatchQuery.ValidateAsync(db, filter.OwnerId, filter.ImportBatchId, cancellationToken);
         var query = db.Routes.AsNoTracking().Include(x => x.Owner).AsQueryable();
-        if (ownerId.HasValue) query = query.Where(x => x.OwnerId == ownerId);
-        return await query.OrderBy(x => x.Name)
+        if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
+        if (filter.Sport.HasValue) query = query.Where(x => x.Sport == filter.Sport);
+        if (filter.ImportBatchId.HasValue)
+            query = query.Where(route => route.SourceFiles.Any(source => source.ImportBatchId == filter.ImportBatchId &&
+                source.OwnerId == route.OwnerId));
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            var search = filter.Search.Trim();
+            query = query.Where(x => ActivitySearchFunctions.Contains(x.Name, search));
+        }
+        var ordered = filter.Sort switch
+        {
+            "name-desc" => query.OrderByDescending(x => x.Name),
+            "distance-asc" => query.OrderBy(x => x.DistanceMeters).ThenBy(x => x.Name),
+            "distance-desc" => query.OrderByDescending(x => x.DistanceMeters).ThenBy(x => x.Name),
+            "elevation-asc" => query.OrderBy(x => x.ElevationGainMeters).ThenBy(x => x.Name),
+            "elevation-desc" => query.OrderByDescending(x => x.ElevationGainMeters).ThenBy(x => x.Name),
+            _ => query.OrderBy(x => x.Name)
+        };
+        return await ordered.ThenBy(x => x.Id)
             .Select(x => new RouteSummary(x.Id, x.OwnerId, x.Owner!.DisplayName, x.Name, x.Sport, x.DistanceMeters, x.ElevationGainMeters))
             .ToListAsync(cancellationToken);
     }

@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
@@ -14,7 +12,6 @@ public sealed class ActivityOrganizationService(
     IActivityQueryService activities) : IActivityOrganizationService
 {
     private const int ChunkSize = 500;
-    private static readonly JsonSerializerOptions CriteriaJsonOptions = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
 
     public async Task<IReadOnlyList<TagSummary>> ListTagsAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
@@ -24,8 +21,9 @@ public sealed class ActivityOrganizationService(
         var tags = await db.Tags.AsNoTracking().Where(x => x.OwnerId == ownerId).OrderBy(x => x.Name)
             .Select(x => new TagSummary(x.Id, x.Name, db.ActivityTags.Count(a => a.TagId == x.Id), 0)).ToListAsync(cancellationToken);
         var searches = await db.SavedSearches.AsNoTracking().Where(x => x.OwnerId == ownerId).Select(x => x.CriteriaJson).ToListAsync(cancellationToken);
-        var references = searches.Select(TryReadCriteria).Where(x => x is not null)
-            .SelectMany(x => x!.Tags.Select(tag => tag.Id).Distinct()).GroupBy(x => x).ToDictionary(x => x.Key, x => x.Count());
+        var references = searches.Select(SavedSearchCriteriaJson.TryRead).Where(x => x is not null)
+            .SelectMany(x => SavedSearchCriteriaJson.References(x!).Select(tag => tag.Id).Distinct())
+            .GroupBy(x => x).ToDictionary(x => x.Key, x => x.Count());
         await transaction.CommitAsync(cancellationToken);
         return tags.Select(tag => tag with { SavedSearchCount = references.GetValueOrDefault(tag.Id) }).ToArray();
     }
@@ -59,12 +57,13 @@ public sealed class ActivityOrganizationService(
         var searches = await db.SavedSearches.Where(x => x.OwnerId == ownerId).ToListAsync(cancellationToken);
         foreach (var search in searches)
         {
-            var criteria = TryReadCriteria(search.CriteriaJson);
-            if (criteria is not null && criteria.Tags.Any(x => x.Id == tagId))
-                search.CriteriaJson = JsonSerializer.Serialize(criteria with
+            var criteria = SavedSearchCriteriaJson.TryRead(search.CriteriaJson);
+            if (criteria is not null && SavedSearchCriteriaJson.References(criteria).Any(x => x.Id == tagId))
+                search.CriteriaJson = SavedSearchCriteriaJson.Write(criteria with
                 {
-                    Tags = criteria.Tags.Select(x => x.Id == tagId ? new SavedTagReference(tagId, name) : x).ToArray()
-                }, CriteriaJsonOptions);
+                    Tags = criteria.Tags.Select(x => x.Id == tagId ? new SavedTagReference(tagId, name) : x).ToArray(),
+                    ExcludedTags = (criteria.ExcludedTags ?? []).Select(x => x.Id == tagId ? new SavedTagReference(tagId, name) : x).ToArray()
+                });
         }
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -113,10 +112,14 @@ public sealed class ActivityOrganizationService(
         var tags = await db.Tags.AsNoTracking().Where(x => x.OwnerId == ownerId).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var result = searches.Select(search =>
         {
-            var criteria = TryReadCriteria(search.CriteriaJson);
+            var criteria = SavedSearchCriteriaJson.TryRead(search.CriteriaJson);
             if (criteria is null) return new SavedSearchSummary(search.Id, search.Name, null, "This saved search has unsupported or damaged criteria. Replace it with the current filters or delete it.", []);
-            var missing = criteria.Tags.Where(x => !tags.ContainsKey(x.Id)).ToArray();
-            criteria = criteria with { Tags = criteria.Tags.Select(x => tags.TryGetValue(x.Id, out var name) ? x with { Name = name } : x).ToArray() };
+            var missing = SavedSearchCriteriaJson.References(criteria).Where(x => !tags.ContainsKey(x.Id)).DistinctBy(x => x.Id).ToArray();
+            criteria = criteria with
+            {
+                Tags = criteria.Tags.Select(x => tags.TryGetValue(x.Id, out var name) ? x with { Name = name } : x).ToArray(),
+                ExcludedTags = (criteria.ExcludedTags ?? []).Select(x => tags.TryGetValue(x.Id, out var name) ? x with { Name = name } : x).ToArray()
+            };
             return new SavedSearchSummary(search.Id, search.Name, criteria, null, missing);
         }).ToArray();
         await transaction.CommitAsync(cancellationToken);
@@ -126,19 +129,24 @@ public sealed class ActivityOrganizationService(
     public async Task<Guid> SaveSavedSearchAsync(Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id = null, CancellationToken cancellationToken = default)
     {
         name = CleanName(name, 120, "Saved search");
-        criteria = ValidateCriteria(criteria);
+        criteria = SavedSearchCriteriaJson.Validate(criteria) with { Version = 2 };
         await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await RequireOwnerAsync(db, ownerId, cancellationToken);
         await RequireUniqueSearchNameAsync(db, ownerId, name.ToUpperInvariant(), id, cancellationToken);
-        var tags = await ReadTagsAsync(db, ownerId, criteria.Tags.Select(x => x.Id).ToArray(), cancellationToken);
-        criteria = criteria with { Tags = tags.Select(x => new SavedTagReference(x.Id, x.Name)).ToArray() };
+        var tags = await ReadTagsAsync(db, ownerId, SavedSearchCriteriaJson.References(criteria).Select(x => x.Id).ToArray(), cancellationToken);
+        var names = tags.ToDictionary(x => x.Id, x => x.Name);
+        criteria = criteria with
+        {
+            Tags = criteria.Tags.Select(x => x with { Name = names[x.Id] }).ToArray(),
+            ExcludedTags = (criteria.ExcludedTags ?? []).Select(x => x with { Name = names[x.Id] }).ToArray()
+        };
         var search = id.HasValue
             ? await RequireSearchAsync(db, ownerId, id.Value, cancellationToken)
             : new SavedSearch { OwnerId = ownerId };
         search.Name = name;
         search.NormalizedName = name.ToUpperInvariant();
-        search.CriteriaJson = JsonSerializer.Serialize(criteria, CriteriaJsonOptions);
+        search.CriteriaJson = SavedSearchCriteriaJson.Write(criteria);
         if (!id.HasValue) db.SavedSearches.Add(search);
         await db.SaveChangesAsync(cancellationToken);
         return search.Id;
@@ -319,41 +327,6 @@ public sealed class ActivityOrganizationService(
         if (add.Length == 0 && remove.Length == 0 && changes.GearMode == GearEditMode.Unchanged)
             throw new ArgumentException("Choose at least one tag or gear change.", nameof(changes));
         return new(Array.AsReadOnly(add), Array.AsReadOnly(remove), changes.GearMode, gear);
-    }
-
-    private static SavedSearchCriteria ValidateCriteria(SavedSearchCriteria criteria)
-    {
-        ArgumentNullException.ThrowIfNull(criteria);
-        if (criteria.Version != 1) throw new ArgumentException("This saved search version is unsupported.", nameof(criteria));
-        if (criteria.Sport.HasValue && !Enum.IsDefined(criteria.Sport.Value)) throw new ArgumentException("Choose a valid sport.", nameof(criteria));
-        if (criteria.Sort is not ("start-desc" or "start-asc" or "distance-desc" or "distance-asc" or "duration-desc" or "elevation-desc"))
-            throw new ArgumentException("Choose a valid activity sort.", nameof(criteria));
-        ArgumentNullException.ThrowIfNull(criteria.Dates);
-        ReportingDates.Validate(criteria.Dates);
-        ArgumentNullException.ThrowIfNull(criteria.Tags);
-        if (criteria.Tags.Any(x => x is null || x.Id == Guid.Empty || string.IsNullOrWhiteSpace(x.Name) || x.Name.Trim().Length > 80))
-            throw new ArgumentException("The saved tags are invalid.", nameof(criteria));
-        var dates = criteria.Dates.Preset == ReportingPreset.Custom ? criteria.Dates : new ReportingDateSelection(criteria.Dates.Preset);
-        return criteria with
-        {
-            Search = string.IsNullOrWhiteSpace(criteria.Search) ? null : criteria.Search.Trim(),
-            Device = string.IsNullOrWhiteSpace(criteria.Device) ? null : criteria.Device.Trim(),
-            Tags = criteria.Tags.DistinctBy(x => x.Id).Select(x => x with { Name = x.Name.Trim() }).ToArray(),
-            Dates = dates
-        };
-    }
-
-    private static SavedSearchCriteria? TryReadCriteria(string json)
-    {
-        try
-        {
-            var criteria = JsonSerializer.Deserialize<SavedSearchCriteria>(json, CriteriaJsonOptions);
-            return criteria is null ? null : ValidateCriteria(criteria);
-        }
-        catch (Exception exception) when (exception is JsonException or ArgumentException or NotSupportedException)
-        {
-            return null;
-        }
     }
 
     private static InvalidOperationException StaleSelection() =>

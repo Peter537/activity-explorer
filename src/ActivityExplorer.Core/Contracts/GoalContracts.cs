@@ -6,6 +6,8 @@ public interface IGoalService
 {
     Task<IReadOnlyList<GoalSummary>> ListAsync(Guid? ownerId = null,
         GoalListView view = GoalListView.CurrentAndUpcoming, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<GoalSummary>> SearchAsync(GoalListFilter filter, CancellationToken cancellationToken = default);
+    Task<GoalEditionLocation?> FindEditionAsync(Guid goalId, DateOnly editionDate, CancellationToken cancellationToken = default);
     Task<GoalDetail?> GetDetailAsync(Guid goalId, DateOnly? edition = null,
         int historyPage = 1, int contributionPage = 1, CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(CreateGoalRequest request, CancellationToken cancellationToken = default);

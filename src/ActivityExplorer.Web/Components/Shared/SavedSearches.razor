@@ -8,12 +8,21 @@
     @if (_loading) { <p role="status">Loading saved searches...</p> }
     @if (_loadFailed) { <button class="button" @onclick="Load">Retry saved searches</button> }
     <div class="saved-controls">
-        <label><span id="saved-search-label">Saved search</span><select aria-labelledby="saved-search-label" @bind="_selected" @bind:after="SelectedChanged" disabled="@(_busy || _loading || Disabled)"><option value="">Choose a search</option>@foreach (var search in _searches) { <option value="@search.Id">@search.Name@(search.Error is not null || search.MissingTags.Count > 0 ? " — needs repair" : "")</option> }</select></label>
+        <label><span>Find saved searches</span><input type="search" @bind="_query" @bind:event="oninput" disabled="@(_busy || _loading || Disabled)" /></label>
+        <label><span id="@_labelId">Saved search</span><select aria-labelledby="@_labelId" @bind="_selected" @bind:after="SelectedChanged" disabled="@(_busy || _loading || Disabled)"><option value="">Choose a search</option>@foreach (var search in VisibleSearches) { <option @key="search.Id" value="@search.Id">@search.Name@(search.Error is not null || search.MissingTags.Count > 0 ? " — needs repair" : "")</option> }</select></label>
         <button class="button" disabled="@(_busy || Disabled || Selected is null)" @onclick="Open">Open search</button>
-        <label><span>Search name</span><input @bind="_name" maxlength="120" disabled="@(_busy || Disabled)" /></label>
-        <button class="button" disabled="@(_busy || Disabled || AppliedCriteria is null)" @onclick="() => Save(false)">Save new search</button>
+        @if (!OpenOnly)
+        {
+            <label><span>Search name</span><input @bind="_name" maxlength="120" disabled="@(_busy || Disabled)" /></label>
+            <button class="button" disabled="@(_busy || Disabled || AppliedCriteria is null)" @onclick="() => Save(false)">Save new search</button>
+        }
     </div>
-    @if (Selected is not null)
+    @if (_query.Length > 0)
+    {
+        <p class="muted" role="status">Showing @VisibleSearches.Count of @_searches.Count searches. The selected search stays available.</p>
+        @if (VisibleSearches.Count == 0) { <p class="muted">No matching saved searches.</p> }
+    }
+    @if (!OpenOnly && Selected is not null)
     {
         <div class="button-row">
             <button class="button" disabled="@(_busy || Disabled || AppliedCriteria is null)" @onclick="() => Save(true)">Replace with applied filters</button>
@@ -21,7 +30,7 @@
             <button class="button danger" disabled="@(_busy || Disabled)" @onclick="() => _deleteReview = true">Delete search</button>
         </div>
     }
-    @if (_deleteReview && Selected is { } deleting)
+    @if (!OpenOnly && _deleteReview && Selected is { } deleting)
     {
         <div class="notice"><p>Delete saved search <strong>@deleting.Name</strong>? Activities and tags are retained.</p><div class="button-row"><button class="button danger" disabled="@(_busy || Disabled)" @onclick="Delete">Confirm delete search</button><button class="button" disabled="@_busy" @onclick="() => _deleteReview = false">Cancel</button></div></div>
     }
@@ -30,8 +39,23 @@
         <section class="search-repair" aria-label="Repair saved search">
             <h3>Repair @_repair.Name</h3>
             <p>This search has not been opened. These tags are missing: <strong>@string.Join(", ", _repair.MissingTags.Select(tag => tag.Name))</strong>.</p>
+            @if (_repair.Criteria is { } repairCriteria)
+            {
+                @if (repairCriteria.Tags.Any(tag => _repair.MissingTags.Any(missing => missing.Id == tag.Id)))
+                {
+                    <p>Missing included tags: @string.Join(", ", repairCriteria.Tags.Where(tag => _repair.MissingTags.Any(missing => missing.Id == tag.Id)).Select(tag => tag.Name)).</p>
+                }
+                @if ((repairCriteria.ExcludedTags ?? []).Any(tag => _repair.MissingTags.Any(missing => missing.Id == tag.Id)))
+                {
+                    <p>Missing excluded tags: @string.Join(", ", (repairCriteria.ExcludedTags ?? []).Where(tag => _repair.MissingTags.Any(missing => missing.Id == tag.Id)).Select(tag => tag.Name)).</p>
+                }
+            }
             <p>Select replacement tags below, or leave them unselected to remove the missing criteria. Other saved filters remain unchanged.</p>
-            <TagPicker Tags="Tags" SelectedIds="_repairTags" Changed="value => _repairTags = value" Label="Repaired search tags — match any" Disabled="@(_busy || Disabled)" />
+            <TagPicker Tags="Tags" SelectedIds="_repairTags" Changed="value => _repairTags = value" Label="@($"Repaired included tags — match {(_repair.Criteria?.TagMode == ActivityTagMode.All ? "all" : "any")}")" Disabled="@(_busy || Disabled)" />
+            @if (_repair.Criteria?.Version == 2)
+            {
+                <TagPicker Tags="Tags" SelectedIds="_repairExcludedTags" Changed="value => _repairExcludedTags = value" Label="Repaired excluded tags — exclude any" Disabled="@(_busy || Disabled)" />
+            }
             <div class="button-row"><button class="button primary" disabled="@(_busy || Disabled)" @onclick="Repair">Save repaired search and open</button><button class="button" disabled="@_busy" @onclick="() => _repair = null">Cancel repair</button></div>
         </section>
     }
@@ -41,23 +65,27 @@
     [Parameter] public Guid OwnerId { get; set; }
     [Parameter] public int Revision { get; set; }
     [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool OpenOnly { get; set; }
     [Parameter] public SavedSearchCriteria? AppliedCriteria { get; set; }
     [Parameter] public IReadOnlyList<TagSummary> Tags { get; set; } = [];
     [Parameter] public EventCallback<SavedSearchCriteria> OnOpen { get; set; }
     private IReadOnlyList<SavedSearchSummary> _searches = [];
     private Guid _loadedOwner;
     private int _loadedRevision = -1, _generation;
-    private string _selected = "", _name = "";
+    private string _selected = "", _name = "", _query = "";
+    private readonly string _labelId = $"saved-search-{Guid.NewGuid():N}";
     private string? _error, _message;
     private bool _busy, _loading, _loadFailed, _deleteReview, _disposed;
     private SavedSearchSummary? _repair;
-    private IReadOnlyList<Guid> _repairTags = [];
+    private IReadOnlyList<Guid> _repairTags = [], _repairExcludedTags = [];
     private SavedSearchSummary? Selected => Guid.TryParse(_selected, out var id) ? _searches.FirstOrDefault(search => search.Id == id) : null;
+    private IReadOnlyList<SavedSearchSummary> VisibleSearches => _searches.Where(search => search.Id.ToString() == _selected ||
+        search.Name.Contains(_query.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
 
     protected override async Task OnParametersSetAsync()
     {
         if (_loadedOwner == OwnerId && _loadedRevision == Revision) return;
-        if (_loadedOwner != OwnerId) { _selected = _name = ""; _repair = null; _deleteReview = false; }
+        if (_loadedOwner != OwnerId) { _selected = _name = _query = ""; _repair = null; _deleteReview = false; }
         _loadedOwner = OwnerId;
         _loadedRevision = Revision;
         await Load();
@@ -79,6 +107,7 @@
             {
                 _repair = _searches.FirstOrDefault(search => search.Id == _repair.Id);
                 _repairTags = _repairTags.Where(id => Tags.Any(tag => tag.Id == id)).ToArray();
+                _repairExcludedTags = _repairExcludedTags.Where(id => Tags.Any(tag => tag.Id == id)).ToArray();
             }
         }
         catch (Exception exception) { if (generation == _generation) { _error = exception.Message; _loadFailed = true; } }
@@ -103,6 +132,7 @@
         {
             _repair = search;
             _repairTags = search.Criteria.Tags.Where(tag => Tags.Any(known => known.Id == tag.Id)).Select(tag => tag.Id).ToArray();
+            _repairExcludedTags = (search.Criteria.ExcludedTags ?? []).Where(tag => Tags.Any(known => known.Id == tag.Id)).Select(tag => tag.Id).ToArray();
             return;
         }
         await OnOpen.InvokeAsync(search.Criteria);
@@ -111,6 +141,7 @@
 
     private Task Save(bool replace) => Run(async () =>
     {
+        if (OpenOnly) return;
         if (AppliedCriteria is null) throw new InvalidOperationException("Apply valid filters before saving a search.");
         var id = await Organization.SaveSavedSearchAsync(OwnerId, _name, AppliedCriteria, replace ? Selected?.Id : null);
         _selected = id.ToString();
@@ -121,6 +152,7 @@
 
     private Task Rename() => Run(async () =>
     {
+        if (OpenOnly) return;
         if (Selected is null) return;
         await Organization.RenameSavedSearchAsync(OwnerId, Selected.Id, _name);
         await Load();
@@ -129,6 +161,7 @@
 
     private Task Delete() => Run(async () =>
     {
+        if (OpenOnly) return;
         if (Selected is null) return;
         await Organization.DeleteSavedSearchAsync(OwnerId, Selected.Id);
         _selected = _name = "";
@@ -141,7 +174,12 @@
     private Task Repair() => Run(async () =>
     {
         if (_repair?.Criteria is null) return;
-        var criteria = _repair.Criteria with { Tags = _repairTags.Select(id => new SavedTagReference(id, Tags.Single(tag => tag.Id == id).Name)).ToArray() };
+        var criteria = _repair.Criteria with
+        {
+            Version = 2,
+            Tags = _repairTags.Select(id => new SavedTagReference(id, Tags.Single(tag => tag.Id == id).Name)).ToArray(),
+            ExcludedTags = _repairExcludedTags.Select(id => new SavedTagReference(id, Tags.Single(tag => tag.Id == id).Name)).ToArray()
+        };
         await Organization.SaveSavedSearchAsync(OwnerId, _repair.Name, criteria, _repair.Id);
         _repair = null;
         await Load();

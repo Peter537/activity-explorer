@@ -19,6 +19,13 @@ internal static class ExplorationQueryInput
         _ => throw new ArgumentException("Choose Range or Cumulative coverage.")
     };
 
+    public static bool NewOnly(string? value) => value switch
+    {
+        null or "" or "no" => false,
+        "yes" => true,
+        _ => throw new ArgumentException("Choose All visited or New in period cells.")
+    };
+
     public static DateOnly? Date(string? value, string label, bool month = false)
     {
         if (string.IsNullOrEmpty(value)) return null;
@@ -46,8 +53,11 @@ internal static class ExplorationQueryInput
         var view = View(request.Query["view"]);
         var cumulative = Cumulative(request.Query["coverage"]);
         var through = Date(request.Query["through"], "Through");
+        var newOnly = NewOnly(request.Query["newOnly"]);
+        if (newOnly && view != "exploration")
+            throw new ArgumentException("New-cell filtering is available in Exploration view.");
         return new(new(map.OwnerId, map.Sport),
             new(map.Period ?? (map.From.HasValue || map.To.HasValue ? ReportingPreset.Custom : ReportingPreset.AllTime), map.From, map.To), map.AsOfUtc ?? DateTimeOffset.UtcNow,
-            view == "exploration" && cumulative, through);
+            view == "exploration" && cumulative, through, NewOnly: newOnly);
     }
 }

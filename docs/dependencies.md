@@ -16,7 +16,8 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 | NetTopologySuite | 2.6.0 | WKB geometry | BSD-3-Clause |
 | SQLitePCLRaw.bundle_e_sqlite3 | 3.0.5 | Native SQLite bundle | Apache-2.0; SQLite is public domain |
 | MapLibre GL JS | 6.2.0 | Locally served ESM map renderer | BSD-3-Clause |
-| Microsoft.Testing.Platform | 2.3.3 | .NET 10 test runner | MIT |
+| Microsoft.Testing.Platform | 2.5.1 | .NET 10 test runner | MIT |
+| Microsoft.Testing.Platform.MSBuild | 2.5.1 | Test entry point and build integration; explicit pin replaces the deprecated transitive version | MIT |
 | xunit.v3.mtp-v2 | 3.2.2 | Test framework with MTP v2 integration | Apache-2.0 |
 | coverlet.MTP | 10.0.1 | MTP-native coverage collection | MIT |
 | Microsoft.Playwright | 1.61.0 | Browser regression tests | MIT |

@@ -29,23 +29,30 @@ internal static class ReportingDateQuery
         }).ToArray();
     }
 
-    public static IQueryable<Activity> Apply(IQueryable<Activity> query, IReadOnlyList<ResolvedOwnerPeriod> periods)
+    public static IQueryable<Activity> Apply(IQueryable<Activity> query, IReadOnlyList<ResolvedOwnerPeriod> periods) =>
+        ApplyPeriods(query, periods, nameof(Activity.OwnerId), nameof(Activity.StartTimeUtc));
+
+    public static IQueryable<ImportBatch> ApplyImports(IQueryable<ImportBatch> query, IReadOnlyList<ResolvedOwnerPeriod> periods) =>
+        ApplyPeriods(query, periods, nameof(ImportBatch.OwnerId), nameof(ImportBatch.CreatedAtUtc));
+
+    private static IQueryable<T> ApplyPeriods<T>(IQueryable<T> query, IReadOnlyList<ResolvedOwnerPeriod> periods,
+        string ownerProperty, string dateProperty)
     {
-        var activity = Expression.Parameter(typeof(Activity), "activity");
+        var activity = Expression.Parameter(typeof(T), "row");
         Expression predicate = Expression.Constant(false);
         foreach (var group in periods.GroupBy(x => (x.FromUtc, x.ToUtc)))
         {
             var owners = group.Select(x => x.OwnerId).ToArray();
             Expression member = Expression.Call(typeof(Enumerable), nameof(Enumerable.Contains), [typeof(Guid)],
-                Expression.Constant(owners), Expression.Property(activity, nameof(Activity.OwnerId)));
+                Expression.Constant(owners), Expression.Property(activity, ownerProperty));
             if (group.Key.FromUtc is { } from)
                 member = Expression.AndAlso(member, Expression.GreaterThanOrEqual(
-                    Expression.Property(activity, nameof(Activity.StartTimeUtc)), Expression.Constant(from)));
+                    Expression.Property(activity, dateProperty), Expression.Constant(from)));
             if (group.Key.ToUtc is { } to)
                 member = Expression.AndAlso(member, Expression.LessThan(
-                    Expression.Property(activity, nameof(Activity.StartTimeUtc)), Expression.Constant(to)));
+                    Expression.Property(activity, dateProperty), Expression.Constant(to)));
             predicate = Expression.OrElse(predicate, member);
         }
-        return query.Where(Expression.Lambda<Func<Activity, bool>>(predicate, activity));
+        return query.Where(Expression.Lambda<Func<T, bool>>(predicate, activity));
     }
 }

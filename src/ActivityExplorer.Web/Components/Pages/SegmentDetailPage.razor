@@ -117,7 +117,7 @@ else
         }
         else
         {
-            <p class="muted">@(_segment.SelectedEffortId.HasValue ? $"Selected effort: {_segment.Efforts.First(effort => effort.Id == _segment.SelectedEffortId).StartTime.ToLocalTime():g}" : "No parent effort is available yet.")</p>
+            <p class="muted">@(_segment.SelectedEffortId.HasValue ? $"Selected effort: {EffortLocalTime(_segment.Efforts.First(effort => effort.Id == _segment.SelectedEffortId)):g}" : "No parent effort is available yet.")</p>
             <table class="subsegment-table">
                 <thead><tr><th scope="col">Section</th><th scope="col">Distance / grade</th><th scope="col">Personal best</th><th scope="col">Selected effort</th></tr></thead>
                 <tbody>
@@ -161,23 +161,52 @@ else
     <section class="panel">
         <div class="panel-heading">
             <div><h2>Effort history</h2><p class="muted">Repeated passes remain separate. Speed and pace use the saved segment distance divided by elapsed time. Select a row to inspect its exact recorded stream slice.</p></div>
-            <label class="compact-select"><span>Sort by</span><select @bind="_sort"><option value="rank">Rank</option><option value="date">Newest</option><option value="elapsed">Elapsed time</option><option value="speed">Speed / pace</option><option value="heart-rate">Heart rate</option><option value="power">Power</option></select></label>
+            <label class="compact-select"><span>Sort by</span><select @bind="_effortSort" @bind:after="ApplyEffortFilters"><option value="rank">Rank</option><option value="date">Newest</option><option value="elapsed">Elapsed time</option><option value="speed">Speed / pace</option><option value="heart-rate">Heart rate</option><option value="power">Power</option></select></label>
         </div>
+        <div class="form-grid effort-filters">
+            <label><span>Efforts from</span><input type="date" value="@_effortFrom" @oninput="args => _effortFrom = args.Value?.ToString() ?? string.Empty" /></label>
+            <label><span>Efforts to</span><input type="date" value="@_effortTo" @oninput="args => _effortTo = args.Value?.ToString() ?? string.Empty" /></label>
+            <label><span>Minimum elapsed (seconds)</span><input type="number" min="0" step="any" value="@_effortMinimum" @oninput="args => _effortMinimum = args.Value?.ToString() ?? string.Empty" /></label>
+            <label><span>Maximum elapsed (seconds)</span><input type="number" min="0" step="any" value="@_effortMaximum" @oninput="args => _effortMaximum = args.Value?.ToString() ?? string.Empty" /></label>
+        </div>
+        <div class="button-row"><button class="button primary" type="button" @onclick="ApplyEffortFilters">Apply effort filters</button><button class="button" type="button" @onclick="ResetEffortFilters">Reset effort filters</button></div>
+        <p class="muted" role="status">@_historyEfforts.Count of @_segment.Efforts.Count efforts match. Ranks remain lifetime ranks. Dates use @(string.IsNullOrWhiteSpace(_segment.OwnerTimeZoneId) ? ReportingTimeZone.DefaultId : _segment.OwnerTimeZoneId).</p>
+        @if (_historyError is not null) { <p class="notice error" role="alert">@_historyError</p> }
+        @if (!IsComparing && EffortId.HasValue && !_segment.Efforts.Any(effort => effort.Id == EffortId))
+        {
+            <p class="notice error" role="status">The selected effort is unavailable. Choose an effort from this segment's history to inspect it.</p>
+        }
+        @if (_historyError is null && !IsComparing && IsOutsideHistory(_segment.SelectedEffortId))
+        {
+            <p class="notice subtle" role="status" data-effort-selection-outside>Selected effort is outside the history filters. Its inspection remains selected.</p>
+        }
+        @if (_historyError is null && IsComparing && Guid.TryParse(BaselineId, out var baselineOutside) && IsOutsideHistory(baselineOutside))
+        {
+            <p class="notice subtle" role="status" data-effort-selection-outside>Baseline effort is outside the history filters. The comparison pair is unchanged.</p>
+        }
+        @if (_historyError is null && IsComparing && Guid.TryParse(ComparisonId, out var comparisonOutside) && IsOutsideHistory(comparisonOutside))
+        {
+            <p class="notice subtle" role="status" data-effort-selection-outside>Comparison effort is outside the history filters. The comparison pair is unchanged.</p>
+        }
         @if (_segment.Efforts.Count == 0)
         {
             <p class="muted">No matching passes found. Increase the advanced segment tolerance only when the recorded GPS is noisy.</p>
+        }
+        else if (_historyEfforts.Count == 0)
+        {
+            <p class="muted">No efforts match these history filters. Change the bounds or reset effort filters.</p>
         }
         else
         {
             <div class="effort-table-wrap">
                 <table class="effort-table">
-                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>@(_segment.Summary.Sport == SportKind.Cycling ? "Segment avg speed" : "Segment avg pace")</th><th>Heart rate</th><th>@Format.CadenceLabel(_segment.Summary.Sport)</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th></tr></thead>
+                    <thead><tr><th>Rank</th><th>Date</th><th>Elapsed</th><th>Moving</th><th>@(_segment.Summary.Sport == SportKind.Cycling ? "Segment avg speed" : "Segment avg pace")</th><th>Heart rate</th><th>@Format.CadenceLabel(_segment.Summary.Sport)</th><th>Power</th><th>Temperature</th><th>Respiration</th><th>Coverage</th><th>Compare</th></tr></thead>
                     <tbody>
-                    @foreach (var effort in SortedEfforts)
+                    @foreach (var effort in _historyEfforts)
                     {
-                        <tr class="@(effort.Id == _segment.SelectedEffortId ? "selected" : null)">
+                        <tr class="@(effort.Id == _segment.SelectedEffortId ? "selected" : null)" data-effort-id="@effort.Id">
                             <td>#@effort.Rank</td>
-                            <td><a href="@EffortUrl(effort.Id)">@effort.StartTime.ToLocalTime().ToString("g")</a></td>
+                            <td><a href="@EffortUrl(effort.Id)">@EffortLocalTime(effort).ToString("g")<span class="visually-hidden"> · Pass @EffortPass(effort)</span></a></td>
                             <td>@Format.Duration(effort.ElapsedSeconds)</td>
                             <td>@Format.Duration(effort.MovingSeconds)</td>
                             <td>@Format.Speed(effort.AverageSpeed, _segment.Summary.Sport)</td>
@@ -187,6 +216,7 @@ else
                             <td>@Value(effort.AverageTemperature, "deg C", 1)</td>
                             <td>@Value(effort.AverageRespiration, "brpm", 1)</td>
                             <td>@($"{effort.CoveragePercent:N0}%")</td>
+                            <td class="effort-row-actions"><button class="text-button" type="button" @onclick="() => UseHistoryBaseline(effort.Id)">Use as baseline<span class="visually-hidden">: @EffortLabel(effort)</span></button><button class="text-button" type="button" @onclick="() => UseHistoryComparison(effort.Id)">Use as comparison<span class="visually-hidden">: @EffortLabel(effort)</span></button></td>
                         </tr>
                     }
                     </tbody>
@@ -199,7 +229,7 @@ else
     @if (!IsComparing && selected is not null && _segment.SelectedEffortPoints.Count > 1)
     {
         <section class="panel-heading chart-controls">
-            <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@selected.StartTime.ToLocalTime().ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
+            <div><span class="eyebrow">Selected effort #@selected.Rank</span><h2>@EffortLocalTime(selected).ToString("F")</h2><p class="muted">@Format.Duration(selected.ElapsedSeconds) elapsed - @($"{selected.CoveragePercent:N0}%") data coverage - <a href="@($"/activities/{selected.ActivityId}")">open activity</a></p></div>
             <div class="button-row"><button class="@AxisButton(ChartAxisKind.ElapsedTime)" aria-pressed="@(_axis == ChartAxisKind.ElapsedTime ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.ElapsedTime">Elapsed time</button><button class="@AxisButton(ChartAxisKind.Distance)" aria-pressed="@(_axis == ChartAxisKind.Distance ? "true" : "false")" @onclick="() => _axis = ChartAxisKind.Distance">Distance</button></div>
         </section>
         <section class="panel effort-diagnostics" aria-labelledby="selected-effort-diagnostics">
@@ -241,7 +271,6 @@ else
     private bool IsComparing => View == "compare";
     private bool CanSwap => _loaded && Guid.TryParse(BaselineId, out var baseline) && Guid.TryParse(ComparisonId, out var comparison) &&
         baseline != comparison && _segment!.Efforts.Any(effort => effort.Id == baseline) && _segment.Efforts.Any(effort => effort.Id == comparison);
-    private string _sort = "rank";
     private ChartAxisKind _axis = ChartAxisKind.ElapsedTime;
     private bool _loaded;
     private bool _recomputing;
@@ -271,18 +300,9 @@ else
         _ => "Local definition"
     };
 
-    private IEnumerable<SegmentEffortSummary> SortedEfforts => (_segment?.Efforts ?? []).OrderBy(x => _sort switch
-    {
-        "date" => -x.StartTime.UtcTicks,
-        "elapsed" => (long)(x.ElapsedSeconds * 1000),
-        "speed" => -(long)((x.AverageSpeed ?? 0) * 1000000),
-        "heart-rate" => -(long)((x.AverageHeartRate ?? 0) * 1000),
-        "power" => -(long)((x.AveragePower ?? 0) * 1000),
-        _ => x.Rank
-    });
-
     protected override async Task OnParametersSetAsync()
     {
+        ReadEffortFilters();
         if (_loaded && _loadedId == Id && _loadedEffortId == EffortId && _loadedView == View &&
             _loadedBaseline == BaselineId && _loadedComparison == ComparisonId && _segment is not null)
         {
@@ -388,13 +408,17 @@ else
         _segment = segment;
         _mapSections = segment?.Children.Select((child, index) => new SegmentMapSection(child.Summary.Id, child.Summary.Name, index + 1, child.Placements)).ToArray() ?? [];
         UpdateSectionSelection();
+        RefreshEffortHistory();
     }
 
     private void UpdateSectionSelection() => _selectedSectionId = _mapSections.Any(section => section.Id == SectionId) ? SectionId : null;
 
     private void SelectSection(Guid sectionId) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("section", sectionId), replace: true);
 
-    private string EffortUrl(Guid effortId) => $"/segments/{Id}?effort={effortId}" + (_selectedSectionId.HasValue ? $"&section={_selectedSectionId}" : string.Empty);
+    private string EffortUrl(Guid effortId) => Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+    {
+        ["effort"] = effortId, ["view"] = null, ["baseline"] = null, ["comparison"] = null
+    });
 
     private bool HasUnknownSelection(string? value) => !string.IsNullOrEmpty(value) &&
         (!Guid.TryParse(value, out var id) || !_segment!.Efforts.Any(effort => effort.Id == id));
@@ -403,9 +427,7 @@ else
 
     private string EffortLabel(SegmentEffortSummary effort)
     {
-        var pass = _segment!.Efforts.Where(value => value.ActivityId == effort.ActivityId)
-            .OrderBy(value => value.StartPointIndex).TakeWhile(value => value.Id != effort.Id).Count() + 1;
-        return $"#{effort.Rank} · {effort.StartTime.ToLocalTime():g} · Pass {pass} · {Format.Duration(effort.ElapsedSeconds)}";
+        return $"#{effort.Rank} · {EffortLocalTime(effort):g} · Pass {EffortPass(effort)} · {Format.Duration(effort.ElapsedSeconds)}";
     }
 
     private void InspectEffort() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>

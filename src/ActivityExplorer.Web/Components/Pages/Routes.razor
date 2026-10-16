@@ -37,9 +37,31 @@ else
 {
     <section class="empty-state"><h2>Create a profile first</h2><p>Routes belong to a local profile. Create one before drawing or importing a path.</p><a class="button primary" href="/profiles">Create profile</a></section>
 }
-@if (_routes is null) { <div class="loading" role="status">Loading routes...</div> }
-else if (_routes.Count == 0) { <section class="empty-state"><h2>No routes saved</h2><p>Draw a route above, import GPX, or save a GPS activity as a route.</p><a class="button" href="/activities">Browse activities</a></section> }
-else
+<section aria-label="Saved routes">
+<h2>Saved routes</h2>
+@if (QueryImportBatch is not null || QueryImportOwner is not null)
+{
+    <div class="notice" aria-label="Linked import filter"><p>Showing currently retained route associations from this import.</p>
+        @if (_importScope is { } importScope && importScope.OwnerId != ProfileState.SelectedOwnerId && ProfileState.Profiles.FirstOrDefault(profile => profile.Id == importScope.OwnerId) is { } importOwner)
+        { <button class="button" @onclick="() => ProfileState.Select(importOwner.Id)">Switch to @importOwner.DisplayName</button> }
+        <a class="button" href="@ImportLinkScope.Remove(Navigation.Uri)">Remove import filter</a><a class="button" href="/imports">Import history</a>
+    </div>
+}
+<form class="filter-bar" aria-label="Route filters" @onsubmit="ApplyRouteFilters" @onsubmit:preventDefault>
+    <label><span>Route name</span><input @bind="_filterSearch" @bind:event="oninput" @bind:after="RouteFiltersChanged" placeholder="Find a saved route" /></label>
+    <label><span>Route sport</span><select @bind="_filterSport" @bind:after="RouteFiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+    <label><span>Route order</span><select @bind="_filterSort" @bind:after="RouteFiltersChanged"><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="distance-asc">Shortest</option><option value="distance-desc">Longest</option><option value="elevation-asc">Least ascent</option><option value="elevation-desc">Most ascent</option></select></label>
+    <button class="button primary" type="submit" disabled="@_busyAction">Apply route filters</button>
+    <button class="button" type="button" @onclick="ResetRouteFilters" disabled="@_busyAction">Reset route filters</button>
+</form>
+<StatusMessage Message="@_filterError" IsError="true" />
+@if (_routeLoading) { <div class="loading" role="status">Loading routes...</div> }
+@if (_routeFailed) { <button class="button" @onclick="Load">Retry loading routes</button> }
+@if (_filterDirty && _routes is not null) { <p class="notice" role="status">Apply route filters to update these results.</p> }
+@if (_routes is not null) { <p class="muted" role="status">@_routes.Count.ToString("N0") matching @(_routes.Count == 1 ? "route" : "routes")</p> }
+@if (_routes?.Count == 0 && HasRouteFilters) { <section class="empty-state"><h3>No matching routes</h3><p>Adjust the route name or sport, or reset the filters.</p><button class="button" @onclick="ResetRouteFilters">Show all routes</button></section> }
+else if (_routes?.Count == 0) { <section class="empty-state"><h3>No routes saved</h3><p>Draw a route above, import GPX, or save a GPS activity as a route.</p><a class="button" href="/activities">Browse activities</a></section> }
+else if (_routes is not null)
 {
     <section class="card-grid">
     @foreach (var route in _routes)
@@ -48,7 +70,14 @@ else
     }
     </section>
 }
+</section>
 @code {
+    [SupplyParameterFromQuery(Name = "q")] public string? QuerySearch { get; set; }
+    [SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [SupplyParameterFromQuery(Name = "sort")] public string? QuerySort { get; set; }
+    [SupplyParameterFromQuery(Name = "importBatch")] public string? QueryImportBatch { get; set; }
+    [SupplyParameterFromQuery(Name = "importOwner")] public string? QueryImportOwner { get; set; }
+    private ImportLinkScope? _importScope;
     private IReadOnlyList<RouteSummary>? _routes;
     private IReadOnlyList<TrackPoint> _drawn = [];
     private MapCanvas? _drawMap;
@@ -57,6 +86,12 @@ else
     private string _name = "New route";
     private string? _message;
     private bool _busyAction;
+    private string _filterSearch = "", _filterSport = "", _filterSort = "name-asc";
+    private string? _filterError;
+    private bool _routeLoading, _routeFailed, _filterDirty, _disposed;
+    private int _loadRevision;
+    private CancellationTokenSource? _loadCancellation;
+    private bool HasRouteFilters => QueryImportBatch is not null || QueryImportOwner is not null || !string.IsNullOrWhiteSpace(_filterSearch) || _filterSport.Length > 0;
     private bool CanName => _ownerId != Guid.Empty && !string.IsNullOrWhiteSpace(_name);
     private bool CanSave => CanName && _drawn.Count >= 2;
 
@@ -68,11 +103,103 @@ else
         ProfileState.Changed += Changed;
         await ProfileState.InitializeAsync();
         SetOwner();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _filterSearch = QuerySearch?.Trim() ?? "";
+        _filterSport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport)
+            ? sport.ToString() : QuerySport ?? "";
+        _filterSort = QuerySort ?? "name-asc";
+        _filterDirty = false;
         await Load();
     }
 
     private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
-    private async Task Load() => _routes = await RouteService.ListAsync(ProfileState.SelectedOwnerId);
+    private RouteFilter CurrentRouteFilter()
+    {
+        _importScope = ImportLinkScope.Parse(QueryImportBatch, QueryImportOwner);
+        _importScope?.ValidateOwner(ProfileState.SelectedOwnerId);
+        SportKind? sport = null;
+        if (_filterSport.Length > 0)
+        {
+            if (!Enum.TryParse<SportKind>(_filterSport, true, out var parsed) || !Enum.IsDefined(parsed))
+                throw new ArgumentException("Choose a valid route sport.");
+            sport = parsed;
+        }
+        if (_filterSort is not ("name-asc" or "name-desc" or "distance-asc" or "distance-desc" or "elevation-asc" or "elevation-desc"))
+            throw new ArgumentException("Choose a valid route order.");
+        return new(ProfileState.SelectedOwnerId, _filterSearch.Trim(), sport, _filterSort, ImportBatchId: _importScope?.BatchId);
+    }
+
+    private async Task Load()
+    {
+        _loadCancellation?.Cancel();
+        var revision = ++_loadRevision;
+        using var cancellation = new CancellationTokenSource();
+        _loadCancellation = cancellation;
+        _routeLoading = true;
+        _routeFailed = false;
+        _filterError = null;
+        try
+        {
+            var routes = await RouteService.SearchAsync(CurrentRouteFilter(), cancellation.Token);
+            if (_disposed || revision != _loadRevision) return;
+            _routes = routes;
+            _filterDirty = false;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (_disposed || revision != _loadRevision) return;
+            _routes = null;
+            _routeFailed = exception is not (ArgumentException or InvalidOperationException);
+            _filterError = exception is ArgumentException or InvalidOperationException ? exception.Message : "Routes could not be loaded. Try again.";
+        }
+        finally
+        {
+            if (revision == _loadRevision) { _routeLoading = false; _loadCancellation = null; }
+        }
+    }
+
+    private void RouteFiltersChanged()
+    {
+        _loadRevision++;
+        _loadCancellation?.Cancel();
+        _loadCancellation = null;
+        _routeLoading = false;
+        _routeFailed = false;
+        _filterDirty = true;
+        _filterError = null;
+    }
+
+    private async Task ApplyRouteFilters()
+    {
+        try
+        {
+            var filter = CurrentRouteFilter();
+            var values = new List<string>();
+            void Add(string key, string? value) { if (!string.IsNullOrWhiteSpace(value)) values.Add($"{key}={Uri.EscapeDataString(value)}"); }
+            Add("q", filter.Search);
+            Add("sport", filter.Sport?.ToString().ToLowerInvariant());
+            Add("sort", filter.Sort == "name-asc" ? null : filter.Sort);
+            Add("importBatch", QueryImportBatch);
+            Add("importOwner", QueryImportOwner);
+            var target = values.Count == 0 ? "/routes" : $"/routes?{string.Join('&', values)}";
+            if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await Load();
+            else Navigation.NavigateTo(target);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { _filterError = exception.Message; }
+    }
+
+    private Task ResetRouteFilters()
+    {
+        QueryImportBatch = QueryImportOwner = null;
+        _importScope = null;
+        _filterSearch = _filterSport = "";
+        _filterSort = "name-asc";
+        return ApplyRouteFilters();
+    }
     private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
     private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }
     private async Task Clear() { if (_drawMap is not null) await _drawMap.ClearAsync(); }
@@ -105,5 +232,11 @@ else
 
     private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
 
-    public void Dispose() => ProfileState.Changed -= Changed;
+    public void Dispose()
+    {
+        _disposed = true;
+        _loadRevision++;
+        _loadCancellation?.Cancel();
+        ProfileState.Changed -= Changed;
+    }
 }

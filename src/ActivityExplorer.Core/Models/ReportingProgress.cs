@@ -8,7 +8,8 @@ public enum TrendGranularity { Weekly, Monthly }
 public sealed record DashboardQuery(
     Guid? OwnerId = null, SportKind? Sport = null, ReportingDateSelection? Period = null,
     PeriodComparison Comparison = PeriodComparison.PriorYear,
-    TrendGranularity Granularity = TrendGranularity.Monthly, DateTimeOffset? AsOfUtc = null);
+    TrendGranularity Granularity = TrendGranularity.Monthly, DateTimeOffset? AsOfUtc = null,
+    ActivityCriteria? Criteria = null);
 
 public sealed record ReportingTotals(
     int ActivityCount, double DistanceMeters, double MovingSeconds, double ElevationMeters, int ActiveDays)
@@ -26,7 +27,8 @@ public sealed record DashboardSummary(
     IReadOnlyList<NamedTotal> Devices, IReadOnlyList<NamedTotal> Gear, bool HasAnyActivities);
 
 public sealed record TrainingCalendarQuery(
-    Guid? OwnerId = null, SportKind? Sport = null, DateOnly? Month = null, DateTimeOffset? AsOfUtc = null);
+    Guid? OwnerId = null, SportKind? Sport = null, DateOnly? Month = null, DateTimeOffset? AsOfUtc = null,
+    ActivityCriteria? Criteria = null);
 
 public sealed record TrainingCalendarDay(DateOnly Date, ReportingTotals Totals, IReadOnlyList<SportTotal> Sports);
 

@@ -4,8 +4,13 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace ActivityExplorer.Infrastructure.Storage;
 
-public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> options) : DbContext(options)
+public sealed class ExplorerDbContext : DbContext
 {
+    public ExplorerDbContext(DbContextOptions<ExplorerDbContext> options) : base(options)
+    {
+        ActivitySearchFunctions.Register(Database.GetDbConnection());
+    }
+
     public DbSet<OwnerProfile> Owners => Set<OwnerProfile>();
     public DbSet<ImportBatch> ImportBatches => Set<ImportBatch>();
     public DbSet<SourceFile> SourceFiles => Set<SourceFile>();
@@ -32,6 +37,10 @@ public sealed class ExplorerDbContext(DbContextOptions<ExplorerDbContext> option
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.HasDbFunction(typeof(ActivitySearchFunctions).GetMethod(nameof(ActivitySearchFunctions.Contains))!)
+            .HasName("activity_contains");
+        modelBuilder.HasDbFunction(typeof(ActivitySearchFunctions).GetMethod(nameof(ActivitySearchFunctions.EqualsName))!)
+            .HasName("activity_equals_name");
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
         modelBuilder.Entity<ActivityExplorationIndex>().HasKey(x => x.ActivityId);
         modelBuilder.Entity<ActivityExplorationIndex>().HasOne(x => x.Activity).WithMany()

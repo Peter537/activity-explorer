@@ -9,11 +9,32 @@
     <p id="@($"{_id}-instructions")" class="map-keyboard-help">Pan or zoom the map with its keyboard controls, then use Add point at map center. Undo and Clear are also keyboard-operable.</p>
 }
 <div id="@_id" class="@CssClass" data-inspection-map="@(string.IsNullOrWhiteSpace(InspectionGroupId) ? null : "true")"></div>
-@if (ShowLoadStatus && !string.IsNullOrEmpty(_layerStatus))
+@if (ShowLoadStatus && _cellsView && !string.IsNullOrEmpty(_layerStatus))
 {
     <div class="map-load-status" role="@(_layersFailed ? "alert" : "status")">
         <p>@_layerStatus</p>
         @if (_layersFailed) { <button class="button" type="button" @onclick="RetryLayersAsync">@(_cellsView ? "Retry map cells" : "Retry map lines")</button> }
+    </div>
+}
+@if (ShowLoadStatus && !_cellsView)
+{
+    <div class="map-load-status map-line-coverage" role="status" aria-live="polite">
+        @if (!EnabledLineLayers.Any()) { <p>All line layers are hidden.</p> }
+        @if (LineStatuses.Any(layer => layer.Failed)) { <p class="notice error" role="alert">Some map lines could not be loaded. Retry to refresh this view.</p> }
+        @if (EnabledLineLayers.Any() && LineStatuses.All(layer => !layer.Loading && !layer.Failed && layer.ReturnedCount == 0)) { <p>No lines in this view. Adjust the filters or zoom out.</p> }
+        @foreach (var layer in LineStatuses)
+        {
+            <p data-map-line-layer="@layer.Layer" class="@(layer.Failed ? "notice error" : null)">@LineDescription(layer)</p>
+        }
+        @if (LineStatuses.Any(layer => layer.Truncated))
+        {
+            <div class="button-row">
+                @if (LineStatuses.Any(layer => layer.Layer == "activities" && layer.Truncated)) { <a class="button" href="#map-filters">Narrow activity dates</a> }
+                <button class="button" type="button" @onclick="ZoomInAsync">Zoom in</button>
+            </div>
+        }
+        @if (LineStatuses.Any(layer => layer.Failed)) { <button class="button" type="button" @onclick="RetryLayersAsync">Retry map lines</button> }
+        @if (!string.IsNullOrWhiteSpace(ActivityUrl)) { <p class="muted">Activity lines include activities with usable GPS geometry.</p> }
     </div>
 }
 @if (Editable)
@@ -53,6 +74,7 @@
     [Parameter] public string? InspectionGroupId { get; set; }
     [Parameter] public bool ShowDisclosure { get; set; }
     [Parameter] public bool ShowLoadStatus { get; set; }
+    [Parameter] public string? CameraStorageKey { get; set; }
     [Parameter] public bool Editable { get; set; }
     [Parameter] public EventCallback<IReadOnlyList<TrackPoint>> PointsChanged { get; set; }
     private readonly string _id = $"map-{Guid.NewGuid():N}";
@@ -75,6 +97,14 @@
     private bool _layersFailed;
     private bool _cellsView => ExplorationView is "frequency" or "exploration";
     private int _layerRevision;
+    private IReadOnlyList<MapLineLayerStatus> _lineLayers = [];
+    private int? _pendingFocusCell;
+    private IEnumerable<string> EnabledLineLayers => new[]
+    {
+        ("activities", ActivityUrl), ("routes", RouteUrl), ("segments", SegmentUrl)
+    }.Where(layer => !string.IsNullOrWhiteSpace(layer.Item2)).Select(layer => layer.Item1);
+    private IEnumerable<MapLineLayerStatus> LineStatuses => EnabledLineLayers.Select(name =>
+        _lineLayers.FirstOrDefault(layer => layer.Layer == name) ?? new(name, true, false, 0, 0, 0, false));
     private (string?, string?, string?, string?, string?, string, int?) _renderedLayers;
     private (string?, string?, string?, string?, string?, string, int?) CurrentLayers =>
         (ActivityUrl, RouteUrl, SegmentUrl, ExplorationUrl, ExplorationView, Label, SelectedCellId);
@@ -182,6 +212,7 @@
             editable = Editable,
             label = Label,
             reportLoadStatus = ShowLoadStatus,
+            cameraStorageKey = CameraStorageKey,
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
         if (_disposed)
@@ -191,6 +222,11 @@
             return;
         }
         _initialized = true;
+        if (_pendingFocusCell is { } pendingCell)
+        {
+            _pendingFocusCell = null;
+            await JS.InvokeVoidAsync("activityExplorerMap.focusCell", _id, pendingCell);
+        }
         _renderedLayers = layers;
         _renderedSections = sections;
         _renderedSectionId = sectionId;
@@ -220,6 +256,27 @@
     });
 
     [JSInvokable]
+    public Task UpdateLineCoverage(IReadOnlyList<MapLineLayerStatus> layers, int revision) => InvokeAsync(() =>
+    {
+        if (_disposed || revision < _layerRevision) return;
+        _layerRevision = revision;
+        _lineLayers = layers.Where(layer => EnabledLineLayers.Contains(layer.Layer, StringComparer.Ordinal)).ToArray();
+        StateHasChanged();
+    });
+
+    private static string LineDescription(MapLineLayerStatus layer)
+    {
+        var label = layer.Layer switch { "activities" => "Activities", "routes" => "Routes", _ => "Segments" };
+        if (layer.Loading) return $"Loading {layer.Layer}...";
+        if (layer.Failed) return $"{label} could not be loaded. Retry map lines to refresh this layer.";
+        if (layer.Truncated)
+            return $"Showing newest {layer.ReturnedCount:N0} of {layer.MatchingCount:N0} matching {layer.Layer} in this viewport. " +
+                (layer.Layer == "activities" ? "Narrow the activity dates or zoom in to see older matches." : "Zoom in or select a sport to see older matches.");
+        return layer.ReturnedCount == 0 ? $"No matching {layer.Layer} in this viewport." :
+            $"{layer.ReturnedCount:N0} matching {layer.Layer} in this viewport.";
+    }
+
+    [JSInvokable]
     public Task SelectExplorationCell(int cellId) => cellId is >= 0 and < 268435456
         ? SelectedCellIdChanged.InvokeAsync(cellId) : Task.CompletedTask;
 
@@ -230,6 +287,14 @@
     public Task UpdateExplorationSummary(ExplorationSummary summary) => ExplorationSummaryChanged.InvokeAsync(summary);
 
     private async Task RetryLayersAsync() => await JS.InvokeVoidAsync("activityExplorerMap.reload", _id);
+    private async Task ZoomInAsync() => await JS.InvokeVoidAsync("activityExplorerMap.zoomIn", _id);
+
+    public async Task FocusCellAsync(int cellId)
+    {
+        if (_disposed || cellId is < 0 or >= 268435456) return;
+        if (!_initialized) { _pendingFocusCell = cellId; return; }
+        await JS.InvokeVoidAsync("activityExplorerMap.focusCell", _id, cellId);
+    }
 
     [JSInvokable]
     public Task SelectSection(Guid sectionId) => Sections.Any(section => section.Id == sectionId)

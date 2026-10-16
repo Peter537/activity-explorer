@@ -80,7 +80,7 @@ public sealed partial class DatabaseIntegrationTests
         Assert.Equal("ride", restored.Search);
         Assert.Equal("device", restored.Device);
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveSavedSearchAsync(owner, "relative MONTH", criteria));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.SaveSavedSearchAsync(owner, "Unsupported", criteria with { Version = 2 }));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.SaveSavedSearchAsync(owner, "Unsupported", criteria with { Version = 3 }));
         await Assert.ThrowsAsync<ArgumentException>(() => service.SaveSavedSearchAsync(owner, "Bad sport", criteria with { Sport = (SportKind)999 }));
         await Assert.ThrowsAsync<ArgumentException>(() => service.SaveSavedSearchAsync(owner, "Bad sort", criteria with { Sort = "arbitrary" }));
         await Assert.ThrowsAsync<ArgumentException>(() => service.SaveSavedSearchAsync(owner, "Reversed", criteria with { Dates = new(ReportingPreset.Custom, new(2026, 3, 2), new(2026, 3, 1)) }));

@@ -6,11 +6,18 @@
     }
     else
     {
+        <label class="tag-search"><span>Find tags</span><input type="search" @bind="_query" @bind:event="oninput" /></label>
+        @if (_query.Length > 0)
+        {
+            <p class="muted" role="status">Showing @VisibleTags.Count of @Tags.Count tags. Selected tags stay visible.</p>
+            <button class="button" type="button" @onclick="() => _query = string.Empty">Clear tag search</button>
+        }
+        @if (VisibleTags.Count == 0) { <p class="muted">No matching tags.</p> }
         <div class="tag-options">
-            @foreach (var tag in Tags)
+            @foreach (var tag in VisibleTags)
             {
                 <label @key="tag.Id" class="tag-option">
-                    <input type="checkbox" checked="@SelectedIds.Contains(tag.Id)" @onchange="args => ToggleAsync(tag.Id, args.Value is true)" />
+                    <input type="checkbox" checked="@SelectedIds.Contains(tag.Id)" @onfocus="() => _focusedTag = tag.Id" @onblur="() => _focusedTag = null" @onchange="args => ToggleAsync(tag.Id, args.Value is true)" />
                     <span>@tag.Name</span>
                 </label>
             }
@@ -24,6 +31,10 @@
     [Parameter] public EventCallback<IReadOnlyList<Guid>> Changed { get; set; }
     [Parameter] public string Label { get; set; } = "Tags";
     [Parameter] public bool Disabled { get; set; }
+    private string _query = "";
+    private Guid? _focusedTag;
+    private IReadOnlyList<TagSummary> VisibleTags => Tags.Where(tag => SelectedIds.Contains(tag.Id) ||
+        _focusedTag == tag.Id || tag.Name.Contains(_query.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
 
     private Task ToggleAsync(Guid id, bool selected)
     {

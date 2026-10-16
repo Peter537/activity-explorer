@@ -1,10 +1,12 @@
 @page "/map"
+@inherits ActivitySearchViewBase
 @implements IDisposable
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
 @inject IExplorationIndexService ExplorationIndex
 @inject IExplorationQueryService ExplorationQueries
+@inject IActivityOrganizationService Organization
 
 <PageTitle>World Map - Activity Explorer</PageTitle>
 <PageHeader Title="World Map" Summary="Explore your GPS history, familiar places, and first discoveries." />
@@ -14,16 +16,39 @@
         <a class="button @(_view == view ? "primary" : "")" aria-current="@(_view == view ? "page" : null)" href="@ViewUri(view)">@CultureInfo.InvariantCulture.TextInfo.ToTitleCase(view)</a>
     }
 </nav>
-<form class="filter-bar map-filters" aria-label="Map filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
+@if (_view == "lines")
+{
+    @if (ProfileState.SelectedOwnerId is { } searchOwner && !_lineSearchLoading)
+    {
+        <SavedSearches @key="searchOwner" OwnerId="searchOwner" Tags="_lineTags" OpenOnly="true" OnOpen="criteria => OpenLineSearch(searchOwner, criteria)" />
+    }
+    <ActivitySearchSummary Criteria="_activityCriteria" OnClear="ClearLineSearch" />
+    @if (_lineSearchLoading) { <p role="status">Loading activity search…</p> }
+    @if (SearchTagOwner is { } bookmarkOwner && bookmarkOwner != ProfileState.SelectedOwnerId && ProfileState.Profiles.FirstOrDefault(profile => profile.Id == bookmarkOwner) is { } owner)
+    {
+        <button class="button" type="button" @onclick="() => ProfileState.Select(owner.Id)">Switch to @owner.DisplayName</button>
+    }
+}
+<form id="map-filters" class="filter-bar map-filters" aria-label="Map filters" @onsubmit="RefreshMap" @onsubmit:preventDefault>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
     <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="FiltersChanged" ActivitiesOnly="@(_view == "lines")" Disabled="@(_view == "exploration" && _cumulative)" />
     <button class="button primary" type="submit" disabled="@(_dateError is not null)">Apply filters</button>
     <button class="button" type="button" @onclick="Reset">Reset</button>
 </form>
+@if (_view == "lines")
+{
+    <fieldset class="map-layer-controls" aria-label="Lines layers">
+        <legend>Lines layers</legend>
+        <label><input type="checkbox" checked="@_showActivities" @onchange='args => ChangeLayer("activities", args)' /> Activities</label>
+        <label><input type="checkbox" checked="@_showRoutes" @onchange='args => ChangeLayer("routes", args)' /> Routes</label>
+        <label><input type="checkbox" checked="@_showSegments" @onchange='args => ChangeLayer("segments", args)' /> Segments</label>
+    </fieldset>
+    @if (!_showActivities && !_showRoutes && !_showSegments) { <p class="notice" role="status">All Lines layers are hidden. Enable a layer to display its paths.</p> }
+}
 @if (_dirty && _hasMap) { <p class="notice" role="status">Apply filters to update these results.</p> }
 @if (_error is not null)
 {
-    <div class="notice exploration-error" role="alert"><p>@_error</p><button type="button" class="button" @onclick="Retry">Retry calculation</button><a class="button" href="/map">Reset map</a></div>
+    <div class="notice exploration-error" role="alert"><p>@_error</p><button type="button" class="button" @onclick="Retry">@(_view == "lines" ? "Retry loading search" : "Retry calculation")</button><a class="button" href="/map">Reset map</a>@if (_view == "lines") { <button class="button" type="button" @onclick="ClearLineSearch">Remove activity search</button> }</div>
     @if (_view == "exploration" && _cumulative && QueryThrough is not null)
     {
         <p><a class="button" href="@WithQuery(new() { ["through"] = null, ["cell"] = null, ["page"] = null, ["activityPage"] = null })">Use the default cumulative date</a></p>
@@ -36,6 +61,8 @@
         <a class="button @(_cumulative ? "primary" : "")" href="@CoverageUri(true)" aria-current="@(_cumulative ? "true" : null)">Cumulative</a>
         <span>@(_cumulative ? "All history through the selected date. Your range is retained." : "Visits in the applied period; discoveries checked against all history.")</span>
     </div>
+    <label class="exploration-cell-filter"><span>Cells shown</span><select value="@(_newOnly ? "new" : "all")" @onchange="NewCellsChanged"><option value="all">All visited</option><option value="new">@(_cumulative ? "New on this date" : "New in period")</option></select></label>
+    @if (_newOnly) { <p class="muted">The cell list and map show first discoveries only. Totals and discovery history still describe the full scope.</p> }
 }
 @if (_view != "lines")
 {
@@ -78,11 +105,11 @@
 @if (_hasMap)
 {
     <section class="panel flush map-panel">
-        <MapCanvas ActivityUrl="@(_view == "lines" ? LineUrl("activities") : null)" RouteUrl="@(_view == "lines" ? LineUrl("routes") : null)" SegmentUrl="@(_view == "lines" ? LineUrl("segments") : null)"
+        <MapCanvas @ref="_worldMap" CameraStorageKey="world-map" ActivityUrl="@(_view == "lines" && _showActivities ? LineUrl("activities") : null)" RouteUrl="@(_view == "lines" && _showRoutes ? LineUrl("routes") : null)" SegmentUrl="@(_view == "lines" && _showSegments ? LineUrl("segments") : null)"
                    ExplorationUrl="@ExplorationUrl" ExplorationView="@_view" SelectedCellId="@_selectedCell" SelectedCellIdChanged="SelectCell" ExplorationInvalidated="Retry" ExplorationSummaryChanged="ViewportSummaryChanged"
                    CssClass="world-map" Label="@(_view == "lines" ? "Activity, route, and segment world map" : "GPS activity cells world map")" ShowDisclosure="true" ShowLoadStatus="true" />
     </section>
-    @if (_view == "lines") { <div class="map-legend"><span class="activity-line"></span> Activities <span class="route-line"></span> Routes <span class="segment-line"></span> Segments</div> }
+    @if (_view == "lines") { <div class="map-legend">@if (_showActivities) { <span class="activity-line"></span><span>Activities</span> }@if (_showRoutes) { <span class="route-line"></span><span>Routes</span> }@if (_showSegments) { <span class="segment-line"></span><span>Segments</span> }</div> }
     else if (_result?.Summary is not null)
     {
         <div class="map-legend exploration-legend" aria-label="Cell legend">
@@ -96,7 +123,7 @@
 {
     <div class="exploration-details">
         <section class="panel cell-list" aria-labelledby="cells-heading">
-            <h2 id="cells-heading">Visited cells</h2>
+            <h2 id="cells-heading">@(_view == "exploration" && _newOnly ? _cumulative ? "New cells on this date" : "New cells in period" : "Visited cells")</h2>
             <p>Most frequently visited first. First and last visits use all history in this profile and sport scope.</p>
             @if (_result.Cells.Items.Count > 0)
             {
@@ -108,7 +135,7 @@
                 </tbody></table></div>
                 <div class="pager"><button class="button" disabled="@(_result.Cells.Page <= 1)" @onclick="() => ChangeCellPage(-1)">Previous cells</button><span>Page @_result.Cells.Page of @_result.Cells.TotalPages</span><button class="button" disabled="@(_result.Cells.Page >= _result.Cells.TotalPages)" @onclick="() => ChangeCellPage(1)">Next cells</button></div>
             }
-            else { <p>No cells in this period.</p> }
+            else { <p>@(_view == "exploration" && _newOnly ? "No new cells in this period. Choose All visited to see returning visits." : "No cells in this period.")</p> }
         </section>
         @if (_selectedCell.HasValue)
         {
@@ -117,6 +144,7 @@
                 @if (_cellDetail is { } detail)
                 {
                     <p><strong>@detail.Cell.X / @detail.Cell.Y</strong> · @detail.Cell.ActivityCount.ToString("N0") matching activities</p>
+                    <button class="button" type="button" @onclick="ShowCellOnMap">Show on map</button>
                     <p>First visit @detail.Cell.FirstVisit.ToString("dd MMM yyyy") · Last visit @detail.Cell.LastVisit.ToString("dd MMM yyyy") · Reporting dates</p>
                     <ul class="cell-contributors">@foreach (var activity in detail.Activities.Items) { <li><a href="@($"/activities/{activity.ActivityId}")">@activity.Title</a><small>@activity.OwnerName · @activity.Sport · @activity.Date.ToString("dd MMM yyyy")</small></li> }</ul>
                     <div class="pager"><button class="button" disabled="@(detail.Activities.Page <= 1)" @onclick="() => ChangeContributionPage(-1)">Previous activities</button><span>Page @detail.Activities.Page of @detail.Activities.TotalPages</span><button class="button" disabled="@(detail.Activities.Page >= detail.Activities.TotalPages)" @onclick="() => ChangeContributionPage(1)">Next activities</button></div>

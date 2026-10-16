@@ -19,7 +19,7 @@ public sealed class ExplorationQueryService(IDbContextFactory<ExplorerDbContext>
     public async Task<ExplorationResult> GetAsync(ExplorationQuery query, CancellationToken cancellationToken = default)
     {
         var snapshot = await ReadAsync(query, null, cancellationToken);
-        var cells = snapshot.Cells.Values.Where(cell => cell.ActivityCount > 0)
+        var cells = snapshot.Cells.Values.Where(cell => cell.ActivityCount > 0 && (!query.NewOnly || cell.IsNew))
             .OrderByDescending(cell => cell.ActivityCount).ThenBy(cell => cell.CellId).Select(ToCell).ToArray();
         var page = Page(query.Page, cells.Length, CellPageSize);
         var monthCounts = snapshot.Cells.Values
@@ -43,7 +43,7 @@ public sealed class ExplorationQueryService(IDbContextFactory<ExplorerDbContext>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var shift = CellZoom - zoom;
-            groups = snapshot.Cells.Values.Where(cell => cell.ActivityCount > 0)
+            groups = snapshot.Cells.Values.Where(cell => cell.ActivityCount > 0 && (!query.NewOnly || cell.IsNew))
                 .GroupBy(cell => (X: (cell.CellId % CellAxis) >> shift, Y: (cell.CellId / CellAxis) >> shift))
                 .Select(group => MapCell(zoom, group.Key.X, group.Key.Y, group.Count(),
                     group.Count(cell => cell.IsNew), group.Max(cell => cell.ActivityCount)))
@@ -61,7 +61,7 @@ public sealed class ExplorationQueryService(IDbContextFactory<ExplorerDbContext>
             throw new ArgumentOutOfRangeException(nameof(cellId), "Choose a valid exploration cell.");
         if (page < 1) throw new ArgumentOutOfRangeException(nameof(page), "Choose a positive activity page.");
         var snapshot = await ReadAsync(query, cellId, cancellationToken);
-        if (!snapshot.Cells.TryGetValue(cellId, out var cell) || cell.ActivityCount == 0) return null;
+        if (!snapshot.Cells.TryGetValue(cellId, out var cell) || cell.ActivityCount == 0 || query.NewOnly && !cell.IsNew) return null;
         var contributions = snapshot.Contributions.OrderByDescending(activity => activity.Date)
             .ThenByDescending(activity => activity.StartTimeUtc).ThenBy(activity => activity.ActivityId).ToArray();
         page = Page(page, contributions.Length, ContributionPageSize);

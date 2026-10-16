@@ -7,15 +7,30 @@
 
 <PageTitle>Goals - Activity Explorer</PageTitle>
 <PageHeader Title="Goals"><Actions><a class="button primary" href="/goals/new">New goal</a></Actions></PageHeader>
-<div class="filter-bar"><label><span>Goal view</span><select value="@_view" @onchange="ChangeView"><option value="current">Current and upcoming</option><option value="all">All</option><option value="archived">Archived</option></select></label><button class="button" @onclick="LoadAsync" disabled="@_loading">Refresh goals</button></div>
+<form class="filter-bar" aria-label="Goal filters" @onsubmit="ApplyAsync" @onsubmit:preventDefault>
+    <label><span>Goal view</span><select @bind="_view" @bind:after="ChangeView"><option value="current">Current and upcoming</option><option value="all">All</option><option value="archived">Archived</option></select></label>
+    <label><span>Goal name</span><input type="search" @bind="_search" @bind:event="oninput" @bind:after="FiltersEdited" /></label>
+    <label><span>Goal sport</span><select @bind="_sport" @bind:after="FiltersEdited"><option value="">Any sport</option>@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+    <label><span>Goal metric</span><select @bind="_metric" @bind:after="FiltersEdited"><option value="">Any metric</option>@foreach (var metric in Enum.GetValues<GoalMetric>()) { <option value="@metric">@GoalDisplay.Label(metric)</option> }</select></label>
+    <label><span>Goal progress</span><select @bind="_progress" @bind:after="FiltersEdited"><option value="any">Any progress</option><option value="reached">Target reached</option><option value="unreached">Target not reached</option></select></label>
+    <button class="button primary" type="submit">Apply goal filters</button>
+    <button class="button" type="button" @onclick="ResetFiltersAsync">Reset goal filters</button>
+    <button class="button" type="button" @onclick="LoadAsync" disabled="@(_loading || _dirty)">Refresh goals</button>
+</form>
+@if (_dirty) { <p class="notice" role="status">Apply goal filters to update these results.</p> }
 @if (_loading) { <p class="loading" role="status">Loading goals...</p> }
 else if (_error is not null) { <section class="notice error" role="alert"><p>@_error</p><button class="button" @onclick="LoadAsync">Try again</button></section> }
+else if (_goals.Count == 0 && HasFindingFilters)
+{
+    <section class="empty-state"><h2>No matching goals</h2><p>Adjust the name, sport, metric, or progress filters.</p><button class="button" @onclick="ResetFiltersAsync">Show all goals in this view</button>@if (_view != "all") { <a class="button" href="@BuildUri("all")">View all goals</a> }</section>
+}
 else if (_goals.Count == 0)
 {
     <section class="empty-state"><h2>No goals in this view</h2><p>Set a target for your distance, moving time, ascent, activities, or active days.</p><a class="button primary" href="/goals/new">Create a goal</a>@if (_view != "all") { <a class="button" href="/goals?view=all">View all goals</a> }</section>
 }
 else
 {
+    <p class="muted" role="status">@_goals.Count.ToString("N0") matching @(_goals.Count == 1 ? "goal" : "goals")</p>
     <div class="goal-list">
     @foreach (var item in _goals)
     {
@@ -33,15 +48,29 @@ else
 
 @code {
     [SupplyParameterFromQuery(Name = "view")] public string? QueryView { get; set; }
+    [SupplyParameterFromQuery(Name = "q")] public string? QuerySearch { get; set; }
+    [SupplyParameterFromQuery(Name = "sport")] public string? QuerySport { get; set; }
+    [SupplyParameterFromQuery(Name = "metric")] public string? QueryMetric { get; set; }
+    [SupplyParameterFromQuery(Name = "progress")] public string? QueryProgress { get; set; }
     private string _view = "current";
+    private string _search = "", _sport = "", _metric = "", _progress = "any";
     private IReadOnlyList<GoalSummary> _goals = [];
-    private bool _loading, _disposed;
+    private bool _loading, _disposed, _dirty;
     private string? _error;
     private int _revision;
     private CancellationTokenSource? _load;
     protected override void OnInitialized() => Profiles.Changed += ProfileChanged;
-    protected override Task OnParametersSetAsync() { _view = QueryView is "all" or "archived" ? QueryView : "current"; return LoadAsync(); }
-    private void ChangeView(ChangeEventArgs args) => Navigation.NavigateTo("/goals?view=" + args.Value);
+    protected override Task OnParametersSetAsync()
+    {
+        _view = QueryView is "all" or "archived" ? QueryView : "current";
+        _search = QuerySearch ?? "";
+        _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : QuerySport ?? "";
+        _metric = Enum.TryParse<GoalMetric>(QueryMetric, true, out var metric) && Enum.IsDefined(metric) ? metric.ToString() : QueryMetric ?? "";
+        _progress = QueryProgress ?? "any";
+        _dirty = false;
+        return LoadAsync();
+    }
+    private Task ChangeView() { FiltersEdited(); return ApplyAsync(); }
     private async Task LoadAsync()
     {
         _load?.Cancel();
@@ -49,9 +78,8 @@ else
         var revision = ++_revision; _loading = true; _error = null; _goals = [];
         try
         {
-            var view = _view == "all" ? GoalListView.All : _view == "archived" ? GoalListView.Archived : GoalListView.CurrentAndUpcoming;
-            var result = await GoalService.ListAsync(Profiles.SelectedOwnerId, view, load.Token);
-            if (!_disposed && revision == _revision) _goals = result;
+            var result = await GoalService.SearchAsync(CurrentFilter(), load.Token);
+            if (!_disposed && revision == _revision) { _goals = result; _dirty = false; }
         }
         catch (OperationCanceledException) when (load.IsCancellationRequested) { }
         catch (Exception exception)

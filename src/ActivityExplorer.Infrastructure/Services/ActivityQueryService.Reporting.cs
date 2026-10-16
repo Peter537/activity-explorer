@@ -19,13 +19,14 @@ public sealed partial class ActivityQueryService
         ArgumentNullException.ThrowIfNull(query);
         if (!Enum.IsDefined(query.Comparison)) throw new ArgumentException("Choose a valid comparison period.");
         if (!Enum.IsDefined(query.Granularity)) throw new ArgumentException("Choose a valid trend interval.");
-        ValidateReportingSport(query.Sport);
         var selection = query.Period ?? new ReportingDateSelection(ReportingPreset.YearToDate);
         var asOf = query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var criteria = await ActivityCriteriaQuery.ResolveAsync(db, query.OwnerId,
+            query.Criteria ?? new(Sport: query.Sport), cancellationToken);
         var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);
-        var source = ReportingSource(db, query.OwnerId, query.Sport);
+        var source = ReportingSource(db, query.OwnerId, criteria);
         var selected = await ReadReportingActivitiesAsync(source, periods, cancellationToken);
         var comparisonPeriods = new List<ResolvedOwnerPeriod>();
         string? comparisonUnavailable = null;
@@ -78,17 +79,18 @@ public sealed partial class ActivityQueryService
             records.OrderBy(record => record.Sport).ThenBy(record => RecordCatalog.CategoryOrder(record.Kind))
                 .ThenBy(record => RecordCatalog.TargetOrder(record.Sport, record.Kind, record.Key))
                 .ThenBy(record => record.Key, StringComparer.Ordinal).ThenBy(record => record.OwnerId).Take(5).ToArray(),
-            Names(selected.Select(item => item.Activity.Device)), Names(selected.Select(item => item.Activity.Gear)), hasAny);
+            Names(selected.Select(item => item.Activity.Device)), Names(selected.Select(item => item.Activity.Gear), includeUnassigned: true), hasAny);
     }
 
     public async Task<TrainingCalendarSummary> GetTrainingCalendarAsync(
         TrainingCalendarQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        ValidateReportingSport(query.Sport);
         var asOf = query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var criteria = await ActivityCriteriaQuery.ResolveAsync(db, query.OwnerId,
+            query.Criteria ?? new(Sport: query.Sport), cancellationToken);
         var owners = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, new(ReportingPreset.AllTime), asOf, cancellationToken);
         var zone = ReportingTimeZone.Resolve(query.OwnerId.HasValue && owners.Count > 0 ? owners[0].TimeZoneId : null);
         var selected = query.Month ?? DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(asOf, zone).DateTime);
@@ -97,7 +99,7 @@ public sealed partial class ActivityQueryService
         var end = month.AddMonths(1).AddDays(-1);
         var periods = owners.Select(owner => ReportingDates.Resolve(new(ReportingPreset.Custom, month, end),
             owner.OwnerId, owner.OwnerName, owner.TimeZoneId, asOf)).ToArray();
-        var activities = await ReadReportingActivitiesAsync(ReportingSource(db, query.OwnerId, query.Sport), periods, cancellationToken);
+        var activities = await ReadReportingActivitiesAsync(ReportingSource(db, query.OwnerId, criteria), periods, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var groups = activities.ToLookup(activity => activity.Date);
         var days = Enumerable.Range(0, end.DayNumber - month.DayNumber + 1).Select(offset =>
@@ -113,14 +115,8 @@ public sealed partial class ActivityQueryService
         return new(month, Totals(activities), periods, days, Buckets(activities, calendarRange, TrendGranularity.Weekly, cancellationToken));
     }
 
-    private static void ValidateReportingSport(SportKind? sport)
-    {
-        if (sport.HasValue && !Enum.IsDefined(sport.Value)) throw new ArgumentException("Choose a valid sport.");
-    }
-
-    private static IQueryable<Activity> ReportingSource(ExplorerDbContext db, Guid? owner, SportKind? sport) =>
-        db.Activities.AsNoTracking().Where(activity => (!owner.HasValue || activity.OwnerId == owner) &&
-            (!sport.HasValue || activity.Sport == sport));
+    private static IQueryable<Activity> ReportingSource(ExplorerDbContext db, Guid? owner, ActivityCriteria criteria) =>
+        ActivityCriteriaQuery.Apply(db.Activities.AsNoTracking().Where(activity => !owner.HasValue || activity.OwnerId == owner), criteria);
 
     private static async Task<LocalReportingActivity[]> ReadReportingActivitiesAsync(
         IQueryable<Activity> source, IReadOnlyList<ResolvedOwnerPeriod> periods, CancellationToken cancellationToken)
@@ -150,9 +146,14 @@ public sealed partial class ActivityQueryService
             group.Sum(item => item.Activity.DistanceMeters), group.Sum(item => item.Activity.MovingSeconds),
             group.Sum(item => item.Activity.ElevationMeters))).ToArray();
 
-    private static NamedTotal[] Names(IEnumerable<string?> values) => values.Where(value => !string.IsNullOrWhiteSpace(value))
-        .GroupBy(value => value!, StringComparer.OrdinalIgnoreCase).Select(group => new NamedTotal(group.Key, group.Count()))
-        .OrderByDescending(item => item.Count).ThenBy(item => item.Name).Take(5).ToArray();
+    private static NamedTotal[] Names(IEnumerable<string?> values, bool includeUnassigned = false) => values
+        .Select(value => string.IsNullOrWhiteSpace(value) ? null : value.Trim())
+        .Where(value => includeUnassigned || value is not null)
+        .GroupBy(value => value, StringComparer.OrdinalIgnoreCase)
+        .Select(group => new NamedTotal(group.Key is null ? "Unassigned" : group.Order(StringComparer.Ordinal).First()!,
+            group.Count(), IsUnassigned: group.Key is null))
+        .OrderByDescending(item => item.Count).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.IsUnassigned).Take(5).ToArray();
 
     private static ReportingBucket[] Buckets(LocalReportingActivity[] activities, IReadOnlyList<ResolvedOwnerPeriod> periods,
         TrendGranularity granularity, CancellationToken cancellationToken)

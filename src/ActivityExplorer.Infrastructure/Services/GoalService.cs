@@ -17,10 +17,20 @@ public sealed class GoalService(
     private sealed record ReadGoal(PersonalGoal Goal, GoalInfo Info, DateOnly Today,
         TimeZoneInfo? Zone, GoalCalendar.Period? Period, string? Error);
 
-    public async Task<IReadOnlyList<GoalSummary>> ListAsync(Guid? ownerId = null,
-        GoalListView view = GoalListView.CurrentAndUpcoming, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<GoalSummary>> ListAsync(Guid? ownerId = null,
+        GoalListView view = GoalListView.CurrentAndUpcoming, CancellationToken cancellationToken = default) =>
+        SearchAsync(new(ownerId, view), cancellationToken);
+
+    public async Task<IReadOnlyList<GoalSummary>> SearchAsync(GoalListFilter filter, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(filter);
+        var ownerId = filter.OwnerId;
+        var view = filter.View;
         if (!Enum.IsDefined(view)) throw new ArgumentException("Choose a valid goal view.");
+        if (filter.Sport.HasValue && !Enum.IsDefined(filter.Sport.Value)) throw new ArgumentException("Choose a valid goal sport.");
+        if (filter.Metric.HasValue && !Enum.IsDefined(filter.Metric.Value)) throw new ArgumentException("Choose a valid goal metric.");
+        if (!Enum.IsDefined(filter.Progress)) throw new ArgumentException("Choose a valid goal progress filter.");
+        var search = filter.Search?.Trim();
         var now = timeProvider.GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
@@ -36,6 +46,9 @@ public sealed class GoalService(
             if (view == GoalListView.Archived && !archived) continue;
             if (view == GoalListView.CurrentAndUpcoming && read.Error is null &&
                 (read.Period is null || read.Period.End < read.Today)) continue;
+            if (!string.IsNullOrEmpty(search) && !read.Info.Definition.Name.Contains(search, StringComparison.OrdinalIgnoreCase)) continue;
+            if (filter.Sport.HasValue && read.Info.Definition.Sport != filter.Sport) continue;
+            if (filter.Metric.HasValue && read.Info.Schedule.Metric != filter.Metric) continue;
             selections.Add(read);
         }
         var periods = selections.Where(x => x.Error is null && x.Period is not null)
@@ -63,9 +76,20 @@ public sealed class GoalService(
                 result.Add(new(read.Info, null, exception.Message));
             }
         }
-        return result.OrderBy(x => x.Goal.OwnerName, StringComparer.CurrentCulture)
+        return result.Where(item => filter.Progress == GoalProgressFilter.Any || item.Error is null && item.Edition is not null &&
+                (filter.Progress == GoalProgressFilter.TargetReached ? item.Edition.Achieved : !item.Edition.Achieved))
+            .OrderBy(x => x.Goal.OwnerName, StringComparer.CurrentCulture)
             .ThenBy(x => x.Edition?.End).ThenBy(x => x.Goal.Definition.Name, StringComparer.CurrentCulture)
             .ThenBy(x => x.Goal.Id).ToArray();
+    }
+
+    public async Task<GoalEditionLocation?> FindEditionAsync(Guid goalId, DateOnly editionDate, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var goal = await db.Goals.AsNoTracking().Include(x => x.Owner).SingleOrDefaultAsync(x => x.Id == goalId, cancellationToken);
+        if (goal is null) return null;
+        var today = GoalCalendar.Today(timeProvider.GetUtcNow(), ReportingTimeZone.Resolve(goal.Owner!.TimeZoneId));
+        return GoalCalendar.FindEdition(goal, today, editionDate);
     }
 
     public async Task<GoalDetail?> GetDetailAsync(Guid goalId, DateOnly? edition = null,

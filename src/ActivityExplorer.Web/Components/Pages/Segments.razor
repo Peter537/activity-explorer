@@ -52,18 +52,35 @@ else
 {
     <section class="panel segment-library" aria-labelledby="saved-segments-heading">
         <h2 id="saved-segments-heading">Saved segments</h2>
+        <div class="form-grid">
+            <label><span>Search segments</span><input type="search" maxlength="240" @bind="_librarySearch" @bind:event="oninput" /></label>
+            <label><span>Segment sport</span><select @bind="_librarySport"><option value="">All sports</option>@if (_libraryError is not null) { <option value="@SearchSport">Unavailable sport</option> }@foreach (var sport in Format.Sports) { <option value="@sport">@sport</option> }</select></label>
+        </div>
+        <div class="button-row"><button type="button" class="button primary" @onclick="ApplyLibraryFilters">Apply segment filters</button><button type="button" class="button" @onclick="ResetLibraryFilters">Reset segment filters</button></div>
+        <p class="muted" role="status">@_matchingSegmentIds.Count of @_segments.Count saved segments match.@if (LibrarySearchActive) { <text> Ancestors are shown for context.</text> }</p>
+        @if (_libraryError is not null) { <p class="notice error" role="alert">@_libraryError</p> }
+        @if (_matchingSegmentIds.Count == 0) { <p>No segments match these filters. Change the search or reset the segment filters.</p> }
         <ul class="segment-library-roots">
-            @foreach (var segment in _segments.Where(segment => !_parentCounts.ContainsKey(segment.Id)))
+            @foreach (var segment in _visibleSegments.Values.Where(segment => !_parentCounts.ContainsKey(segment.Id)).OrderBy(segment => segment.Name).ThenBy(segment => segment.Id))
             {
-                <SegmentTreeBranch @key="segment.Id" SegmentId="segment.Id" Segments="_segmentsById" Children="_children" ParentCounts="_parentCounts" />
+                <SegmentTreeBranch @key="(segment.Id, Search, SearchSport)" SegmentId="segment.Id" Segments="_visibleSegments" Children="_children" ParentCounts="_parentCounts" SearchActive="LibrarySearchActive" MatchingIds="_matchingSegmentIds" />
             }
         </ul>
     </section>
 }
 @code {
+    [Parameter, SupplyParameterFromQuery(Name = "q")] public string? Search { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "sport")] public string? SearchSport { get; set; }
     private IReadOnlyList<SegmentSummary>? _segments;
     private IReadOnlyDictionary<Guid, SegmentSummary> _segmentsById = new Dictionary<Guid, SegmentSummary>();
     private IReadOnlyDictionary<Guid, int> _parentCounts = new Dictionary<Guid, int>();
+    private IReadOnlyList<SegmentRelationship> _links = [];
+    private IReadOnlyDictionary<Guid, SegmentSummary> _visibleSegments = new Dictionary<Guid, SegmentSummary>();
+    private IReadOnlySet<Guid> _matchingSegmentIds = new HashSet<Guid>();
+    private string _librarySearch = "";
+    private string _librarySport = "";
+    private string? _libraryError;
+    private bool LibrarySearchActive => !string.IsNullOrWhiteSpace(Search) || !string.IsNullOrWhiteSpace(SearchSport);
     private ILookup<Guid, Guid> _children = Array.Empty<SegmentRelationship>().ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
     private int _loadVersion;
     private IReadOnlyList<TrackPoint> _drawn = [];
@@ -96,6 +113,41 @@ else
         await Load();
     }
 
+    protected override void OnParametersSet()
+    {
+        _librarySearch = Search ?? "";
+        _librarySport = SearchSport ?? "";
+        RefreshLibrary();
+    }
+
+    private void RefreshLibrary()
+    {
+        _libraryError = null;
+        SportKind? sport = null;
+        if (!string.IsNullOrWhiteSpace(SearchSport))
+        {
+            if (Enum.TryParse<SportKind>(SearchSport, true, out var parsed) && Enum.IsDefined(parsed)) sport = parsed;
+            else _libraryError = "Choose a valid segment sport.";
+        }
+        if (_libraryError is not null)
+        {
+            _matchingSegmentIds = new HashSet<Guid>();
+            _visibleSegments = new Dictionary<Guid, SegmentSummary>();
+            return;
+        }
+        var matches = SegmentLibraryFinding.Find(_segments ?? [], _links, Search, sport);
+        _matchingSegmentIds = matches.MatchingIds;
+        _visibleSegments = _segmentsById.Where(pair => matches.VisibleIds.Contains(pair.Key)).ToDictionary();
+    }
+
+    private void ApplyLibraryFilters() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+    {
+        ["q"] = string.IsNullOrWhiteSpace(_librarySearch) ? null : _librarySearch.Trim(),
+        ["sport"] = string.IsNullOrWhiteSpace(_librarySport) ? null : _librarySport
+    }));
+
+    private void ResetLibraryFilters() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["q"] = null, ["sport"] = null }));
+
     private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
     private async Task Load()
     {
@@ -107,8 +159,10 @@ else
         _segments = segments;
         _segmentsById = segments.ToDictionary(segment => segment.Id);
         var visibleLinks = links.Where(link => _segmentsById.ContainsKey(link.ParentSegmentId) && _segmentsById.ContainsKey(link.ChildSegmentId)).ToArray();
+        _links = visibleLinks;
         _children = visibleLinks.ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
         _parentCounts = visibleLinks.GroupBy(link => link.ChildSegmentId).ToDictionary(group => group.Key, group => group.Count());
+        RefreshLibrary();
     }
     private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
     private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }

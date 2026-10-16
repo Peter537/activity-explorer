@@ -1,9 +1,11 @@
 @page "/records"
+@attribute [StreamRendering]
 @implements IDisposable
 @inject IStatisticsService Statistics
 @inject IActivityQueryService Activities
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
+@inject TimeProvider Clock
 @using ActivityExplorer.Web.Components.Shared
 
 <PageTitle>Records - Activity Explorer</PageTitle>
@@ -11,7 +13,7 @@
     <Actions>
         <label class="scope-control" for="record-scope">
             <span>Record scope</span>
-            <select id="record-scope" value="@ScopeValue" @onchange="ChangeScope" aria-describedby="record-scope-help">
+            <select id="record-scope" value="@ScopeValue" @onchange="ChangeScope" disabled="@(_dateError is not null)" aria-describedby="record-scope-help">
                 <option value="all">All training (including indoor)</option>
                 <option value="indoor">Indoor only</option>
                 <option value="outdoor">Outdoor only</option>
@@ -20,6 +22,11 @@
         </label>
     </Actions>
 </PageHeader>
+<form class="filter-bar" aria-label="Record period" @onsubmit="ApplyRecordPeriod" @onsubmit:preventDefault>
+    <ReportingDateFilter Value="_dates" Periods="_periods" Error="@_dateError" Changed="RecordDatesChanged" />
+    <button class="button primary" type="submit" disabled="@(_dateError is not null)">Apply record period</button>
+    <button class="button" type="button" @onclick="Load" disabled="@(_loading || _datesDirty || _dateError is not null)">Refresh records</button>
+</form>
 @if (_sports.Length > 0)
 {
     <nav class="sport-selector" aria-labelledby="record-sport-label">
@@ -27,7 +34,7 @@
         <div class="sport-options">
             @foreach (var sport in _sports)
             {
-                <a @key="sport" href="@RecordsUrl(sport, _scope)" aria-current="@(sport == _selectedSport ? "true" : null)">
+                <a @key="sport" href="@(_dateError is null ? RecordsUrl(sport, _scope) : null)" aria-disabled="@(_dateError is not null ? "true" : null)" aria-current="@(sport == _selectedSport ? "true" : null)">
                     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
                         @switch (sport)
                         {
@@ -59,9 +66,17 @@
     <summary>How records qualify</summary>
     <p>Only achieved benchmarks are shown. Rowing distance bests can use valid per-point recorded distance without GPS; other sports require valid GPS. Distance and timed distance bests use elapsed time, so pauses and recording gaps count. Indoor activities can qualify for timed distance bests from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
 </details>
-@if (_records is null && _loadError is null)
+@if (_dateError is not null || _datesDirty)
 {
-    <div class="loading" role="status">Loading @ScopeLabel.ToLowerInvariant() records...</div>
+    <p class="notice" role="status">Apply the period to update these records.</p>
+}
+else if (_cancelled)
+{
+    <section class="notice" role="status"><h2>Calculation cancelled</h2><p>No partial records are shown.</p><button class="button" @onclick="Load">Try again</button></section>
+}
+else if (_loading || _records is null && _loadError is null)
+{
+    <div class="loading" role="status">@(_appliedPeriod.Preset == ReportingPreset.AllTime ? $"Loading {ScopeLabel.ToLowerInvariant()} records..." : "Calculating records for this period...") @if (_appliedPeriod.Preset != ReportingPreset.AllTime) { <button class="button" @onclick="CancelRecordCalculation">Cancel calculation</button> }</div>
 }
 else if (_loadError is not null)
 {
@@ -81,8 +96,9 @@ else if (!_records!.Any(record => record.Sport == _selectedSport))
 {
     <section class="empty-state">
         <h2>No @_selectedSport records for @ScopeLabel.ToLowerInvariant()</h2>
-        <p>No achieved records match this sport and scope.</p>
+        <p>No achieved records match this sport, scope, and period.</p>
         <a class="button" href="@RecordsUrl(_selectedSport, RecordScope.All)">View all training</a>
+        @if (_appliedPeriod.Preset != ReportingPreset.AllTime) { <a class="button" href="@RecordDisplay.RecordsUrl(_selectedSport, _scope)">View all time</a> }
     </section>
 }
 else
@@ -151,6 +167,9 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
+        _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
+        _datesDirty = false;
+        _dateError = null;
         _scope = QueryScope?.ToLowerInvariant() switch
         {
             "outdoor" => RecordScope.Outdoor,
@@ -162,11 +181,19 @@ else
 
     private async Task RefreshRecords()
     {
+        CancelCurrentCalculation();
         var version = ++_loadVersion;
+        using var cancellation = new CancellationTokenSource();
+        _cancellation = cancellation;
         var owner = ProfileState.SelectedOwnerId;
         var scope = _scope;
         _records = null;
         _loadError = null;
+        _cancelled = false;
+        _loading = true;
+        if (!ValidateRecordDates()) { _loading = false; _cancellation = null; return; }
+        _appliedPeriod = _dates.Selection;
+        _datesDirty = false;
         if (_loadedOwner != owner)
         {
             _scopeRecords.Clear();
@@ -176,24 +203,19 @@ else
         {
             if (!_scopeRecords.TryGetValue(RecordScope.All, out var allRecords))
             {
-                var recordsTask = Statistics.GetRecordsAsync(owner, RecordScope.All);
-                var countsTask = Activities.GetSportActivityCountsAsync(owner);
+                var recordsTask = Statistics.GetRecordsAsync(owner, RecordScope.All, cancellation.Token);
+                var countsTask = Activities.GetSportActivityCountsAsync(owner, cancellation.Token);
                 await Task.WhenAll(recordsTask, countsTask);
-                if (version != _loadVersion) return;
+                if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
                 allRecords = await recordsTask;
                 _activityCounts = await countsTask;
                 _scopeRecords[RecordScope.All] = allRecords;
                 _loadedOwner = owner;
-                _sports = allRecords.Select(record => record.Sport).Distinct().Order().ToArray();
             }
-
-            if (!_scopeRecords.TryGetValue(scope, out var records))
-            {
-                records = await Statistics.GetRecordsAsync(owner, scope);
-                if (version != _loadVersion) return;
-                _scopeRecords[scope] = records;
-            }
-            _records = records;
+            IEnumerable<SportKind> sports = allRecords.Select(record => record.Sport);
+            if (_appliedPeriod.Preset != ReportingPreset.AllTime)
+                sports = sports.Concat(_activityCounts.Where(pair => pair.Value > 0).Select(pair => pair.Key));
+            _sports = sports.Distinct().Order().ToArray();
             var requested = ParseSport(QuerySport);
             var available = requested.HasValue && _sports.Contains(requested.Value);
             _selectedSport = available ? requested : _sports
@@ -203,12 +225,36 @@ else
             var canonicalScope = scope == RecordScope.All ? null : ScopeValue;
             var canonicalSport = available ? requested!.Value.ToString().ToLowerInvariant() : null;
             if (QueryScope != canonicalScope || QuerySport != canonicalSport)
+            {
                 Navigation.NavigateTo(RecordsUrl(available ? requested : null, scope), replace: true);
+                return;
+            }
+            if (_sports.Length == 0) { _records = []; return; }
+            if (_appliedPeriod.Preset == ReportingPreset.AllTime)
+            {
+                if (!_scopeRecords.TryGetValue(scope, out var records))
+                {
+                    records = await Statistics.GetRecordsAsync(owner, scope, cancellation.Token);
+                    if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
+                    _scopeRecords[scope] = records;
+                }
+                _records = records;
+            }
+            else
+            {
+                var overview = await Statistics.GetOverviewAsync(new(OwnerId: owner, Sport: _selectedSport, Scope: scope,
+                    Period: _appliedPeriod, AsOfUtc: Clock.GetUtcNow()), cancellation.Token);
+                if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
+                _records = overview.Records;
+                _periods = overview.Periods;
+            }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception exception)
         {
             if (version == _loadVersion) _loadError = exception.Message;
         }
+        finally { if (version == _loadVersion) { _loading = false; _cancellation = null; } }
     }
 
     private static SportKind? ParseSport(string? value) => value?.ToLowerInvariant() switch
@@ -220,13 +266,7 @@ else
         _ => null
     };
 
-    private static string RecordsUrl(SportKind? sport, RecordScope scope)
-    {
-        var parameters = new List<string>();
-        if (sport.HasValue) parameters.Add($"sport={sport.Value.ToString().ToLowerInvariant()}");
-        if (scope != RecordScope.All) parameters.Add($"scope={scope.ToString().ToLowerInvariant()}");
-        return parameters.Count == 0 ? "/records" : $"/records?{string.Join("&", parameters)}";
-    }
+    private string RecordsUrl(SportKind? sport, RecordScope scope) => RecordDisplay.RecordsUrl(sport, scope, _appliedPeriod);
 
     private void ChangeScope(ChangeEventArgs args)
     {
@@ -246,7 +286,16 @@ else
         await RefreshRecords();
     }
 
-    private void Changed() => InvokeAsync(async () => { await Load(); StateHasChanged(); });
+    private void Changed() => InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        _dates = ReportingDateInput.FromQuery(QueryPeriod, QueryFrom, QueryTo);
+        _datesDirty = false;
+        var loading = Load();
+        StateHasChanged();
+        await loading;
+        if (!_disposed) StateHasChanged();
+    });
 
     private static bool IsActivityRecord(RecordKind kind) =>
         kind is RecordKind.Distance or RecordKind.Duration or RecordKind.Elevation or RecordKind.AverageSpeed;
@@ -263,7 +312,7 @@ else
             {
                 <tr>
                     <th scope="row" data-label="Benchmark">
-                        <a class="benchmark-link" href="@RecordDisplay.AttemptsUrl(record.Sport, record.Kind, record.Key, _scope, ProfileState.SelectedOwnerId)" aria-label="@($"{record.Key} attempts for {record.Sport}")">
+                        <a class="benchmark-link" href="@RecordDisplay.AttemptsUrl(record.Sport, record.Kind, record.Key, _scope, ProfileState.SelectedOwnerId, period: _appliedPeriod)" aria-label="@($"{record.Key} attempts for {record.Sport}")">
                             <strong>@record.Key</strong>
                         </a>
                         <a class="activity-link" href="@($"/activities/{record.ActivityId}")">
@@ -272,7 +321,7 @@ else
                     </th>
                     <td data-label="Result"><strong>@Value(record)</strong></td>
                     <td data-label="Profile">@record.OwnerName</td>
-                    <td data-label="Date">@record.ActivityDate.ToLocalTime().ToString("d")</td>
+                    <td data-label="Date">@RecordReportingDate(record)</td>
                     <td data-label="Coverage">@record.CoveragePercent.ToString("N0")%</td>
                 </tr>
             }
@@ -283,6 +332,8 @@ else
     public void Dispose()
     {
         ++_loadVersion;
+        _disposed = true;
+        CancelCurrentCalculation();
         ProfileState.Changed -= Changed;
     }
 }

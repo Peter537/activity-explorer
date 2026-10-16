@@ -138,6 +138,19 @@ else
     </section>
     <section id="activity-details" class="detail-groups">
         <article class="panel"><h2>Timing</h2><dl class="detail-list"><dt>Timer time</dt><dd>@DurationOrDash(_activity.Rich.TimerSeconds)</dd><dt>Moving time</dt><dd>@Format.Duration(_activity.Summary.MovingSeconds) <small>@MovingLabel</small></dd><dt>Elapsed time</dt><dd>@Format.Duration(_activity.ElapsedSeconds)</dd></dl></article>
+        @if (HasRecordedPower)
+        {
+            <article class="panel" aria-label="Recorded power and work">
+                <h2>Recorded power and work</h2>
+                <dl class="detail-list">
+                    <dt>Average power</dt><dd>@Value(_activity.Summary.AveragePowerWatts, "W", 0)</dd>
+                    <dt>Maximum power</dt><dd>@Value(_activity.MaxPower, "W", 0)</dd>
+                    <dt>Normalized power</dt><dd>@Value(_activity.NormalizedPower, "W", 0)</dd>
+                    <dt>Work</dt><dd>@Value(_activity.Kilojoules, "kJ", 1)</dd>
+                </dl>
+                <p class="muted compact-note">Whole-activity summaries reported by the source. Stream charts and selected-range statistics use recorded samples.</p>
+            </article>
+        }
         @if (!IsRowing || HasElevation)
         {
             <article class="panel"><h2>Elevation</h2><dl class="detail-list"><dt>Ascent</dt><dd>@Value(_activity.Summary.ElevationMeters, "m", 0)</dd><dt>Descent</dt><dd>@Value(_activity.Rich.ElevationLoss, "m", 0)</dd><dt>Minimum</dt><dd>@Value(_activity.Rich.MinElevation, "m", 0)</dd><dt>Maximum</dt><dd>@Value(_activity.Rich.MaxElevation, "m", 0)</dd></dl></article>
@@ -424,6 +437,9 @@ else
 
     private double? SpeedOrPace(TrackPoint point) => Format.SpeedOrPace(point.SpeedMetersPerSecond, _activity!.Summary.Sport);
     private bool IsRowing => _activity?.Summary.Sport == SportKind.Rowing;
+    private bool HasRecordedPower => _activity is not null &&
+        (_activity.Summary.AveragePowerWatts.HasValue || _activity.MaxPower.HasValue ||
+         _activity.NormalizedPower.HasValue || _activity.Kilojoules.HasValue);
     private bool HasElevation => _activity?.Points.Any(point => point.ElevationMeters.HasValue) == true ||
         _activity?.Rich.MinElevation.HasValue == true || _activity?.Rich.MaxElevation.HasValue == true ||
         _activity?.Summary.ElevationMeters > 0 || _activity?.Rich.ElevationLoss > 0;

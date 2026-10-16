@@ -188,7 +188,8 @@ public sealed partial class DatabaseIntegrationTests
         }
         var current = await service.GetDashboardAsync(new(second, Period: new(ReportingPreset.Custom, new(2026, 10, 1), new(2026, 10, 31))));
         Assert.Equal(2, current.Totals.ActivityCount);
-        Assert.Equal("Updated gear", Assert.Single(current.Gear).Name);
+        Assert.Contains(new NamedTotal("Updated gear", 1), current.Gear);
+        Assert.Contains(new NamedTotal("Unassigned", 1, IsUnassigned: true), current.Gear);
         await service.DeleteAsync([activity.Id]);
         Assert.Equal(1, (await service.GetTrainingCalendarAsync(query with { OwnerId = second })).Totals.ActivityCount);
     }

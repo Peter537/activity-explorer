@@ -37,9 +37,18 @@
       },
       "Microsoft.Testing.Platform": {
         "type": "Direct",
-        "requested": "[2.3.3, )",
-        "resolved": "2.3.3",
-        "contentHash": "ENbH4BQh9riXtOKc25KKITfiGGWhWMBJA7pZuNaF9zxzzSaVkp5AMeZxGQ6sXYaR6xb724NLz985Is6XIYqLSg=="
+        "requested": "[2.5.1, )",
+        "resolved": "2.5.1",
+        "contentHash": "FAMaFFWnULW+hDHMb40Qzhcgz9cAU2/EtgRCBNX/DdQoKo0sPG2EiY+w7bQdl/BgHnf/DbpXLbf5Xy0o15M8NA=="
+      },
+      "Microsoft.Testing.Platform.MSBuild": {
+        "type": "Direct",
+        "requested": "[2.5.1, )",
+        "resolved": "2.5.1",
+        "contentHash": "lYawcAwY+h76rQmpma2n0HaL8zkOFbbKapso0Eb+uOAUQn7333pIByLftEuiO67csAoZufHNMwi6PqhNemWQXA==",
+        "dependencies": {
+          "Microsoft.Testing.Platform": "[2.5.1, 3.0.0)"
+        }
       },
       "xunit.v3.mtp-v2": {
         "type": "Direct",
@@ -426,14 +435,6 @@
         "type": "Transitive",
         "resolved": "2.0.2",
         "contentHash": "MrHYdPZ1CiyYp5bfjzNSghfVwl/I9osMazcZMAbwZY0BhR32i70YLf4zSXECvU2qt2PvDdrjYpGRgBscFbjDpw==",
-        "dependencies": {
-          "Microsoft.Testing.Platform": "2.0.2"
-        }
-      },
-      "Microsoft.Testing.Platform.MSBuild": {
-        "type": "Transitive",
-        "resolved": "2.0.2",
-        "contentHash": "2zKkQKaUoaKgb/3AekboWOdLMh4upCo1nLWQnjGzp8r9YjiNOZRrzTsJQ3A4U03AcbH0evlIvFDKYSUqmTVuug==",
         "dependencies": {
           "Microsoft.Testing.Platform": "2.0.2"
         }

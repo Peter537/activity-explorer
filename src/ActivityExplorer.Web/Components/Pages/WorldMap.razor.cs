@@ -38,9 +38,17 @@ public partial class WorldMap
 
     protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
 
-    protected override void OnParametersSet()
+    protected override async Task OnParametersSetAsync()
+    {
+        ReadParameters();
+        if (_hasMap && _view == "lines") await LoadLineSearchAsync();
+    }
+
+    private void ReadParameters()
     {
         _request?.Cancel();
+        _request?.Dispose();
+        _request = null;
         _generation++;
         _error = null; _result = null; _cellDetail = null; _cancelled = false; _building = false; _loadRequested = false;
         _sport = Enum.TryParse<SportKind>(QuerySport, true, out var sport) && Enum.IsDefined(sport) ? sport.ToString() : "";
@@ -58,6 +66,8 @@ public partial class WorldMap
             if (!string.IsNullOrEmpty(QuerySport) && _sport.Length == 0)
                 throw new ArgumentException("Choose a supported sport or All sports.");
             _view = ExplorationQueryInput.View(QueryView);
+            ReadFindingQuery();
+            ReadLineSearch();
             _cumulative = ExplorationQueryInput.Cumulative(QueryCoverage);
             _through = ExplorationQueryInput.Date(QueryThrough, "Through");
             _timelineThrough = _through ?? _timelineThrough;
@@ -75,7 +85,7 @@ public partial class WorldMap
             _loadRequested = _view != "lines";
             _building = _loadRequested;
         }
-        catch (ArgumentException exception) { _error = exception.Message; _hasMap = false; }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { _error = exception.Message; _hasMap = false; }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -87,7 +97,7 @@ public partial class WorldMap
 
     private ExplorationQuery CurrentQuery => new(new(_appliedOwner,
         Enum.TryParse<SportKind>(_appliedSport, out var sport) ? sport : null), _appliedDates, _asOfUtc,
-        _view == "exploration" && _cumulative, _through, _historyMonth, _page);
+        _view == "exploration" && _cumulative, _through, _historyMonth, _page, _view == "exploration" && _newOnly);
 
     private async Task LoadAsync(bool recheck = false)
     {
@@ -155,6 +165,12 @@ public partial class WorldMap
         var parts = new List<string>();
         if (_appliedOwner.HasValue) parts.Add($"ownerId={_appliedOwner}");
         if (_appliedSport.Length > 0) parts.Add($"sport={_appliedSport}");
+        if (kind == "activities")
+        {
+            foreach (var pair in ActivitySearchInput.QueryValues(_activityCriteria).Where(pair => pair.Key != "sport"))
+                parts.Add($"{pair.Key}={Uri.EscapeDataString(pair.Value)}");
+            if (_activityTagOwner.HasValue) parts.Add($"tagOwner={_activityTagOwner}");
+        }
         if (dates)
         {
             parts.Add($"period={ReportingDates.ToSlug(_appliedDates.Preset)}");
@@ -168,6 +184,7 @@ public partial class WorldMap
         if (kind == "exploration")
         {
             parts.Add($"view={_view}");
+            if (_view == "exploration" && _newOnly) parts.Add("newOnly=yes");
             if (_view == "exploration" && _cumulative)
             {
                 parts.Add("coverage=cumulative");
@@ -177,23 +194,31 @@ public partial class WorldMap
         return $"/internal/map/{kind}?{string.Join('&', parts)}";
     }
 
-    private void RefreshMap()
+    private async Task RefreshMap()
     {
         _asOfUtc = Clock.GetUtcNow();
         if (!ValidateDates()) return;
         _selectedCell = null; _page = _activityPage = 1;
         var target = BuildUri();
-        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) OnParametersSet();
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) == target.TrimStart('/')) await OnParametersSetAsync();
         else Navigation.NavigateTo(target);
     }
     private void FiltersChanged() { _dirty = true; ValidateDates(); }
-    private void Reset() { _sport = ""; _dates = new(); _through = _historyMonth = null; RefreshMap(); }
+    private Task Reset() { _sport = ""; _dates = new(); _through = _historyMonth = null; _newOnly = false; _showActivities = _showRoutes = _showSegments = true; _activityCriteria = new(); _activityTagOwner = null; return RefreshMap(); }
     private string BuildUri()
     {
         var parts = new List<string>();
         if (_sport.Length > 0) parts.Add($"sport={_sport.ToLowerInvariant()}");
+        if (_view == "lines")
+        {
+            foreach (var pair in ActivitySearchInput.QueryValues(_activityCriteria).Where(pair => pair.Key != "sport"))
+                parts.Add($"{pair.Key}={Uri.EscapeDataString(pair.Value)}");
+            if (_activityTagOwner.HasValue) parts.Add($"tagOwner={_activityTagOwner}");
+        }
         foreach (var pair in _dates.QueryValues()) parts.Add($"{pair.Key}={Uri.EscapeDataString(pair.Value)}");
         if (_view != "lines") parts.Add($"view={_view}");
+        if (LayerQuery() is { } layers) parts.Add($"layers={Uri.EscapeDataString(layers)}");
+        if (_newOnly) parts.Add("newOnly=yes");
         if (_cumulative) parts.Add("coverage=cumulative");
         if (_through.HasValue) parts.Add($"through={DateText(_through)}");
         if (_selectedCell.HasValue) parts.Add($"cell={_selectedCell}");
@@ -204,7 +229,12 @@ public partial class WorldMap
     }
 
     private string WithQuery(Dictionary<string, object?> values) => Navigation.GetUriWithQueryParameters(values);
-    private string ViewUri(string view) => WithQuery(new() { ["view"] = view == "lines" ? null : view, ["cell"] = null, ["page"] = null, ["activityPage"] = null });
+    private string ViewUri(string view)
+    {
+        var uri = WithQuery(new() { ["view"] = view == "lines" ? null : view, ["cell"] = null, ["page"] = null, ["activityPage"] = null });
+        return view == "lines" ? uri : ActivitySearchQuery.WithCriteria(uri,
+            new(Sport: Enum.TryParse<SportKind>(_sport, out var sport) ? sport : null), null);
+    }
     private string CoverageUri(bool cumulative) => WithQuery(new() { ["coverage"] = cumulative ? "cumulative" : null, ["cell"] = null, ["page"] = null, ["activityPage"] = null });
     private string CellUri(int? cell) => WithQuery(new() { ["cell"] = cell, ["activityPage"] = null });
     private void SelectCell(int cell) => Navigation.NavigateTo(CellUri(cell));
@@ -219,10 +249,10 @@ public partial class WorldMap
     private void ChangeHistory(int months) => Navigation.NavigateTo(WithQuery(new() { ["month"] = _result!.HistoryMonth.AddMonths(months).ToString("yyyy-MM", CultureInfo.InvariantCulture) }));
     private static string DateText(DateOnly? date) => date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
     private void Cancel() => _request?.Cancel();
-    private Task Retry() => _hasMap && _view != "lines" ? LoadAsync() : Task.CompletedTask;
+    private Task Retry() => _view == "lines" ? OnParametersSetAsync() : _hasMap ? LoadAsync() : Task.CompletedTask;
     private Task Recheck() => LoadAsync(true);
     private Task ViewportSummaryChanged(ExplorationSummary summary) => !_building && _result?.Summary is { } current && current != summary
         ? LoadAsync() : Task.CompletedTask;
-    private void ProfileChanged() => _ = InvokeAsync(() => { _selectedCell = null; _scopeKey = ""; RefreshMap(); StateHasChanged(); });
+    private void ProfileChanged() => _ = InvokeAsync(async () => { _selectedCell = null; _scopeKey = ""; await RefreshMap(); StateHasChanged(); });
     public void Dispose() { _disposed = true; _generation++; _request?.Cancel(); _request?.Dispose(); ProfileState.Changed -= ProfileChanged; GC.SuppressFinalize(this); }
 }

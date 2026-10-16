@@ -16,15 +16,17 @@ Version **0.1.0** is deliberately local-first and has no login system. It binds 
 - Keeps immutable copies of every distinct imported original.
 - Deduplicates exact files and equivalent activities across formats while retaining provenance.
 - Shows dashboards, searchable activities, axis-labelled and synchronized gap-aware sensor/respiration charts with pointer and keyboard inspection, rich FIT summaries, laps, records, routes, segments, and a combined world map.
-- Shows activity count, distance, moving time, and ascent for the complete filtered result, with shared date shortcuts on Activities and World Map.
+- Searches activities by words or quoted phrases, recorded metrics, equipment, indoor/GPS/power status, and included or excluded tags, with complete result totals.
 - Maps distinct activity frequency and exploration across recorded GPS history, with visited/new cells, first discoveries, and a cumulative timeline. See [Maps](docs/maps.md#frequency-and-exploration).
 - Organizes activities with profile-owned tags and named saved searches, and reviews exact batches of tag or gear changes before applying them atomically.
+- Reuses saved activity searches on map Lines, the dashboard, and the training calendar, with exact sport, equipment, and tag drilldowns.
 - Compares training periods, charts weekly or monthly progress across five summary metrics, and opens daily activity lists from a monthly training calendar.
 - Tracks personal distance, moving-time, ascent, activity-count, and active-day goals with recurring editions, pace guides, history, and contributing activities.
 - Charts each activity’s best benchmark attempt and the best result so far within a selected period, separately for each profile.
 - Deletes one activity, selected activities, or an exact snapshot of the current filtered results with an inline permanent-deletion confirmation.
 - Supports separate local owner profiles and an "All profiles" aggregate view.
 - Calculates ordered cycling, running, walking, and rowing distance bests, timed distance bests from 1 minute through sport-specific multi-hour targets, 5-second through 2-hour power bests, and directional local segment efforts.
+- Finds benchmark winners within a selected reporting period, independently of lifetime records.
 - Awards retrospective metric badges, related calendar editions, points, and progressive levels per profile, with monthly snapshots and activity evidence. See [Badges and levels](docs/badges.md).
 - Creates local segments from reviewed GPX, FIT segment/course, TCX, KML, and GeoJSON paths, with optional trimming and direction reversal.
 - Organizes nested, shared sub-segments with map highlights and per-pass results inside the selected parent effort, including closed loops and repeated laps.
@@ -54,9 +56,9 @@ On Bash shells, the same dotnet commands work unchanged.
 
 ## Organizing activities
 
-Select one profile on **Activities** to manage tags, filter by **Tags — match any**, or save an applied search. **All profiles** still shows activity tags. Names are unique within a profile, ignoring surrounding whitespace and letter case. Tags can also be edited separately on activity detail.
+Select one profile on **Activities** to manage tags or save an applied search. Include tags with **Any** or **All** matching, exclude unwanted tags, or choose Tagged/Untagged. **All profiles** still shows activity tags and supports Tagged/Untagged; filtering by particular tags requires their profile. Names are unique within a profile, ignoring surrounding whitespace and letter case. Tags can also be edited separately on activity detail. Tag pickers, tag management, and saved-search selection have name search; narrowing a list keeps selected items available.
 
-Saved searches retain filters, sorting, and the chosen date period. Opening a relative period resolves it again; custom dates stay fixed. Use **Replace with applied filters** to update a search explicitly. A deleted tag blocks that search until you choose replacement tags or explicitly save its removal. Tag bookmarks opened under another profile offer a profile-switch action.
+Saved searches retain filters, sorting, and the chosen date period. Opening a relative period resolves it again; custom dates stay fixed. Existing version-1 searches retain their literal text behavior and are not rewritten when opened. New searches and **Replace with applied filters** use version 2, including the extended filters and explicit text mode. A deleted included or excluded tag blocks that search until you choose a replacement or explicitly save its removal. Tag bookmarks opened under another profile offer a profile-switch action. Assigned tag names on activity detail open that profile's matching activities.
 
 Select activities across pages, then choose **Edit selected**, or use **Edit all matching** for the applied filter. Review tag additions/removals and unchanged, set, or cleared gear before applying. The review fixes the exact activity list; later imports are excluded. Any intervening activity edit invalidates the whole review and requires a refresh. Gear changes protect local metadata from import enrichment; tag-only changes do not. Deletion remains a separate action.
 
@@ -72,7 +74,7 @@ Name, target, and sport are editable; metric, recurrence, and dates remain fixed
 
 **Archive goal** retains history and the complete current edition while stopping later editions. Archiving before the first start prevents all editions from beginning. There is no delete or reactivate action. Imports, corrections, deletions, transfers, and timezone changes can revise progress even for historical editions; saved targets remain unchanged.
 
-The Goals list has Current and upcoming, All, and Archived views. **All profiles** shows separate owner-labelled goals. Detail links retain the selected edition and history/contributor pages through refresh and Back/Forward. The dashboard's **Current goals** shows up to six active editions ordered by ending date, including an archived goal until its current edition ends. It follows the profile selector and each goal's own dates and sport, independently of dashboard filters.
+The Goals list has Current and upcoming, All, and Archived views, with name, sport, metric, and target-reached filters. Its URL retains `q`, `sport`, `metric`, `progress=reached`/`unreached`, and `view=all`/`archived`, omitting defaults. Filters describe the definition displayed on each card; unavailable progress is not treated as an unreached target. **All profiles** shows separate owner-labelled goals. On detail, **Find edition** jumps directly to the edition containing a date, while **Current / latest edition** returns to the present or last available edition. Detail links retain the selected edition and history/contributor pages through refresh and Back/Forward. The dashboard's **Current goals** shows up to six active editions ordered by ending date, including an archived goal until its current edition ends. It follows the profile selector and each goal's own dates and sport, independently of dashboard filters.
 
 ## Docker Compose
 
@@ -127,11 +129,30 @@ See [Importing data](docs/imports.md) and [Legal and export guides](docs/legal-a
 
 ## Activity filters
 
+New text searches use **All words / quoted phrases**: every term must occur in the title or description, ignoring letter case, and quoted phrases stay together within one field. For example, `morning "river path"` matches an activity with `Morning` in its title and `river path` in its description. **Literal text** preserves the original case-sensitive substring behavior; older `q` URLs without `textMode` keep that behavior.
+
+Distance, moving-time, and ascent bounds are inclusive and can have either endpoint blank. The controls use kilometres, minutes, and metres. Gear matches an exact name or Unassigned; recorded indoor, GPS, and power flags can each be required or excluded. Device search retains partial matching unless an exact equipment drilldown selects it. Contradictory, negative, nonfinite, or reversed bounds show validation errors instead of loading broader results.
+
 Choose a **Period** on Activities or World Map, then **Apply filters**. Shortcuts include Today, This week, Last week, This month, Last month, Year to date, Last year, and All time. **Custom range** includes both endpoint dates and allows either endpoint to be blank. Weeks run Monday–Sunday; This week and This month include the full calendar period, while Year to date ends today.
 
 Dates use the activity owner's **Reporting timezone** in Profiles, which defaults to **Europe/Copenhagen**. In **All profiles**, each owner's local start date and local today determine membership. Activities shows owner-local dates and totals across every matching page, including moving durations longer than 24 hours. World Map applies the period to activity lines, Frequency, and Exploration Range; Cumulative uses its separate inclusive date. Routes and segments retain their owner/sport filters.
 
 Relative date URLs resolve again on refresh; sorting and pagination retain the displayed period. Invalid dates and reversed ranges remain visible for correction. Editing filters clears activity selection and deletion confirmation, and requires applying the filters before selection or deletion becomes available again. An all-filtered deletion confirms exact IDs, excluding activities imported after confirmation. See [Maps](docs/maps.md#reporting-dates-and-urls) for date URL parameters.
+
+Activity criteria use the following URL parameters on `/activities`, map Lines, Dashboard, and Calendar. Defaults are omitted; tag IDs require `tagOwner` so a bookmark cannot silently change profile scope.
+
+| Parameters | Values or units |
+| --- | --- |
+| `q`, `textMode` | Search text; `words` for all words/phrases, `literal` for legacy text matching |
+| `sport`, `power`, `device`, `deviceExact` | Sport name; `yes`/`no` power; device text; `yes` for exact device matching |
+| `gear`, `gearUnassigned`, `indoor`, `gps` | Exact gear; `yes` for unassigned gear; `yes`/`no` recorded flags |
+| `minDistance`, `maxDistance` | Metres, despite the kilometre input controls |
+| `minMoving`, `maxMoving` | Seconds, despite the minute input controls |
+| `minAscent`, `maxAscent` | Metres |
+| `tags`, `excludeTags`, `tagOwner` | Comma-separated tag IDs and their profile ID |
+| `tagMode`, `tagPresence` | `any`/`all`; `any`/`tagged`/`untagged` |
+
+**Routes** supports name and sport filters plus ascending or descending name, distance, and ascent sorting. Its URL uses `q`, `sport`, and `sort` (`name-asc`, `name-desc`, `distance-asc`, `distance-desc`, `elevation-asc`, `elevation-desc`), omitting the default name sort. **Segments** supports name and sport filters, retaining parent context for matching nested sections. Creation controls stay separate from these library filters. See [Segment methodology](docs/segments.md#finding-segments-and-efforts) for effort-history filters and [Importing data](docs/imports.md#import-history) for import-history finding.
 
 ## Progress dashboard and calendar
 
@@ -139,9 +160,11 @@ Dashboard opens at **Year to date**, compared with the same dates last year. Sel
 
 **Previous period** compares the same number of calendar days immediately before the selected range. **Prior-year dates** shifts each endpoint back one year, clamping February 29 to February 28. Both ranges are shown. Differences are signed, and percentage change is unavailable when the comparison total is zero. All time and open-ended custom ranges remain available but need both endpoints before totals can be compared.
 
-Choose weekly or monthly trends and any of the five metrics. Empty buckets are zero; partial weeks or months include only the selected dates. Sport breakdown, recent activities, and equipment follow the same filters. Record highlights remain labelled **Lifetime records**; their progress links open the selected period’s benchmark history. Use **Refresh dashboard** to include later committed imports or edits.
+Choose weekly or monthly trends and any of the five metrics. Empty buckets are zero; partial weeks or months include only the selected dates. Open a saved activity search or follow **View progress** from Activities to apply its criteria to both comparison periods, trends, recent activities, and breakdowns. Sport, device, gear, and Unassigned counts open the complete matching activity list with the applied dates and criteria; equipment links use exact names. Record highlights remain labelled **Lifetime records**; their progress links open the selected period’s benchmark history. Use **Refresh dashboard** to include later committed imports or edits.
 
-**Calendar** shows a separately selected month, grouped by sport, with day and week totals. Weeks start Monday, and partial week totals include only days in the displayed month. Open a date to see all matching activities. The responsive view becomes a compact list when space is limited; an explicit Calendar or List choice stays in the URL. Month navigation, filters, dashboard trend controls, and benchmark view/period survive refresh and browser Back/Forward. The selected profile remains session-wide.
+**Calendar** shows a separately selected month, grouped by sport, with day and week totals. Opening a saved activity search keeps its criteria and selects the month containing its resolved start date, or the current owner-local month when no start is available. The displayed month supplies the calendar's date range. Weeks start Monday, and partial week totals include only days in that month. Day links retain all criteria, and the dashboard link retains the displayed month. The responsive view becomes a compact list when space is limited; an explicit Calendar or List choice stays in the URL. Month navigation, filters, dashboard trend controls, and benchmark view/period survive refresh and browser Back/Forward. The selected profile remains session-wide.
+
+Activity searches also apply to **Lines** on World Map. Frequency and Exploration keep their full-history discovery rules and use their own profile, sport, and date controls. Dashboard lifetime records and current personal goals remain independent of activity search criteria.
 
 ## Maps and privacy
 

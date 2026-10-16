@@ -15,6 +15,10 @@
 .comparison-selector { display: grid; gap: 6px; flex: 1 1 240px; min-width: 0; }
 .comparison-selectors select { width: 100%; min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--panel); }
 .comparison-help { margin: 14px 0 0; }
+.effort-filters { margin: 16px 0; }
+.effort-table-wrap { position: relative; }
+.effort-row-actions { min-width: 150px; }
+.effort-row-actions button { display: block; text-align: left; white-space: normal; padding: 6px 0; }
 @media (max-width: 767px) {
     .subsegment-table, .subsegment-table tbody, .subsegment-table tr { display: block; }
     .subsegment-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

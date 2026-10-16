@@ -23,7 +23,13 @@
             {
                 <p class="muted">No tags in this profile yet.</p>
             }
-            @foreach (var tag in _tags)
+            else
+            {
+                <label class="managed-tag-search"><span>Find managed tags</span><input type="search" @bind="_query" @bind:event="oninput" disabled="@_busy" /></label>
+                @if (_query.Length > 0) { <p class="muted" role="status">Showing @VisibleTags.Count of @_tags.Count tags. A tag being edited stays visible.</p> }
+                @if (VisibleTags.Count == 0) { <p class="muted">No matching tags.</p> }
+            }
+            @foreach (var tag in VisibleTags)
             {
                 <div @key="tag.Id" class="managed-tag">
                     @if (_renamingId == tag.Id)
@@ -84,13 +90,15 @@
     private Guid? _loadedOwner;
     private Guid? _renamingId;
     private TagSummary? _deleting;
-    private string _newName = "", _renameName = "";
+    private string _newName = "", _renameName = "", _query = "";
     private string? _message;
     private bool _loaded, _busy, _loadFailed, _error, _disposed;
     private bool _focusRename, _focusDelete, _focusSummary;
     private ElementReference _renameInput, _deleteButton, _summary;
     private readonly string _deleteHeadingId = $"tag-delete-{Guid.NewGuid():N}";
     private CancellationTokenSource _cancellation = new();
+    private IReadOnlyList<TagSummary> VisibleTags => _tags.Where(tag => tag.Id == _renamingId || tag.Id == _deleting?.Id ||
+        tag.Name.Contains(_query.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
 
     protected override async Task OnParametersSetAsync()
     {
@@ -100,6 +108,7 @@
         _cancellation = new();
         _loadedOwner = OwnerId;
         _newName = "";
+        _query = "";
         _renamingId = null;
         _deleting = null;
         _focusRename = _focusDelete = _focusSummary = false;
@@ -171,7 +180,8 @@
         {
             var searches = await Organization.ListSavedSearchesAsync(owner, token);
             if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
-            _affectedSearches = searches.Where(search => search.Criteria?.Tags.Any(reference => reference.Id == tag.Id) == true)
+            _affectedSearches = searches.Where(search => search.Criteria is { } criteria &&
+                    criteria.Tags.Concat(criteria.ExcludedTags ?? []).Any(reference => reference.Id == tag.Id))
                 .Select(search => search.Name).ToArray();
             _deleting = current with { SavedSearchCount = _affectedSearches.Count };
             _focusDelete = true;

@@ -110,6 +110,8 @@ Choose several files in one selection. Browser uploads are streamed separately w
 
 A Garmin identifier is accepted only from export filenames such as `123456_ACTIVITY.fit`; a FIT device serial number is never treated as an activity ID. Missing sensors remain missing rather than being inferred.
 
+Activity detail's **Recorded power and work** section shows imported average power, maximum power, normalized power, and work in kJ when recorded. Recorded zeroes remain valid; missing fields stay unavailable. FIT normalized power is labelled separately from provider-specific weighted power and is not inferred from the stream or summary average.
+
 Only Cycling, Running, Walking, and Rowing are supported in 0.1.0, including indoor and virtual subtypes that clearly identify one of those sports.
 
 Rowing FIT files may identify the sport as Rowing or as Fitness Equipment with the Indoor Rowing subtype. Both import as Rowing. FIT parser version 2 preserves recorded stroke counts as Total strokes and cadence as stroke rate. GPS is not required for indoor rowing. Use the normal Multi-file import workflow to select several recordings at once.
@@ -139,6 +141,11 @@ User-created routes and segments remain with the source profile and are unlinked
 **Import history** is a native disclosure and starts collapsed. Opening it shows the 10 newest entries for the selected profile, ordered by creation time and then import ID. **Show 10 more** increases the cumulative visible limit by 10; closing and reopening the disclosure keeps that list available, and refresh or processing polls retain the chosen limit. Changing the selected profile resets the limit to 10.
 
 Each entry keeps status, counts, profile, workflow type, and time visible. Long processing text remains inside **View processing summary** so a warning or error can be inspected without making every history row tall.
+
+Search by display name and narrow by status, warnings, source, workflow type, or **Imported from/to** dates. These inclusive dates use the import's creation time in its owner's reporting timezone, rather than the activity recording date. Filtering searches the complete history before counting matches and applying the visible limit, so older batches remain findable. Applying or resetting filters starts at 10 matches. The URL retains `q`, `status`, `warnings`, `source`, `kind`, `from`, `to`, and `limit`; refresh and Back/Forward restore the view. Active uploads continue polling even when history filters hide their batches.
+
+**View linked activities** and **View linked routes** open distinct current results through the batch's source associations, including links added by deduplication. The destination retains `importBatch` and `importOwner`, validates the batch/profile scope, and offers explicit removal or profile recovery. Transferred or deleted activities may change these current results; the links do not reconstruct everything originally encountered in an old archive from its processing counts.
+
 ## Watched folders
 
 Under **Imports**, use **Local inbox** to add an existing absolute directory. The app listens for supported files, periodically reconciles missed events, waits for size/write time to stabilize, copies the file to private staging, and never moves, renames, edits, or deletes the source.

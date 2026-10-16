@@ -57,7 +57,7 @@ public sealed partial class SegmentService(
                 x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent,
                 x.MetricComputationVersion >= SegmentEffortMetricVersions.Current))
             .ToListAsync(cancellationToken);
-        var selected = efforts.FirstOrDefault(x => x.Id == effortId) ?? efforts.FirstOrDefault();
+        var selected = effortId.HasValue ? efforts.FirstOrDefault(x => x.Id == effortId) : efforts.FirstOrDefault();
         IReadOnlyList<TrackPoint> selectedPoints = [];
         if (includeSelectedStream && selected is not null)
         {
@@ -86,7 +86,7 @@ public sealed partial class SegmentService(
                 efforts.Count == 0 ? null : efforts.Min(x => x.ElapsedSeconds), segment.AverageGradePercent,
                 segment.ElevationGainMeters, segment.ElevationLossMeters, segment.SourceKind, segment.SourceName, segment.SourceFormat),
             positionedDefinitionPoints,
-            efforts, selected?.Id, selectedPoints, parents, children);
+            efforts, selected?.Id, selectedPoints, parents, children, segment.Owner?.TimeZoneId);
     }
 
     public async Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default)

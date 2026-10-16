@@ -1,0 +1,19 @@
+<label><span>Text matching</span><select @bind="Value.TextMode" @bind:after="Notify"><option value="words">All words / quoted phrases</option><option value="literal">Literal text</option></select></label>
+<label><span>Gear</span><select @bind="Value.Gear" @bind:after="Notify"><option value="">Any gear</option>@foreach (var gear in Options.Gear) { <option @key="gear" value="@gear">@gear</option> }@if (Value.Gear.Length > 0 && !Options.Gear.Contains(Value.Gear)) { <option @key="Value.Gear" value="@Value.Gear">@Value.Gear</option> }</select></label>
+<label class="checkbox-field"><input type="checkbox" @bind="Value.GearUnassigned" @bind:after="Notify" /><span>Unassigned gear only</span></label>
+<label class="checkbox-field"><input type="checkbox" @bind="Value.DeviceExact" @bind:after="Notify" /><span>Exact device name</span></label>
+<label><span>Environment</span><select @bind="Value.Indoor" @bind:after="Notify"><option value="">Indoor and outdoor</option><option value="yes">Indoor only</option><option value="no">Outdoor only</option></select></label>
+<label><span>GPS</span><select @bind="Value.Gps" @bind:after="Notify"><option value="">Any GPS availability</option><option value="yes">Has GPS</option><option value="no">No GPS</option></select></label>
+<label><span>Min distance (km)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MinDistance" @bind:after="Notify" /></label>
+<label><span>Max distance (km)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MaxDistance" @bind:after="Notify" /></label>
+<label><span>Min moving time (min)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MinMoving" @bind:after="Notify" /></label>
+<label><span>Max moving time (min)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MaxMoving" @bind:after="Notify" /></label>
+<label><span>Min ascent (m)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MinAscent" @bind:after="Notify" /></label>
+<label><span>Max ascent (m)</span><input type="number" min="0" step="any" @bind:event="oninput" @bind="Value.MaxAscent" @bind:after="Notify" /></label>
+
+@code {
+    [Parameter, EditorRequired] public ActivitySearchInput Value { get; set; } = new();
+    [Parameter] public ActivityFilterOptions Options { get; set; } = new([], []);
+    [Parameter] public EventCallback Changed { get; set; }
+    private Task Notify() => Changed.InvokeAsync();
+}

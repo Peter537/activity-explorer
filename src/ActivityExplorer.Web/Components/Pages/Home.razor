@@ -1,13 +1,28 @@
 @page "/"
+@inherits ActivitySearchViewBase
 @implements IDisposable
 @inject IActivityQueryService Activities
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject TimeProvider Clock
 @inject ILogger<Home> Logger
+@inject IActivityOrganizationService Organization
 
 <PageTitle>Dashboard - Activity Explorer</PageTitle>
-<PageHeader Title="Dashboard"><Actions><a class="button" href="@CalendarUrl">Training calendar</a></Actions></PageHeader>
+<PageHeader Title="Dashboard"><Actions>@if (_error is null && _dateError is null) { <a class="button" href="@CalendarUrl">Training calendar</a> }</Actions></PageHeader>
+@if (ProfileState.SelectedOwnerId is { } searchOwner)
+{
+    <SavedSearches @key="searchOwner" OwnerId="searchOwner" Tags="_searchTags" OpenOnly="true" Disabled="_loading" OnOpen="OpenDashboardSearch" />
+}
+@if (_appliedCriteria is not null) { <ActivitySearchSummary Criteria="_appliedCriteria" OnClear="ClearDashboardSearch" /> }
+@if (SearchTagOwner is { } bookmarkOwner && bookmarkOwner != ProfileState.SelectedOwnerId)
+{
+    @if (ProfileState.Profiles.FirstOrDefault(profile => profile.Id == bookmarkOwner) is { } profile)
+    {
+        <button class="button" @onclick="() => ProfileState.Select(bookmarkOwner)">Switch to @profile.DisplayName</button>
+    }
+    <button class="button" @onclick="ClearDashboardSearch">Remove activity search</button>
+}
 <form class="filter-bar progress-filters" aria-label="Dashboard filters" @onsubmit="Apply" @onsubmit:preventDefault>
     <label><span>Sport</span><select @bind="_sport" @bind:after="FiltersChanged"><option value="">All sports</option>@foreach (var sport in Format.Sports) { <option value="@sport.ToString().ToLowerInvariant()">@sport</option> }</select></label>
     <ReportingDateFilter Value="_dates" Periods="_previewPeriods" Error="@_dateError" Changed="FiltersChanged" />
@@ -16,7 +31,7 @@
     <button class="button" type="button" @onclick="Refresh" disabled="@(_dirty || _loading)">Refresh dashboard</button>
 </form>
 @if (_dirty) { <p class="notice" role="status">Apply filters to update these results.</p> }
-@if (_error is not null) { <section class="notice error" role="alert"><p>@_error</p><button class="button" @onclick="LoadAsync" disabled="@_dirty">Try again</button></section> }
+@if (_error is not null) { <section class="notice error" role="alert"><p>@_error</p><button class="button" @onclick="LoadAsync" disabled="@_dirty">Try again</button>@if (_appliedCriteria is null && (!SearchTagOwner.HasValue || SearchTagOwner == ProfileState.SelectedOwnerId)) { <button class="button" @onclick="ClearDashboardSearch">Clear activity search</button> }</section> }
 @if (_loading) { <div class="loading" role="status">Loading dashboard...</div> }
 @if (_summary is not null)
 {
@@ -70,7 +85,7 @@
             @if (_summary.Sports.Count == 0) { <p class="muted">No matching activities.</p> }
             @foreach (var sport in _summary.Sports.OrderBy(x => x.Sport))
             {
-                <div class="sport-row"><span class="sport-dot @sport.Sport.ToString().ToLowerInvariant()"></span><strong>@sport.Sport</strong><span>@sport.Count activities</span><span>@Format.Distance(sport.DistanceMeters)</span><span>@Format.Duration(sport.MovingSeconds)</span></div>
+                <div class="sport-row"><span class="sport-dot @sport.Sport.ToString().ToLowerInvariant()"></span><strong>@sport.Sport</strong><a href="@SportActivitiesUrl(sport.Sport)" aria-label="@($"Browse {sport.Sport} activities")">@sport.Count activities</a><span>@Format.Distance(sport.DistanceMeters)</span><span>@Format.Duration(sport.MovingSeconds)</span></div>
             }
         </article>
         <article class="panel">
@@ -93,8 +108,8 @@
         </article>
         <article class="panel"><div class="panel-heading"><h2>Devices and gear in this period</h2></div>
             @if (_summary.Devices.Count == 0 && _summary.Gear.Count == 0) { <p class="muted">Device and gear names appear when supplied by source files.</p> }
-            @foreach (var device in _summary.Devices) { <div class="compact-row"><strong>@device.Name</strong><span>@device.Count activities</span><small>device</small></div> }
-            @foreach (var item in _summary.Gear) { <div class="compact-row"><strong>@item.Name</strong><span>@item.Count activities</span><small>gear</small></div> }
+            @foreach (var device in _summary.Devices) { <div class="compact-row"><strong>@device.Name</strong><a href="@DeviceActivitiesUrl(device)" aria-label="@($"Browse activities recorded with {device.Name}")">@device.Count activities</a><small>device</small></div> }
+            @foreach (var item in _summary.Gear) { <div class="compact-row"><strong>@item.Name</strong><a href="@GearActivitiesUrl(item)" aria-label="@(item.IsUnassigned ? "Browse activities with unassigned gear" : $"Browse activities using {item.Name}")">@item.Count activities</a><small>gear</small></div> }
         </article>
     </section>
 }
@@ -145,6 +160,7 @@
         CancelCurrentLoad();
         var revision = ++_revision;
         _summary = null;
+        _appliedCriteria = null;
         _error = null;
         _loading = false;
         if (!ValidateDates()) return;
@@ -153,9 +169,14 @@
         _loading = true;
         try
         {
+            var tags = ProfileState.SelectedOwnerId is { } owner ? await Organization.ListTagsAsync(owner, cancellation.Token) : [];
+            if (_disposed || revision != _revision || cancellation.IsCancellationRequested) return;
+            _searchTags = tags;
+            var criteria = ReadSharedCriteria(RecordDisplay.Parse<SportKind>(_sport), ProfileState.SelectedOwnerId);
+            _appliedCriteria = criteria;
             var summary = await Activities.GetDashboardAsync(new DashboardQuery(ProfileState.SelectedOwnerId, RecordDisplay.Parse<SportKind>(_sport),
                 _dates.Selection, _comparison == "previous-period" ? PeriodComparison.PreviousPeriod : PeriodComparison.PriorYear,
-                _grouping == "weekly" ? TrendGranularity.Weekly : TrendGranularity.Monthly, Clock.GetUtcNow()), cancellation.Token);
+                _grouping == "weekly" ? TrendGranularity.Weekly : TrendGranularity.Monthly, Clock.GetUtcNow(), Criteria: criteria), cancellation.Token);
             if (_disposed || revision != _revision || cancellation.IsCancellationRequested) return;
             _summary = summary;
             _previewPeriods = summary.Periods;
@@ -166,7 +187,7 @@
         {
             if (revision != _revision || _disposed) return;
             Logger.LogError(exception, "Could not load dashboard");
-            _error = exception is ArgumentException ? exception.Message : "The dashboard could not be loaded. Try again.";
+            _error = exception is ArgumentException or InvalidOperationException ? exception.Message : "The dashboard could not be loaded. Try again.";
         }
         finally { if (revision == _revision) { _loading = false; _cancellation = null; } }
     }
@@ -183,15 +204,20 @@
     private Task ChangeTrend() => NavigateOrLoad();
     private async Task NavigateOrLoad()
     {
-        var target = BuildUrl();
-        if (new Uri(Navigation.Uri).PathAndQuery == target) await LoadAsync();
-        else Navigation.NavigateTo(target);
+        try
+        {
+            var target = BuildUrl();
+            if (new Uri(Navigation.Uri).PathAndQuery == target) await LoadAsync();
+            else Navigation.NavigateTo(target);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { _error = exception.Message; }
     }
     private void ProfileChanged()
     {
         CancelCurrentLoad();
         _revision++;
         _summary = null;
+        _searchTags = [];
         _ = InvokeAsync(async () =>
         {
             if (_disposed) return;
@@ -203,10 +229,8 @@
     }
     private string BuildUrl()
     {
-        var fields = DateFields(_dates).ToList();
-        if (_sport.Length > 0) fields.Add($"sport={_sport}");
-        fields.Add($"compare={_comparison}"); fields.Add($"group={_grouping}"); fields.Add($"metric={_metric}");
-        return "/?" + string.Join('&', fields);
+        return ActivitySearchQuery.Build("/", ReadSharedCriteria(RecordDisplay.Parse<SportKind>(_sport), ProfileState.SelectedOwnerId),
+            ProfileState.SelectedOwnerId, DashboardFields(_dates));
     }
     private static IEnumerable<string> DateFields(ReportingDateInput dates)
     {
@@ -219,8 +243,8 @@
     }
     private ReportingDateInput AppliedDates => ReportingDateInput.FromQuery(QueryPeriod ?? (string.IsNullOrWhiteSpace(QueryFrom) && string.IsNullOrWhiteSpace(QueryTo) ? "year-to-date" : null), QueryFrom, QueryTo);
     private string AppliedSport => RecordDisplay.Parse<SportKind>(QuerySport)?.ToString().ToLowerInvariant() ?? "";
-    private string ActivitiesUrl => "/activities?" + string.Join('&', DateFields(AppliedDates)) + (AppliedSport.Length > 0 ? $"&sport={AppliedSport}" : "");
-    private string AllTimeUrl => "/?period=all-time" + (AppliedSport.Length > 0 ? $"&sport={AppliedSport}" : "");
+    private string ActivitiesUrl => DashboardActivityUrl(LinkCriteria);
+    private string AllTimeUrl => ActivitySearchQuery.Build("/", LinkCriteria, ProfileState.SelectedOwnerId, new Dictionary<string, string?> { ["period"] = "all-time" });
     private string RecordsUrl => "/records" + (AppliedSport.Length > 0 ? $"?sport={AppliedSport}" : "");
     private string CalendarUrl
     {
@@ -230,8 +254,8 @@
             var zone = ProfileState.Profiles.FirstOrDefault(x => x.Id == ProfileState.SelectedOwnerId)?.TimeZoneId;
             DateOnly month;
             try { month = last is { Year: > 1 } ? last.Value : DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(Clock.GetUtcNow(), ReportingTimeZone.Resolve(zone)).DateTime); }
-            catch (InvalidOperationException) { return "/calendar"; }
-            return $"/calendar?month={month:yyyy-MM}" + (AppliedSport.Length > 0 ? $"&sport={AppliedSport}" : "");
+            catch (InvalidOperationException) { return ActivitySearchQuery.Build("/calendar", LinkCriteria, ProfileState.SelectedOwnerId); }
+            return ActivitySearchQuery.Build("/calendar", LinkCriteria, ProfileState.SelectedOwnerId, new Dictionary<string, string?> { ["month"] = month.ToString("yyyy-MM", CultureInfo.InvariantCulture) });
         }
     }
     private string HistoryUrl(PersonalRecord record) => RecordDisplay.AttemptsUrl(record.Sport, record.Kind, record.Key, RecordScope.All, ProfileState.SelectedOwnerId)

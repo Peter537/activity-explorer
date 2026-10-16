@@ -2,6 +2,14 @@
 
 A segment is a local, owner-scoped, directional, sport-specific path. It is not connected to Strava's segment catalog.
 
+## Finding segments and efforts
+
+The **Segments** library searches names and filters sport within the selected profile. Matching nested sections retain their ancestor context and open the relevant groups; shared sections remain reachable under each parent. The `q` and `sport` URL parameters retain the search through refresh and Back/Forward. An empty result has a reset action, separate from segment creation.
+
+On segment detail, effort history supports inclusive owner-local **Efforts from/to** dates and minimum/maximum elapsed seconds. Sort by rank, newest, elapsed time, speed/pace, heart rate, or power. The URL retains `effort-from`, `effort-to`, `effort-min`, `effort-max`, and `effort-sort`. Filtering changes the visible history, without recalculating lifetime ranks or merging repeated passes. Each pass remains a distinct effort, with its pass number and exact source link.
+
+Use a history row's **Use as baseline** or **Use as comparison** action to select that exact effort. A selected effort or comparison pair remains selected when outside the history filter, with an explanatory notice. Resetting history filters does not replace the pair.
+
 ## Creating a segment
 
 Activity Explorer supports five local creation workflows:
@@ -26,7 +34,7 @@ These are independent local definitions. Importing a generic path does not estab
 
 Any segment can contain smaller sections, including flat stretches, descents, climbs, and whole laps. To track a complete familiar route, create a segment using its full path, then add the sections you want to compare.
 
-**Add sub-segment** also offers **Use existing segment**. Choose a segment from the same profile and sport, review the highlighted occurrences, and select **Attach segment**. Its path must follow a smaller, continuous portion of the parent in the same direction, within the child's matching tolerance. The application rejects self-links, duplicate links, full-path aliases, and cycles. It does not attach contained segments automatically.
+**Add sub-segment** also offers **Use existing segment**. Narrow candidates by name, choose a segment from the same profile and sport, review the highlighted occurrences, and select **Attach segment**. A selected candidate stays available while narrowing the list. Its path must follow a smaller, continuous portion of the parent in the same direction, within the child's matching tolerance. The application rejects self-links, duplicate links, full-path aliases, and cycles. It does not attach contained segments automatically.
 
 Sections may overlap, belong to several parents, and contain further sections. The **Segments** library shows expandable groups; shared children appear under each parent and open the same detail page. Each detail page lists its immediate children and links back to its parents. Removing a section from one parent removes only that relationship, preserving its definition, effort history, and other links.
 

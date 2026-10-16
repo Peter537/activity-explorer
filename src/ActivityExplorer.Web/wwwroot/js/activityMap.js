@@ -1,5 +1,6 @@
 window.activityExplorerMap = (() => {
     const maps = new Map();
+    const cameras = new Map();
     const mapLibrePromise = import("/vendor/maplibre-gl.mjs");
     const blankStyle = () => ({
         version: 8,
@@ -41,13 +42,14 @@ window.activityExplorerMap = (() => {
         const map = entry.map;
         if (!url) {
             map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
-            return 0;
+            map.getCanvas().dataset[`${name}Features`] = "0";
+            return null;
         }
         try {
             const response = await fetch(queryUrl(url, map), { headers: { "Accept": "application/json" }, signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            if (signal.aborted) return 0;
+            if (signal.aborted || entry.disposed) return null;
             if (map.getSource(name)) map.getSource(name).setData(data);
             else {
                 map.addSource(name, { type: "geojson", data });
@@ -56,13 +58,52 @@ window.activityExplorerMap = (() => {
                     paint: { "line-color": color, "line-width": width, "line-opacity": name === "activities" ? 0.72 : 0.92 }
                 });
             }
-            return data.features.length;
+            const count = data.features.length;
+            map.getCanvas().dataset[`${name}Features`] = String(count);
+            return { layer: name, loading: false, failed: false, returnedCount: count,
+                matchingCount: data.coverage?.matchingCount ?? count, limit: data.coverage?.limit ?? count,
+                truncated: data.coverage?.truncated === true };
         } catch (error) {
-            if (signal.aborted) return 0;
+            if (signal.aborted || entry.disposed) return null;
             map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
+            map.getCanvas().dataset[`${name}Features`] = "0";
             console.warn(`Activity Explorer could not load map layer "${name}".`, error);
-            return null;
+            return { layer: name, loading: false, failed: true, returnedCount: 0, matchingCount: 0, limit: 0, truncated: false };
         }
+    }
+
+    function clearDisabledLayers(entry) {
+        for (const [name, url] of [["activities", entry.options.activityUrl], ["routes", entry.options.routeUrl], ["segments", entry.options.segmentUrl]]) {
+            if (url) continue;
+            entry.map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
+            entry.map.getCanvas().dataset[`${name}Features`] = "0";
+        }
+    }
+
+    function readCamera(key) {
+        if (!key) return null;
+        try {
+            const camera = cameras.get(key) || JSON.parse(sessionStorage.getItem(`activity-explorer:camera:${key}`) || "null");
+            return camera && Array.isArray(camera.center) && camera.center.length === 2 &&
+                camera.center.every(Number.isFinite) && Math.abs(camera.center[1]) <= 90 &&
+                Number.isFinite(camera.zoom) && camera.zoom >= 0 && camera.zoom <= 24 &&
+                Number.isFinite(camera.bearing) && Number.isFinite(camera.pitch) && camera.pitch >= 0 && camera.pitch <= 85
+                ? camera : null;
+        } catch { return null; }
+    }
+
+    function rememberCamera(entry) {
+        if (entry.disposed) return;
+        const center = entry.map.getCenter();
+        const camera = { center: [center.lng, center.lat], zoom: entry.map.getZoom(),
+            bearing: entry.map.getBearing(), pitch: entry.map.getPitch() };
+        const canvas = entry.map.getCanvas();
+        canvas.dataset.cameraCenter = camera.center.join(",");
+        canvas.dataset.cameraZoom = String(camera.zoom);
+        if (!entry.options.cameraStorageKey) return;
+        cameras.set(entry.options.cameraStorageKey, camera);
+        try { sessionStorage.setItem(`activity-explorer:camera:${entry.options.cameraStorageKey}`, JSON.stringify(camera)); }
+        catch { /* The in-memory camera still preserves navigation within this page session. */ }
     }
 
     function selectedCoordinates(entry) {
@@ -444,6 +485,8 @@ window.activityExplorerMap = (() => {
         const changed = ["activityUrl", "routeUrl", "segmentUrl", "explorationUrl"].some(key => entry.options[key] !== options[key]);
         if (changed || entry.options.explorationView !== options.explorationView) entry.cellPopup?.remove();
         Object.assign(entry.options, options);
+        if (changed) entry.request?.abort();
+        clearDisabledLayers(entry);
         entry.map.getCanvas().setAttribute("aria-label", options.label || "Activity map");
         paintExploration(entry);
         if (changed) return refresh(entry);
@@ -461,16 +504,26 @@ window.activityExplorerMap = (() => {
         const report = (loading, failed, count) => entry.options.reportLoadStatus
             ? entry.dotnet?.invokeMethodAsync("UpdateLayerStatus", loading, failed, count, revision).catch(() => {})
             : Promise.resolve();
+        const reportLines = layers => entry.options.reportLoadStatus
+            ? entry.dotnet?.invokeMethodAsync("UpdateLineCoverage", layers, revision).catch(() => {})
+            : Promise.resolve();
+        const enabled = [["activities", entry.options.activityUrl], ["routes", entry.options.routeUrl], ["segments", entry.options.segmentUrl]]
+            .filter(([, url]) => !!url).map(([layer]) => ({ layer, loading: true, failed: false,
+                returnedCount: 0, matchingCount: 0, limit: 0, truncated: false }));
+        clearDisabledLayers(entry);
         await report(true, false, 0);
+        await reportLines(enabled);
+        if (request.signal.aborted || entry.disposed) return;
         const counts = await Promise.all([
             setLayer(entry, "activities", entry.options.activityUrl, "#246b59", 2.5, request.signal),
             setLayer(entry, "routes", entry.options.routeUrl, "#3366cc", 4, request.signal),
             setLayer(entry, "segments", entry.options.segmentUrl, "#d06a35", 5, request.signal),
             setExploration(entry, request.signal)
         ]);
-        if (request.signal.aborted) return;
+        if (request.signal.aborted || entry.disposed) return;
         refreshTrackLayers(entry);
-        await report(false, counts.includes(null), counts.reduce((sum, count) => sum + (count || 0), 0));
+        await reportLines(counts.slice(0, 3).filter(Boolean));
+        await report(false, counts[3] === null, counts[3] || 0);
     }
 
     function popup(entry, layer) {
@@ -490,10 +543,12 @@ window.activityExplorerMap = (() => {
     async function create(id, options, dotnet) {
         const maplibregl = await mapLibrePromise;
         if (!document.getElementById(id)) return;
+        const camera = readCamera(options.cameraStorageKey);
         const map = new maplibregl.Map({
             container: id,
             style: options.blankBaseMap ? blankStyle() : options.styleUrl,
-            center: [10, 50], zoom: 3,
+            center: camera?.center || [10, 50], zoom: camera?.zoom ?? 3,
+            bearing: camera?.bearing ?? 0, pitch: camera?.pitch ?? 0,
             attributionControl: false
         });
         options.inlineCoordinates = options.inlineCoordinates || [];
@@ -502,6 +557,8 @@ window.activityExplorerMap = (() => {
         if (options.describedBy) canvas.setAttribute("aria-describedby", options.describedBy);
 
         const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap, styleReady: false };
+        canvas.dataset.cameraRestored = String(!!camera);
+        rememberCamera(entry);
         ["activities", "routes", "segments"].forEach(layer => popup(entry, layer));
         explorationInteraction(entry);
         indexActivityCoordinates(entry);
@@ -529,7 +586,7 @@ window.activityExplorerMap = (() => {
         map.on("load", () => {
             if (entry.disposed) return;
             const fitCoordinates = options.activityTrack ? projectionCoordinates(options.activityTrack) : options.inlineCoordinates;
-            if (fitCoordinates?.length) {
+            if (!camera && fitCoordinates?.length) {
                 const bounds = fitCoordinates.reduce((value, coordinate) => value.extend(coordinate), new maplibregl.LngLatBounds(fitCoordinates[0], fitCoordinates[0]));
                 map.fitBounds(bounds, { padding: 48, maxZoom: 15, duration: 0 });
             }
@@ -542,7 +599,7 @@ window.activityExplorerMap = (() => {
                 });
             }
         });
-        map.on("moveend", () => refresh(entry));
+        map.on("moveend", () => { rememberCamera(entry); refresh(entry); });
         map.on("error", event => {
             if (!entry.fallback && event?.error) {
                 entry.fallback = true;
@@ -637,6 +694,7 @@ window.activityExplorerMap = (() => {
     function destroy(id) {
         const entry = maps.get(id);
         if (entry) {
+            rememberCamera(entry);
             entry.disposed = true;
             entry.request?.abort();
             if (entry.inspectionGroup && entry.inspectionHandler)
@@ -651,5 +709,31 @@ window.activityExplorerMap = (() => {
 
     function reload(id) { const entry = maps.get(id); if (entry) return refresh(entry); }
 
-    return { create, addCenterPoint, undo, clear, updateLayers, updateSelection, updateSections, updateActivity, updateActivitySelection, updateComparison, updateHighlight, destroy, reload };
+    function focusCell(id, cellId) {
+        const entry = maps.get(id);
+        if (!entry || entry.disposed || !Number.isInteger(cellId) || cellId < 0 || cellId >= 268435456) return;
+        const size = 16384;
+        const x = cellId % size;
+        const y = Math.floor(cellId / size);
+        const longitude = column => column / size * 360 - 180;
+        const latitude = row => Math.atan(Math.sinh(Math.PI * (1 - 2 * row / size))) * 180 / Math.PI;
+        const west = longitude(x);
+        const east = longitude(x + 1);
+        const shift = Math.round((entry.map.getCenter().lng - (west + east) / 2) / 360) * 360;
+        entry.map.fitBounds([[west + shift, latitude(y + 1)], [east + shift, latitude(y)]], { padding: 32, maxZoom: 16, duration: 0 });
+        const canvas = entry.map.getCanvas();
+        canvas.dataset.focusedCell = String(cellId);
+        entry.map.getContainer().scrollIntoView({ block: "center", behavior: "instant" });
+        canvas.focus({ preventScroll: true });
+        rememberCamera(entry);
+    }
+
+    function zoomIn(id) {
+        const entry = maps.get(id);
+        if (!entry || entry.disposed) return;
+        entry.map.zoomIn({ duration: 0 });
+        entry.map.getCanvas().focus({ preventScroll: true });
+    }
+
+    return { create, addCenterPoint, undo, clear, updateLayers, updateSelection, updateSections, updateActivity, updateActivitySelection, updateComparison, updateHighlight, destroy, reload, focusCell, zoomIn };
 })();
