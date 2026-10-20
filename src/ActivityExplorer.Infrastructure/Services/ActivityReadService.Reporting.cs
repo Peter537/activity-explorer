@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed partial class ActivityQueryService
+public sealed partial class ActivityReadService
 {
     private sealed record ReportingActivityRow(
         Guid Id, Guid OwnerId, string Title, SportKind Sport, DateTimeOffset StartTime,
@@ -14,7 +14,13 @@ public sealed partial class ActivityQueryService
 
     private sealed record LocalReportingActivity(ReportingActivityRow Activity, DateOnly Date);
 
-    public async Task<DashboardSummary> GetDashboardAsync(DashboardQuery query, CancellationToken cancellationToken = default)
+    public Task<DashboardSummary> GetDashboardAsync(DashboardQuery query, CancellationToken cancellationToken = default) =>
+        ReadDashboardAsync(query, null, cancellationToken);
+
+    public Task<DashboardSummary> GetBoundedDashboardAsync(DashboardQuery query, int maximumBuckets, CancellationToken cancellationToken = default) =>
+        ReadDashboardAsync(query, maximumBuckets, cancellationToken);
+
+    private async Task<DashboardSummary> ReadDashboardAsync(DashboardQuery query, int? maximumBuckets, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
         if (!Enum.IsDefined(query.Comparison)) throw new ArgumentException("Choose a valid comparison period.");
@@ -22,11 +28,40 @@ public sealed partial class ActivityQueryService
         var selection = query.Period ?? new ReportingDateSelection(ReportingPreset.YearToDate);
         var asOf = query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var criteria = await ActivityCriteriaQuery.ResolveAsync(db, query.OwnerId,
             query.Criteria ?? new(Sport: query.Sport), cancellationToken);
         var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);
         var source = ReportingSource(db, query.OwnerId, criteria);
+        if (maximumBuckets.HasValue)
+        {
+            if (maximumBuckets.Value < 1) throw new ArgumentException("Choose a positive bucket limit.");
+            foreach (var period in periods)
+            {
+                var scoped = ReportingDateQuery.Apply(source, [period]);
+                var first = period.From;
+                var last = period.To;
+                var zone = ReportingTimeZone.Resolve(period.TimeZoneId);
+                if (!first.HasValue)
+                {
+                    var instant = await scoped.OrderBy(activity => activity.StartTimeUtc).Select(activity => (DateTimeOffset?)activity.StartTimeUtc).FirstOrDefaultAsync(cancellationToken);
+                    if (instant.HasValue) first = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(instant.Value, zone).DateTime);
+                }
+                if (!last.HasValue)
+                {
+                    var instant = await scoped.OrderByDescending(activity => activity.StartTimeUtc).Select(activity => (DateTimeOffset?)activity.StartTimeUtc).FirstOrDefaultAsync(cancellationToken);
+                    if (instant.HasValue) last = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(instant.Value, zone).DateTime);
+                }
+                if (first.HasValue && last.HasValue)
+                {
+                    var start = ReportingProgress.BucketStart(first.Value, query.Granularity);
+                    var end = ReportingProgress.BucketStart(last.Value, query.Granularity);
+                    var count = query.Granularity == TrendGranularity.Weekly ? (end.DayNumber - start.DayNumber) / 7 + 1
+                        : (end.Year - start.Year) * 12 + end.Month - start.Month + 1;
+                    if (count > maximumBuckets.Value) throw new ArgumentException("This period exceeds the trend bucket limit. Narrow the dates or use monthly grouping. Use search_activities for complete all-time totals.");
+                }
+            }
+        }
         var selected = await ReadReportingActivitiesAsync(source, periods, cancellationToken);
         var comparisonPeriods = new List<ResolvedOwnerPeriod>();
         string? comparisonUnavailable = null;
@@ -88,7 +123,7 @@ public sealed partial class ActivityQueryService
         ArgumentNullException.ThrowIfNull(query);
         var asOf = query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var criteria = await ActivityCriteriaQuery.ResolveAsync(db, query.OwnerId,
             query.Criteria ?? new(Sport: query.Sport), cancellationToken);
         var owners = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, new(ReportingPreset.AllTime), asOf, cancellationToken);

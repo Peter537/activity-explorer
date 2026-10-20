@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -25,8 +26,10 @@ public sealed partial class BrowserRegressionTests
         TestContext.Current.TestOutputHelper!.WriteLine($"Synthetic map finding preview data: {path}");
     }
 
-    [Fact]
-    public async Task Map_finding_reports_limits_skips_disabled_layers_and_discards_stale_results()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public async Task Map_finding_reports_limits_skips_disabled_layers_and_discards_stale_results(int browserCpuRate)
     {
         if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
         var dataRoot = TestSupport.NewDirectory();
@@ -41,13 +44,18 @@ public sealed partial class BrowserRegressionTests
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
             var page = await browser.NewPageAsync(new() { ViewportSize = new() { Width = 1280, Height = 1000 } });
-            var requests = new List<string>();
+            if (browserCpuRate != 1)
+            {
+                var session = await page.Context.NewCDPSessionAsync(page);
+                await session.SendAsync("Emulation.setCPUThrottlingRate", new Dictionary<string, object> { ["rate"] = browserCpuRate });
+            }
+            var requests = new ConcurrentQueue<string>();
             var errors = new List<string>();
             var external = new List<string>();
             page.PageError += (_, error) => errors.Add(error);
             page.Request += (_, request) =>
             {
-                if (request.Url.Contains("/internal/map/", StringComparison.Ordinal)) requests.Add(request.Url);
+                if (request.Url.Contains("/internal/map/", StringComparison.Ordinal)) requests.Enqueue(request.Url);
                 if (Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" &&
                     uri.GetLeftPart(UriPartial.Authority) != origin) external.Add(request.Url);
             };
@@ -83,8 +91,6 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.Locator("[data-map-line-layer='activities']")).ToContainTextAsync("Narrow the activity dates or zoom in");
             await Assertions.Expect(page.Locator("[data-map-line-layer='routes']")).ToContainTextAsync($"{1000:N0} of {1001:N0}");
             await Assertions.Expect(page.Locator("[data-map-line-layer='segments']")).ToContainTextAsync($"{1000:N0} of {1001:N0}");
-            await AssertMapFindingResponsiveAsync(page, "line-layer-limits");
-
             var routeRequests = requests.Count(url => url.Contains("/internal/map/routes?", StringComparison.Ordinal));
             await routes.UncheckAsync();
             await Assertions.Expect(canvas).ToHaveAttributeAsync("data-routes-features", "0");
@@ -126,6 +132,15 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(canvas).ToHaveAttributeAsync("data-activities-features", new Regex("^[1-9][0-9]*$"));
             await Assertions.Expect(routes).Not.ToBeCheckedAsync();
             await Assertions.Expect(segments).Not.ToBeCheckedAsync();
+
+            // Resize only after the request-count assertions; a queued resize may legitimately
+            // request a layer before the server has processed the following checkbox change.
+            mode = "capped";
+            await page.GotoAsync(origin + "/map", new() { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(canvas).ToHaveAttributeAsync("data-activities-features", "2000");
+            await Assertions.Expect(canvas).ToHaveAttributeAsync("data-routes-features", "1000");
+            await Assertions.Expect(canvas).ToHaveAttributeAsync("data-segments-features", "1000");
+            await AssertMapFindingResponsiveAsync(page, "line-layer-limits");
             Assert.Empty(external);
             Assert.Empty(errors);
         }

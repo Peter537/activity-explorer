@@ -13,16 +13,7 @@ public sealed class ProfileService(
     IOwnerMutationLock ownerMutationLock) : IProfileService
 {
     private static readonly JsonSerializerOptions ExportJsonOptions = new() { WriteIndented = true };
-    public async Task<IReadOnlyList<ProfileSummary>> ListAsync(CancellationToken cancellationToken = default)
-    {
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.Owners.AsNoTracking().OrderBy(x => x.DisplayName)
-            .Select(x => new ProfileSummary(x.Id, x.DisplayName,
-                db.Activities.Count(a => a.OwnerId == x.Id),
-                db.Activities.Where(a => a.OwnerId == x.Id).Sum(a => a.DistanceMeters),
-                x.CreatedAtUtc, x.TimeZoneId))
-            .ToListAsync(cancellationToken);
-    }
+    public Task<IReadOnlyList<ProfileSummary>> ListAsync(CancellationToken cancellationToken = default) => new ProfileReadService(contextFactory).ListAsync(cancellationToken);
 
     public async Task<Guid> CreateAsync(string displayName, CancellationToken cancellationToken = default)
     {

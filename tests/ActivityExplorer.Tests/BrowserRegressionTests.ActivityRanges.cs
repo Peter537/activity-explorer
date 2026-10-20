@@ -31,8 +31,10 @@ public sealed partial class BrowserRegressionTests
         TestContext.Current.TestOutputHelper!.WriteLine($"Synthetic range preview data: {path}");
     }
 
-    [Fact]
-    public async Task Exact_attempt_links_ranges_gestures_and_history_preserve_source_intervals()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Exact_attempt_links_ranges_gestures_and_history_preserve_source_intervals(bool useLongPolling)
     {
         if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
         var root = FindRepositoryRoot();
@@ -49,12 +51,15 @@ public sealed partial class BrowserRegressionTests
             var page = await browser.NewPageAsync(new() { HasTouch = true, ViewportSize = new() { Width = 1280, Height = 1000 } });
             var errors = new List<string>();
             var externalRequests = new List<string>();
+            var longPollingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             page.PageError += (_, error) => errors.Add(error);
             page.Console += (_, message) => { if (message.Type == "error") errors.Add(message.Text); };
             page.Request += (_, request) =>
             {
                 if (Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) && uri.Host != "127.0.0.1")
                     externalRequests.Add(request.Url);
+                if (useLongPolling && request.Method == "GET" && uri?.AbsolutePath == "/_blazor")
+                    longPollingStarted.TrySetResult();
             };
             var navigation = new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle };
             var attempts = $"/records/attempts?sport=cycling&kind=distanceeffort&key=5%20km&owner={seed.OwnerId}";
@@ -181,10 +186,16 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.Locator(".history-table .attempt-range-link")).ToHaveAttributeAsync("href", exactHref);
             await Assertions.Expect(page.Locator(".history-table tbody th a")).ToHaveAttributeAsync("href", $"/activities/{seed.DenseActivityId}");
             await Assertions.Expect(page.Locator(".chart-exact-output .attempt-range-link")).ToHaveAttributeAsync("href", exactHref);
-            await page.GotoAsync(origin + $"/records/attempts?sport=cycling&kind=distance&key=Longest%20distance&owner={seed.OwnerId}", navigation);
+            if (useLongPolling) await page.AddInitScriptAsync("window.WebSocket = undefined;");
+            // SignalR long polling remains active after the records render.
+            await page.GotoAsync(origin + $"/records/attempts?sport=cycling&kind=distance&key=Longest%20distance&owner={seed.OwnerId}",
+                new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+            if (useLongPolling) await longPollingStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assertions.Expect(page.Locator(".attempt-table .attempt-range-link")).ToHaveCountAsync(3);
             var wholeLinks = await page.Locator(".attempt-range-link").EvaluateAllAsync<string[]>("links => links.map(link => link.getAttribute('href'))");
             Assert.NotEmpty(wholeLinks);
             Assert.All(wholeLinks, link => Assert.DoesNotContain("range=", link));
+            Assert.Equal(new[] { $"/activities/{seed.DenseActivityId}", $"/activities/{seed.ResetActivityId}", $"/activities/{seed.IndoorActivityId}" }, wholeLinks);
             Assert.Empty(errors);
             Assert.Empty(externalRequests);
         }

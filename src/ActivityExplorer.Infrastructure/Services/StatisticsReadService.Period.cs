@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed partial class StatisticsService
+public sealed partial class StatisticsReadService
 {
     private sealed record OverviewActivity(Guid Id, Guid OwnerId, string OwnerName, string Title, SportKind Sport,
         DateTimeOffset StartTimeUtc, double DistanceMeters, double MovingTimeSeconds, double ElevationGainMeters, byte[]? Payload);
@@ -25,17 +25,15 @@ public sealed partial class StatisticsService
         ReportingDates.Validate(selection);
         var asOf = query.AsOfUtc ?? (timeProvider ?? TimeProvider.System).GetUtcNow();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await Storage.ReadSnapshot.BeginAsync(db, cancellationToken);
         if (selection.Preset == ReportingPreset.AllTime)
         {
             var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);
-            var records = await GetRecordsAsync(query.OwnerId, query.Scope, cancellationToken);
+            var records = await ReadRecordsAsync(db, query.OwnerId, query.Scope, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             return new(records.Where(record => !query.Sport.HasValue || record.Sport == query.Sport).ToArray(), periods);
         }
 
-        await db.Database.OpenConnectionAsync(cancellationToken);
-        await using var transaction = ((SqliteConnection)db.Database.GetDbConnection()).BeginTransaction(deferred: true);
-        await using var enlisted = await db.Database.UseTransactionAsync(transaction, cancellationToken);
         var resolved = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);
         var source = ReportingDateQuery.Apply(db.Activities.AsNoTracking(), resolved);
         if (query.Sport.HasValue) source = source.Where(activity => activity.Sport == query.Sport);

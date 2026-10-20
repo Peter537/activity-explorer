@@ -8,12 +8,14 @@ The default test suite is deterministic and uses synthetic, fictional data. It m
 dotnet restore ActivityExplorer.slnx --locked-mode
 dotnet format ActivityExplorer.slnx --verify-no-changes --no-restore
 dotnet build ActivityExplorer.slnx --configuration Release --no-restore -m:1 -p:BuildInParallel=false
-dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configuration Release --no-build --no-restore --coverlet --results-directory tests/ActivityExplorer.Tests/TestResults
+dotnet exec tests/ActivityExplorer.Tests/bin/Release/net10.0/ActivityExplorer.Tests.dll --coverlet --results-directory tests/ActivityExplorer.Tests/TestResults
 ./scripts/verify-coverage.ps1
 ./scripts/verify-package-health.ps1
 ~~~
 
 The test project uses Microsoft Testing Platform v2 and opts out of test-platform telemetry through `testconfig.json`. The release gate is at least 80% line and 60% branch coverage after exclusions for Razor-generated code, build output, and compiler-generated members. The package check fails for known vulnerable or deprecated direct and transitive packages and for mismatched or unlisted vendored MapLibre assets.
+
+The coverage command runs the native MTP test executable directly. Verify that it prints a newly produced Cobertura report and that the report includes `ActivityExplorer.Mcp`; a successful `dotnet test` run alone does not establish that its coverage extension ran. Keep coverage instrumentation separate from concurrent tests using the same output directory. For an isolated results directory, pass the same path to `verify-coverage.ps1 -ResultsDirectory` so it cannot select an older report.
 
 ## Browser regressions
 
@@ -27,6 +29,8 @@ dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configu
 ~~~
 
 The browser harness launches a real loopback Kestrel process with an isolated data root. Use the same `PLAYWRIGHT_BROWSERS_PATH` for installation and tests; the pinned Playwright 1.61.0 package selects Chromium 149.0.7827.55, revision 1228. The repository's `artifacts/` directory is ignored. Responsive coverage checks primary pages and representative detail routes at 320, 360, 375, 768, 1121, 1280, and 1920 CSS pixels for page-level horizontal overflow.
+
+The map layer request checks run with Chromium CPU throttling rates of 1 and 4. They precede responsive resizing so that a queued viewport reload cannot be mistaken for a request caused by disabling a layer. The exact activity-range scenario also checks whole-activity navigation with WebSockets unavailable, verifies that SignalR long polling starts, and waits for all three expected activity links. Long polling keeps HTTP requests active after results render; [Playwright recommends web assertions instead of network-idle readiness](https://playwright.dev/dotnet/docs/api/class-page#page-goto-option-wait-until).
 
 The browser matrix also verifies:
 
@@ -59,6 +63,8 @@ The browser matrix also verifies:
 - blank map mode makes no third-party request and non-editable maps render lines without editable point markers.
 
 ## Covered behavior
+
+MCP tests cover read-only SQLite connections in WAL and rollback-journal modes, unchanged import/recovery state, ownership and profile allowlists, bounded activity/library projections, records without implicit repair, execution limits, structured errors, and real stdio clients using both the 2026-07-28 and 2025-11-25 protocol generations. Startup failure and stdin EOF are tested with isolated subprocesses. See [Local MCP server](mcp.md).
 
 Shared activity criteria tests reconcile combined text, metric bounds, metadata, and included/excluded tag membership across rows, totals, pages, maps, matching IDs, and bulk snapshots. They cover words across fields, phrases confined to one field, Unicode case folding, legacy literal URLs and version-1 saved criteria without read-time writes, explicit version-2 replacement, missing exclusions, profile ownership, and exact numeric unit round trips. SQLite function-registration tests exercise fresh and pooled connections.
 

@@ -12,6 +12,9 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 | Microsoft.AspNetCore.Mvc.Testing | 10.0.11 | Web integration testing | MIT |
 | Entity Framework Core SQLite | 10.0.11 | ORM and schema creation | MIT |
 | Microsoft.Extensions.Hosting.Abstractions | 10.0.11 | Hosted-service contracts | MIT |
+| Microsoft.Extensions.Hosting | 10.0.11 | Standalone MCP process lifecycle and dependency injection | MIT |
+| ModelContextProtocol / ModelContextProtocol.Core | 2.2.0 | Official C# MCP server, client and stdio protocol support | Apache-2.0 |
+| Microsoft.Extensions.AI.Abstractions (transitive) | 10.8.3 | MCP SDK content abstractions | MIT |
 | Garmin.FIT.Sdk | 21.212.0 | FIT decoding | Garmin FIT Protocol License |
 | NetTopologySuite | 2.6.0 | WKB geometry | BSD-3-Clause |
 | SQLitePCLRaw.bundle_e_sqlite3 | 3.0.5 | Native SQLite bundle | Apache-2.0; SQLite is public domain |

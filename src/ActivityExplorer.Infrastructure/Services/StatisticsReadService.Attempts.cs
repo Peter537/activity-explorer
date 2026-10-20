@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed partial class StatisticsService
+public sealed partial class StatisticsReadService
 {
     public async Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default)
     {

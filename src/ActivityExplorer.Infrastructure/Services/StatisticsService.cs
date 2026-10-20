@@ -81,24 +81,11 @@ public sealed partial class StatisticsService(IDbContextFactory<ExplorerDbContex
         }
     }
 
-    public async Task<IReadOnlyList<PersonalRecord>> GetRecordsAsync(
-        Guid? ownerId, RecordScope scope = RecordScope.All, CancellationToken cancellationToken = default)
-    {
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var query = db.StatisticSnapshots.AsNoTracking().Where(x => x.Scope == scope);
-        if (ownerId.HasValue) query = query.Where(x => x.OwnerId == ownerId);
-        var records = await query.Join(db.Owners.AsNoTracking(), s => s.OwnerId, o => o.Id, (s, o) => new { s, o })
-            .Join(db.Activities.AsNoTracking(), x => x.s.ActivityId, a => a.Id, (x, a) =>
-                new PersonalRecord(x.s.Id, x.s.OwnerId, x.o.DisplayName, x.s.Sport, x.s.Kind, x.s.Key,
-                    x.s.Value, a.Id, a.Title, x.s.CoveragePercent, a.StartTimeUtc))
-            .ToListAsync(cancellationToken);
-        return records
-            .OrderBy(x => x.Sport)
-            .ThenBy(x => RecordCatalog.CategoryOrder(x.Kind))
-            .ThenBy(x => RecordCatalog.TargetOrder(x.Sport, x.Kind, x.Key))
-            .ThenBy(x => x.Key, StringComparer.Ordinal)
-            .ToArray();
-    }
+    private readonly StatisticsReadService _reader = new(contextFactory, timeProvider);
+    public Task<IReadOnlyList<PersonalRecord>> GetRecordsAsync(Guid? ownerId, RecordScope scope = RecordScope.All, CancellationToken cancellationToken = default) => _reader.GetRecordsAsync(ownerId, scope, cancellationToken);
+    public Task<RecordOverviewResult> GetOverviewAsync(RecordOverviewQuery query, CancellationToken cancellationToken = default) => _reader.GetOverviewAsync(query, cancellationToken);
+    public Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default) => _reader.GetAttemptsAsync(query, cancellationToken);
+    public Task<RecordHistory?> GetHistoryAsync(RecordHistoryQuery query, CancellationToken cancellationToken = default) => _reader.GetHistoryAsync(query, cancellationToken);
 
     private static void KeepHigher(
         IDictionary<(RecordScope, SportKind, RecordKind, string), StatisticSnapshot> records,

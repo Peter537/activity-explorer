@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/ActivityExplorer.Core/ActivityExplorer.Core.csproj" />
     <ProjectReference Include="../../src/ActivityExplorer.Infrastructure/ActivityExplorer.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/ActivityExplorer.Mcp/ActivityExplorer.Mcp.csproj" />
     <ProjectReference Include="../../src/ActivityExplorer.Web/ActivityExplorer.Web.csproj" />
   </ItemGroup>
   <ItemGroup>
@@ -21,6 +22,10 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>McpTargetPath</_Parameter1>
+      <_Parameter2>$(MSBuildProjectDirectory)/../../src/ActivityExplorer.Mcp/bin/$(Configuration)/$(TargetFramework)/ActivityExplorer.Mcp.dll</_Parameter2>
+    </AssemblyAttribute>
     <None Update="testconfig.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

@@ -38,6 +38,8 @@ Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credent
 
 ## Quick start
 
+Local desktop and IDE clients can also query the existing database through the separate, read-only [MCP server](docs/mcp.md).
+
 Prerequisites:
 
 - [.NET SDK 10.0.303](https://dotnet.microsoft.com/download/dotnet/10.0) is preferred; `global.json` accepts a later .NET 10 feature band when that exact SDK is unavailable.
@@ -186,6 +188,7 @@ Activity deletion uses an inline confirmation that names the affected activity o
 src/
   ActivityExplorer.Core/            Domain models, DTOs, and contracts
   ActivityExplorer.Infrastructure/  SQLite, imports, calculations, background work
+  ActivityExplorer.Mcp/             Read-only local stdio MCP host
   ActivityExplorer.Web/             Blazor Interactive Server host and UI
 tests/
   ActivityExplorer.Tests/           Unit and SQLite integration tests
@@ -208,6 +211,7 @@ For a release candidate, also run the coverage gates, package advisory/deprecati
 No default test performs a live Garmin or Strava request. Test data is synthetic and fictional.
 
 - [Architecture](docs/architecture.md)
+- [Local MCP server](docs/mcp.md)
 - [Understanding charts](docs/charts.md)
 - [Records methodology](docs/records.md)
 - [Badges and levels](docs/badges.md)
