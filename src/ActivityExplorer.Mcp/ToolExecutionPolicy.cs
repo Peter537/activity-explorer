@@ -5,6 +5,7 @@ using ActivityExplorer.Mcp.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 
 namespace ActivityExplorer.Mcp;
 
@@ -22,10 +23,11 @@ public sealed partial class ToolExecutionPolicy(McpOptions options, IProfileRead
         timeout.CancelAfter(TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
         var acquiredCall = false;
         var acquiredAnalysis = false;
+        var writeTool = !ToolCatalog.Names.Contains(name);
         CallToolResult result;
         try
         {
-            if (!ToolCatalog.Names.Contains(name)) return ToolResultFactory.Error("read_only", "This operation is not available in the read-only server.", asOfUtc);
+            if (!ToolCatalog.IsAvailable(name, options)) return ToolResultFactory.Error(options.WritesEnabled ? "permission_denied" : "read_only", "This operation is not enabled for this server.", asOfUtc);
             if (profileId.HasValue && (profileId == Guid.Empty || options.AllowedProfileIds is not null && !options.AllowedProfileIds.Contains(profileId.Value)))
                 return ToolResultFactory.Error("not_found", "The requested profile or entity is unavailable.", asOfUtc);
             acquiredCall = await _calls.WaitAsync(TimeSpan.FromSeconds(options.CapacityWaitSeconds), timeout.Token);
@@ -42,13 +44,20 @@ public sealed partial class ToolExecutionPolicy(McpOptions options, IProfileRead
             result = data is null ? ToolResultFactory.Error("not_found", "The requested profile or entity is unavailable.", asOfUtc)
                 : ToolResultFactory.Create(data, null, asOfUtc);
             if (JsonSerializer.SerializeToUtf8Bytes(result).Length > options.MaxResponseBytes)
-                result = ToolResultFactory.Error("response_too_large", "The response exceeds the size limit. Reduce the page size or narrow the request.", asOfUtc);
+                result = ToolResultFactory.Error("response_too_large", writeTool
+                    ? "The response exceeds the size limit. Narrow the selection or use Web review; check status before repeating a write."
+                    : "The response exceeds the size limit. Reduce the page size or narrow the request.", asOfUtc);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            result = ToolResultFactory.Error("timeout", "The request timed out. Narrow the request and try again.", asOfUtc, true);
+            result = ToolResultFactory.Error("timeout", writeTool
+                ? "The request timed out. Check operation status before repeating a write."
+                : "The request timed out. Narrow the request and try again.", asOfUtc, true);
         }
         catch (OperationCanceledException) { throw; }
+        // The SDK prompts after this invocation exits; release admission while the human decides.
+        catch (InputRequiredException) { throw; }
+        catch (McpBridgeException exception) { result = ToolResultFactory.Error(exception.Code, exception.Message, asOfUtc); }
         catch (ArgumentException exception) { result = ToolResultFactory.Error("invalid_argument", exception.Message, asOfUtc); }
         catch (SqliteException exception)
         {

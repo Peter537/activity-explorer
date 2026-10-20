@@ -70,7 +70,8 @@ public sealed partial class BrowserRegressionTests
                     try { await route.FulfillAsync(new() { ContentType = "application/json", Body = CappedMapLines("activity", 2000) }); }
                     catch (PlaywrightException) when (route.Request.Failure is not null) { }
                 }
-                else if (mode == "failed") await route.FulfillAsync(new() { Status = 503, Body = "{}" });
+                else if (mode == "failed" || mode == "retry" && !(await page.EvaluateAsync<bool>("() => window.mapRetryActivated === true")))
+                    await route.FulfillAsync(new() { Status = 503, Body = "{}" });
                 else if (mode == "capped") await route.FulfillAsync(new() { ContentType = "application/json", Body = CappedMapLines("activity", 2000) });
                 else await route.ContinueAsync();
             });
@@ -126,8 +127,26 @@ public sealed partial class BrowserRegressionTests
             await activities.CheckAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Retry map lines", Exact = true })).ToBeVisibleAsync();
             await Assertions.Expect(canvas).ToHaveAttributeAsync("data-activities-features", "0");
-            mode = "normal";
+            // A moveend refresh can run while Playwright scrolls the button into view.
+            // Keep that request failing; only the actual Retry click enables recovery.
+            await page.EvaluateAsync("""
+                () => {
+                    window.mapRetryActivated = false;
+                    document.addEventListener('click', event => {
+                        const button = event.target instanceof Element ? event.target.closest('button') : null;
+                        if (button?.textContent.trim() === 'Retry map lines') window.mapRetryActivated = true;
+                    }, { capture: true });
+                }
+                """);
+            mode = "retry";
+            await canvas.FocusAsync();
+            _ = await page.RunAndWaitForResponseAsync(() => canvas.PressAsync("ArrowRight"),
+                response => response.Url.Contains("/internal/map/activities?", StringComparison.Ordinal) && response.Status == 503);
+            await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Retry map lines", Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(canvas).ToHaveAttributeAsync("data-activities-features", "0");
+            Assert.False(await page.EvaluateAsync<bool>("() => window.mapRetryActivated === true"));
             await page.GetByRole(AriaRole.Button, new() { Name = "Retry map lines", Exact = true }).ClickAsync();
+            Assert.True(await page.EvaluateAsync<bool>("() => window.mapRetryActivated === true"));
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Retry map lines", Exact = true })).ToHaveCountAsync(0);
             await Assertions.Expect(canvas).ToHaveAttributeAsync("data-activities-features", new Regex("^[1-9][0-9]*$"));
             await Assertions.Expect(routes).Not.ToBeCheckedAsync();

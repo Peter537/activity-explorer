@@ -127,18 +127,46 @@ public sealed class GoalService(
             contributions.Length, contributionPage, editable, next, next.HasValue ? GoalCalendar.Definition(goal, next.Value) : null);
     }
 
-    public async Task<Guid> CreateAsync(CreateGoalRequest request, CancellationToken cancellationToken = default)
+    public async Task ValidateCreateAsync(CreateGoalRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        _ = await PrepareCreationAsync(db, request, cancellationToken);
+    }
+
+    public async Task ValidateEditAsync(EditGoalRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        _ = PrepareEdit(await RequireGoalAsync(db, request.OwnerId, request.GoalId, cancellationToken), request);
+    }
+
+    public async Task ValidateArchiveAsync(ArchiveGoalRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        _ = PrepareArchive(await RequireGoalAsync(db, request.OwnerId, request.GoalId, cancellationToken), request);
+    }
+
+    private async Task<(OwnerProfile Owner, GoalDefinition Definition, DateOnly FirstKey)> PrepareCreationAsync(
+        ExplorerDbContext db, CreateGoalRequest request, CancellationToken cancellationToken)
+    {
         ValidateSchedule(request.Schedule);
         var definition = ValidateDefinition(request.Definition, request.Schedule.Metric);
-        await using var ownerLock = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var owner = await RequireOwnerAsync(db, request.OwnerId, cancellationToken);
         var firstKey = GoalCalendar.Key(request.Schedule, request.Schedule.Start);
         var first = GoalCalendar.At(request.Schedule, firstKey);
         _ = ReportingDates.Resolve(new(ReportingPreset.Custom, first.Start, first.End), owner.Id, owner.DisplayName,
             owner.TimeZoneId, timeProvider.GetUtcNow());
+        return (owner, definition, firstKey);
+    }
+
+    public async Task<Guid> CreateAsync(CreateGoalRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var (owner, definition, firstKey) = await PrepareCreationAsync(db, request, cancellationToken);
         var goal = new PersonalGoal
         {
             OwnerId = owner.Id,
@@ -156,21 +184,15 @@ public sealed class GoalService(
     public async Task EditAsync(EditGoalRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!Enum.IsDefined(request.Scope)) throw new ArgumentException("Choose which goal editions to edit.");
         await using var ownerLock = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var goal = await RequireGoalAsync(db, request.OwnerId, request.GoalId, cancellationToken);
-        var definition = ValidateDefinition(request.Definition, goal.Metric);
-        var today = GoalCalendar.Today(timeProvider.GetUtcNow(), ReportingTimeZone.Resolve(goal.Owner!.TimeZoneId));
-        var primary = RequireExpected(goal, request.ExpectedVersion, request.ExpectedEdition, request.ExpectedState, today);
-        if (primary.End < today) throw new InvalidOperationException("Ended goal editions cannot be edited.");
+        var (definition, primary, effectiveFrom) = PrepareEdit(goal, request);
         var schedule = GoalCalendar.Schedule(goal);
         if (request.Scope == GoalEditScope.NextEditions)
         {
-            var next = NextEditable(goal, primary, today)
-                ?? throw new InvalidOperationException("This goal has no future template to edit.");
-            SetDefinition(goal, next, definition);
+            SetDefinition(goal, effectiveFrom, definition);
         }
         else
         {
@@ -193,14 +215,32 @@ public sealed class GoalService(
         await using var ownerLock = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var goal = await RequireGoalAsync(db, request.OwnerId, request.GoalId, cancellationToken);
-        var today = GoalCalendar.Today(timeProvider.GetUtcNow(), ReportingTimeZone.Resolve(goal.Owner!.TimeZoneId));
-        var primary = RequireExpected(goal, request.ExpectedVersion, request.ExpectedEdition, request.ExpectedState, today);
+        var (primary, today) = PrepareArchive(goal, request);
         if (goal.ArchiveFromEdition.HasValue) return;
         var schedule = GoalCalendar.Schedule(goal);
         goal.ArchiveFromEdition = today < goal.Start ? GoalCalendar.Key(schedule, goal.Start) :
             GoalCalendar.Next(schedule, primary.Key);
         goal.MutationVersion++;
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private (GoalDefinition Definition, GoalCalendar.Period Primary, DateOnly EffectiveFrom) PrepareEdit(PersonalGoal goal, EditGoalRequest request)
+    {
+        if (!Enum.IsDefined(request.Scope)) throw new ArgumentException("Choose which goal editions to edit.");
+        var definition = ValidateDefinition(request.Definition, goal.Metric);
+        var today = GoalCalendar.Today(timeProvider.GetUtcNow(), ReportingTimeZone.Resolve(goal.Owner!.TimeZoneId));
+        var primary = RequireExpected(goal, request.ExpectedVersion, request.ExpectedEdition, request.ExpectedState, today);
+        if (primary.End < today) throw new InvalidOperationException("Ended goal editions cannot be edited.");
+        var effectiveFrom = request.Scope == GoalEditScope.NextEditions
+            ? NextEditable(goal, primary, today) ?? throw new InvalidOperationException("This goal has no future template to edit.")
+            : primary.Key;
+        return (definition, primary, effectiveFrom);
+    }
+
+    private (GoalCalendar.Period Primary, DateOnly Today) PrepareArchive(PersonalGoal goal, ArchiveGoalRequest request)
+    {
+        var today = GoalCalendar.Today(timeProvider.GetUtcNow(), ReportingTimeZone.Resolve(goal.Owner!.TimeZoneId));
+        return (RequireExpected(goal, request.ExpectedVersion, request.ExpectedEdition, request.ExpectedState, today), today);
     }
 
     private static IQueryable<PersonalGoal> ReadGoals(ExplorerDbContext db) => db.Goals.AsNoTracking()

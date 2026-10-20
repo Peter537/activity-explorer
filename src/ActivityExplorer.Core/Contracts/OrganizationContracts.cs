@@ -10,6 +10,8 @@ public interface IActivityOrganizationService
     Task DeleteTagAsync(Guid ownerId, Guid tagId, CancellationToken cancellationToken = default);
     Task SetActivityTagsAsync(Guid ownerId, Guid activityId, IReadOnlyList<Guid> tagIds, long expectedVersion, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<SavedSearchSummary>> ListSavedSearchesAsync(Guid ownerId, CancellationToken cancellationToken = default);
+    Task ValidateSavedSearchAsync(Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id = null, CancellationToken cancellationToken = default);
+    Task ValidateSavedSearchRenameAsync(Guid ownerId, Guid id, string name, CancellationToken cancellationToken = default);
     Task<Guid> SaveSavedSearchAsync(Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id = null, CancellationToken cancellationToken = default);
     Task RenameSavedSearchAsync(Guid ownerId, Guid id, string name, CancellationToken cancellationToken = default);
     Task DeleteSavedSearchAsync(Guid ownerId, Guid id, CancellationToken cancellationToken = default);

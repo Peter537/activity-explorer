@@ -1,6 +1,6 @@
 # Architecture
 
-Activity Explorer 0.1.0 has an ASP.NET Core Blazor Web App using Interactive Server rendering and a separate read-only stdio MCP executable. The web process owns imports, mutations, background processing and managed files. Both hosts reuse query implementations against the local SQLite database.
+Activity Explorer 0.1.0 has an ASP.NET Core Blazor Web App using Interactive Server rendering and a separate stdio MCP executable that is read-only by default. The web process owns imports, mutations, background processing and managed files. Both hosts reuse query implementations against the local SQLite database. Opt-in MCP write tools delegate prepared, confirmed changes to the running Web app through an authenticated loopback bridge.
 
 ~~~mermaid
 flowchart LR
@@ -24,12 +24,14 @@ flowchart LR
 - `ActivityExplorer.Core` contains domain entities, DTOs, enums, track models, and service contracts, without EF Core or Blazor dependencies.
 - `ActivityExplorer.Infrastructure` implements SQLite, imports, managed storage, calculations, maps, routes, segments, profiles, and hosted workers.
 - `ActivityExplorer.Web` is the composition root, same-origin endpoint surface, security middleware, logging, locally vendored browser assets, and Razor UI.
-- `ActivityExplorer.Mcp` is the separate stdio composition root, read-only tool catalogue, execution policy and bounded tool responses. See [Local MCP server](mcp.md).
+- `ActivityExplorer.Mcp` is the separate stdio composition root, read-only and opt-in write tool catalogues, shared execution policy and bounded tool responses. See [Local MCP server](mcp.md).
 - `ActivityExplorer.Tests` contains synthetic unit, SQLite integration, security-host, lifecycle, coverage, and isolated Playwright tests.
 
 Razor components consume service DTOs; EF entities stay inside infrastructure.
 
 The web-facing activity, statistics, profile, route and segment services delegate shared reads to Infrastructure readers. MCP uses narrow Core read contracts and a dedicated registration with a read-only SQLite connection; it does not register the web initializer or hosted workers. Read snapshots use deferred transactions. Scalar activity and library queries project only the requested fields, while comparison captures two selected streams before releasing the snapshot for alignment. Startup checks required schema columns without writing migrations or recovery state. Read-only tools have an explicit catalogue, ownership checks, pagination, cancellation and output limits; annotations describe these guarantees but do not enforce them.
+
+Write capabilities require independent opt-ins and permitted profiles in both hosts. Preparation validates domain preconditions without changing business records and returns an immutable, expiring preview. Native MCP confirmation or explicit Web review authorizes that preview; the Web process rechecks its data fingerprint before executing through existing domain services. Operation receipts support status checks, retries and restart recovery. Read and write tools share MCP admission limits, and confirmation releases its slot while waiting for the user. See [the write workflow](mcp.md#preview-confirm-and-apply) for permission, file-selection and failure semantics.
 
 ## Reporting dates and totals
 

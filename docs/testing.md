@@ -4,6 +4,8 @@ The default test suite is deterministic and uses synthetic, fictional data. It m
 
 MCP write tests cover all 40 command families, preview immutability, stale/expired reviews, profile and capability boundaries, atomic mutation receipts, restart outcomes, immutable exports and native acceptance/decline under both protocol generations. They start isolated loopback Web hosts and never change a personal MCP registration. The opt-in MCP browser scenario covers file selection, Web approval/decline, stale-review recovery, keyboard activation, 320–1280 pixel layouts and 200% text; its screenshots are saved under `artifacts/mcp-ui/`.
 
+Regression cases also hold an admitted read call while write preparation and context calls contend for capacity, verify that native confirmation releases admission while awaiting the user, and reject invalid saved-search names/tags and goal editions/states before approval without writing business records or receipts.
+
 ## Release verification
 
 ~~~powershell
@@ -32,7 +34,7 @@ dotnet test tests/ActivityExplorer.Tests/ActivityExplorer.Tests.csproj --configu
 
 The browser harness launches a real loopback Kestrel process with an isolated data root. Use the same `PLAYWRIGHT_BROWSERS_PATH` for installation and tests; the pinned Playwright 1.61.0 package selects Chromium 149.0.7827.55, revision 1228. The repository's `artifacts/` directory is ignored. Responsive coverage checks primary pages and representative detail routes at 320, 360, 375, 768, 1121, 1280, and 1920 CSS pixels for page-level horizontal overflow.
 
-The map layer request checks run with Chromium CPU throttling rates of 1 and 4. They precede responsive resizing so that a queued viewport reload cannot be mistaken for a request caused by disabling a layer. The exact activity-range scenario also checks whole-activity navigation with WebSockets unavailable, verifies that SignalR long polling starts, and waits for all three expected activity links. Long polling keeps HTTP requests active after results render; [Playwright recommends web assertions instead of network-idle readiness](https://playwright.dev/dotnet/docs/api/class-page#page-goto-option-wait-until).
+The map layer request checks run with Chromium CPU throttling rates of 1 and 4. They precede responsive resizing so that a queued viewport reload cannot be mistaken for a request caused by disabling a layer. The retry scenario keeps mock failures active during a background pan refresh and enables recovery only after the actual Retry click. The exact activity-range scenario also checks whole-activity navigation with WebSockets unavailable, verifies that SignalR long polling starts, and waits for all three expected activity links. Long polling keeps HTTP requests active after results render; [Playwright recommends web assertions instead of network-idle readiness](https://playwright.dev/dotnet/docs/api/class-page#page-goto-option-wait-until).
 
 The browser matrix also verifies:
 

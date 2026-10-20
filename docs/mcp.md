@@ -77,6 +77,8 @@ The data-root rule matches the web app: `ACTIVITY_EXPLORER_DATA`, otherwise the 
 
 An invalid option, unknown `Mcp` key or malformed profile allowlist fails startup. Options cannot be changed by a tool. The allowlist applies both to discovery of profiles and to subsequent entity queries. Every profile-scoped call requires an explicit `profileId`; selecting a profile in the browser does not affect MCP.
 
+All tools share `MaxConcurrentCalls` and `CapacityWaitSeconds`; each invocation has the configured request deadline. Confirmation releases its slot while the user decides, and the continuation reacquires capacity with a fresh deadline. A write timeout can occur after approval has been queued: check operation status before preparing a replacement.
+
 ## Tools
 
 The 15 tools in this section are available in both modes and are read-only. Parameter names below are the exact JSON names advertised to clients. Use `list_profiles` first and pass the selected `profileId` explicitly to subsequent calls. Unspecified optional filters impose no restriction unless a different default is shown.
@@ -500,6 +502,8 @@ Add `-AllowDestructive` or `-AllowAdministration` only when the Web configuratio
 ### Preview, confirm and apply
 
 Every `prepare_*` tool is a dry-run. It returns an immutable `planId`, explicit profile scope, requested changes, current values where relevant, effects, expiry, a Web review URL and an optional exact confirmation phrase. It does not change business records, originals, import queues or watched-folder registrations. Previews are held in bounded memory. A conservative application-data fingerprint rejects previews when underlying data changes, including changes in another profile; prepare and review again in that case.
+
+Saved-search preparation shares the mutation service's name uniqueness and tag ownership checks. Goal preparation shares its version, edition, state, editability and reporting-timezone validation. Invalid requests are rejected before confirmation; execution repeats these checks under the mutation lock.
 
 File selection is a separate explicit Web action at `/mcp`: selecting a file copies it to staging; approving a folder only records the selection. Neither starts an import or a watcher. Use `get_write_context` with `kind: "assets"` to obtain selected asset IDs. MCP accepts asset IDs rather than arbitrary filesystem paths. Selections expire after one hour or a Web restart; a preview cannot outlive its selected asset. Restart cleanup removes orphan selections while preserving files referenced by pending imports or file recovery. Profile deletion removes that profile's unused selections. Archive previews parse into temporary extraction directories and remove that scratch afterwards; they do not enqueue imports. Existing route/segment upload limits and parser/archive size and nesting limits still apply.
 

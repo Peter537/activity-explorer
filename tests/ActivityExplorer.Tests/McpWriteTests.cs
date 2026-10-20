@@ -8,6 +8,7 @@ using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Storage;
 using ActivityExplorer.Mcp;
+using ActivityExplorer.Mcp.Tools;
 using ActivityExplorer.Web.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -18,6 +19,118 @@ namespace ActivityExplorer.Tests;
 
 public sealed class McpWriteTests
 {
+    [Fact]
+    public async Task Write_tools_share_read_tool_capacity_and_reject_waiters_before_calling_the_bridge()
+    {
+        await using var fixture = await McpFixture.CreateAsync();
+        using var host = fixture.BuildHost("--Mcp:AccessMode", "ReadWrite", "--Mcp:AllowedWriteProfileIds:0", fixture.Owner.ToString(),
+            "--Mcp:MaxConcurrentCalls", "1", "--Mcp:CapacityWaitSeconds", "1");
+        var policy = host.Services.GetRequiredService<ToolExecutionPolicy>();
+        var writes = ActivatorUtilities.CreateInstance<ChangeTools>(host.Services);
+        var reads = ActivatorUtilities.CreateInstance<ActivityTools>(host.Services);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var active = policy.RunAsync<object>("get_server_status", null, async (_, token) =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(token);
+            return new();
+        }, deadline.Token);
+        await entered.Task.WaitAsync(deadline.Token);
+        try
+        {
+            Assert.Equal("database_busy", McpReadOnlyTests.Error(await writes.CreateTag(fixture.Owner, "Must wait", deadline.Token)));
+            Assert.Equal("database_busy", McpReadOnlyTests.Error(await writes.GetContext(fixture.Owner, "tags", deadline.Token)));
+            Assert.Equal("database_busy", McpReadOnlyTests.Error(await reads.GetServerStatus(deadline.Token)));
+        }
+        finally { release.TrySetResult(); await active; }
+        Assert.False((await reads.GetServerStatus(deadline.Token)).IsError);
+        Assert.Equal("web_unavailable", McpReadOnlyTests.Error(await writes.CreateTag(fixture.Owner, "Bridge is now reached", deadline.Token)));
+        Assert.False((await reads.GetServerStatus(deadline.Token)).IsError);
+    }
+
+    [Theory]
+    [InlineData("duplicate-name")]
+    [InlineData("rename-duplicate")]
+    [InlineData("missing-tag")]
+    [InlineData("foreign-tag")]
+    [InlineData("excluded-tag")]
+    public async Task Saved_search_dry_runs_reject_invalid_domain_preconditions_without_writes(string scenario)
+    {
+        await using var setup = await Setup.CreateAsync();
+        var org = setup.Services.GetRequiredService<IActivityOrganizationService>();
+        var owner = setup.Fixture.Owner;
+        var criteria = new SavedSearchCriteria(2, null, null, null, null, [], "start-desc", new(ReportingPreset.AllTime));
+        var existing = await org.SaveSavedSearchAsync(owner, "Existing search", criteria);
+        var other = await org.SaveSavedSearchAsync(owner, "Other search", criteria);
+        var foreignTag = await org.CreateTagAsync(setup.Fixture.OtherOwner, "Other profile tag");
+        var invalidTag = scenario == "foreign-tag" ? foreignTag : Guid.NewGuid();
+        if (scenario is "missing-tag" or "foreign-tag")
+            criteria = criteria with { Tags = [new(setup.Fixture.TagId, "Valid tag"), new(invalidTag, "Unavailable tag")] };
+        if (scenario == "excluded-tag")
+            criteria = criteria with { Tags = [new(setup.Fixture.TagId, "Valid tag")], ExcludedTags = [new(invalidTag, "Unavailable tag")] };
+        var request = scenario == "rename-duplicate"
+            ? Request("rename_saved_search", owner, new { savedSearchId = other, name = " existing SEARCH " })
+            : Request("save_saved_search", owner, new { name = scenario == "duplicate-name" ? " existing SEARCH " : "New search", criteria });
+        await Assert.ThrowsAsync<InvalidOperationException>(() => setup.Writes.PrepareAsync(request, CancellationToken.None));
+        await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.Equal(2, await db.SavedSearches.CountAsync());
+        Assert.Equal("Existing search", (await db.SavedSearches.SingleAsync(item => item.Id == existing)).Name);
+        Assert.Equal("Other search", (await db.SavedSearches.SingleAsync(item => item.Id == other)).Name);
+        Assert.Empty(await db.McpOperations.ToArrayAsync());
+        Assert.Empty(await db.McpEffects.ToArrayAsync());
+        var valid = await setup.Writes.PrepareAsync(Request("save_saved_search", owner, new
+        {
+            id = existing,
+            name = "Existing search",
+            criteria = criteria with { Tags = [new(setup.Fixture.TagId, "Valid tag")], ExcludedTags = [] }
+        }), CancellationToken.None);
+        Assert.True(valid.Details.GetProperty("dryRun").GetBoolean());
+        Assert.Equal(2, await db.SavedSearches.CountAsync());
+    }
+
+    [Theory]
+    [InlineData("edit-state")]
+    [InlineData("edit-ended")]
+    [InlineData("edit-next-once")]
+    [InlineData("archive-state")]
+    [InlineData("archive-edition")]
+    public async Task Goal_dry_runs_reject_invalid_editions_states_and_editability_without_writes(string scenario)
+    {
+        var clock = new AdjustableClock();
+        await using var setup = await Setup.CreateAsync(clock: clock);
+        var owner = setup.Fixture.Owner;
+        await setup.Services.GetRequiredService<IProfileService>().UpdateTimeZoneAsync(owner, "UTC");
+        var today = DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime);
+        var start = scenario == "edit-ended" ? today.AddDays(-7) : today;
+        var goals = setup.Services.GetRequiredService<IGoalService>();
+        var goalId = await goals.CreateAsync(new(owner, new(GoalMetric.Distance, GoalRecurrence.Once, start, start.AddDays(2)), new("Original goal", null, 1000)));
+        var detail = (await goals.GetDetailAsync(goalId))!;
+        var edition = detail.Edition!;
+        var expectedState = scenario.EndsWith("state", StringComparison.Ordinal) ? GoalPeriodState.Upcoming : edition.State;
+        var request = scenario.StartsWith("archive", StringComparison.Ordinal)
+            ? Request("archive_goal", owner, new
+            {
+                goalId,
+                request = new ArchiveGoalRequest(owner, goalId, detail.Goal.MutationVersion,
+                scenario == "archive-edition" ? edition.Key.AddDays(1) : edition.Key, expectedState)
+            })
+            : Request("edit_goal", owner, new
+            {
+                goalId,
+                request = new EditGoalRequest(owner, goalId, detail.Goal.MutationVersion, edition.Key,
+                scenario == "edit-next-once" ? GoalEditScope.NextEditions : GoalEditScope.ThisEdition, new("Changed goal", null, 2000), expectedState)
+            });
+        await Assert.ThrowsAsync<InvalidOperationException>(() => setup.Writes.PrepareAsync(request, CancellationToken.None));
+        var unchanged = (await goals.GetDetailAsync(goalId))!;
+        Assert.Equal(detail.Goal, unchanged.Goal);
+        await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.Single(await db.GoalDefinitionRevisions.Where(item => item.GoalId == goalId).ToArrayAsync());
+        Assert.Empty(await db.McpOperations.ToArrayAsync());
+        Assert.Empty(await db.McpEffects.ToArrayAsync());
+    }
+
     [Fact]
     public async Task Preview_is_read_only_and_changed_data_or_wrong_phrase_cannot_be_approved()
     {

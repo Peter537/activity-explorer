@@ -126,12 +126,38 @@ public sealed class ActivityOrganizationService(
         return result;
     }
 
+    public async Task ValidateSavedSearchAsync(Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id = null, CancellationToken cancellationToken = default)
+    {
+        name = CleanName(name, 120, "Saved search");
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        _ = await PrepareSavedSearchAsync(db, ownerId, name, criteria, id, cancellationToken);
+    }
+
+    public async Task ValidateSavedSearchRenameAsync(Guid ownerId, Guid id, string name, CancellationToken cancellationToken = default)
+    {
+        name = CleanName(name, 120, "Saved search");
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        _ = await PrepareSavedSearchRenameAsync(db, ownerId, id, name, cancellationToken);
+    }
+
     public async Task<Guid> SaveSavedSearchAsync(Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id = null, CancellationToken cancellationToken = default)
     {
         name = CleanName(name, 120, "Saved search");
-        criteria = SavedSearchCriteriaJson.Validate(criteria) with { Version = 2 };
         await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var (search, validatedCriteria) = await PrepareSavedSearchAsync(db, ownerId, name, criteria, id, cancellationToken);
+        search.Name = name;
+        search.NormalizedName = name.ToUpperInvariant();
+        search.CriteriaJson = SavedSearchCriteriaJson.Write(validatedCriteria);
+        if (!id.HasValue) db.SavedSearches.Add(search);
+        await db.SaveChangesAsync(cancellationToken);
+        return search.Id;
+    }
+
+    private static async Task<(SavedSearch Search, SavedSearchCriteria Criteria)> PrepareSavedSearchAsync(
+        ExplorerDbContext db, Guid ownerId, string name, SavedSearchCriteria criteria, Guid? id, CancellationToken cancellationToken)
+    {
+        criteria = SavedSearchCriteriaJson.Validate(criteria) with { Version = 2 };
         await RequireOwnerAsync(db, ownerId, cancellationToken);
         await RequireUniqueSearchNameAsync(db, ownerId, name.ToUpperInvariant(), id, cancellationToken);
         var tags = await ReadTagsAsync(db, ownerId, SavedSearchCriteriaJson.References(criteria).Select(x => x.Id).ToArray(), cancellationToken);
@@ -144,12 +170,7 @@ public sealed class ActivityOrganizationService(
         var search = id.HasValue
             ? await RequireSearchAsync(db, ownerId, id.Value, cancellationToken)
             : new SavedSearch { OwnerId = ownerId };
-        search.Name = name;
-        search.NormalizedName = name.ToUpperInvariant();
-        search.CriteriaJson = SavedSearchCriteriaJson.Write(criteria);
-        if (!id.HasValue) db.SavedSearches.Add(search);
-        await db.SaveChangesAsync(cancellationToken);
-        return search.Id;
+        return (search, criteria);
     }
 
     public async Task RenameSavedSearchAsync(Guid ownerId, Guid id, string name, CancellationToken cancellationToken = default)
@@ -157,11 +178,17 @@ public sealed class ActivityOrganizationService(
         name = CleanName(name, 120, "Saved search");
         await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var search = await RequireSearchAsync(db, ownerId, id, cancellationToken);
-        await RequireUniqueSearchNameAsync(db, ownerId, name.ToUpperInvariant(), id, cancellationToken);
+        var search = await PrepareSavedSearchRenameAsync(db, ownerId, id, name, cancellationToken);
         search.Name = name;
         search.NormalizedName = name.ToUpperInvariant();
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static async Task<SavedSearch> PrepareSavedSearchRenameAsync(ExplorerDbContext db, Guid ownerId, Guid id, string name, CancellationToken cancellationToken)
+    {
+        var search = await RequireSearchAsync(db, ownerId, id, cancellationToken);
+        await RequireUniqueSearchNameAsync(db, ownerId, name.ToUpperInvariant(), id, cancellationToken);
+        return search;
     }
 
     public async Task DeleteSavedSearchAsync(Guid ownerId, Guid id, CancellationToken cancellationToken = default)

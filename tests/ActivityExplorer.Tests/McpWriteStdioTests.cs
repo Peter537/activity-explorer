@@ -104,10 +104,58 @@ public sealed class McpWriteStdioTests
         Assert.Empty(await db.McpOperations.ToArrayAsync());
     }
 
-    internal static StdioClientTransport Transport(McpFixture fixture) => new(new()
+    [Fact]
+    public async Task Native_confirmation_releases_capacity_until_the_continuation_is_approved()
+    {
+        await using var runtime = await McpWriteRuntime.StartAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var prompted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var answer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var client = await McpClient.CreateAsync(Transport(runtime.Fixture,
+            "--Mcp:MaxConcurrentCalls", "1", "--Mcp:CapacityWaitSeconds", "1"), new()
+            {
+                Handlers = new McpClientHandlers
+                {
+                    ElicitationHandler = async (_, token) =>
+                    {
+                        prompted.SetResult();
+                        await answer.Task.WaitAsync(token);
+                        return new ElicitResult { Action = "accept", Content = new Dictionary<string, JsonElement> { ["confirm"] = JsonSerializer.SerializeToElement(true) } };
+                    }
+                }
+            }, cancellationToken: deadline.Token);
+        var preview = McpReadOnlyTests.Data(await client.CallToolAsync("prepare_create_tag", new Dictionary<string, object?>
+        { ["profileId"] = runtime.Fixture.Owner, ["name"] = "Confirmed after another call" }, cancellationToken: deadline.Token));
+        var planId = preview.GetProperty("planId").GetGuid();
+        var pending = client.CallToolAsync("apply_prepared_change", new Dictionary<string, object?> { ["planId"] = planId }, cancellationToken: deadline.Token);
+        CallToolResult application;
+        try
+        {
+            await prompted.Task.WaitAsync(deadline.Token);
+            Assert.False(pending.IsCompleted);
+            Assert.False((await client.CallToolAsync("get_server_status", cancellationToken: deadline.Token)).IsError);
+            Assert.False((await client.CallToolAsync("get_write_context", new Dictionary<string, object?>
+            { ["profileId"] = runtime.Fixture.Owner, ["kind"] = "tags" }, cancellationToken: deadline.Token)).IsError);
+            await using var before = await runtime.Fixture.Factory.CreateDbContextAsync();
+            Assert.False(await before.Tags.AnyAsync(tag => tag.Name == "Confirmed after another call", deadline.Token));
+        }
+        finally { answer.TrySetResult(); application = await pending; }
+        Assert.False(application.IsError, JsonSerializer.Serialize(application));
+        JsonElement status;
+        do
+        {
+            status = McpReadOnlyTests.Data(await client.CallToolAsync("get_operation_status", new Dictionary<string, object?> { ["operationId"] = planId }, cancellationToken: deadline.Token));
+            if (status.GetProperty("status").GetString() is "queued" or "running") await Task.Delay(20, deadline.Token);
+        } while (status.GetProperty("status").GetString() is "queued" or "running");
+        Assert.Equal("completed", status.GetProperty("status").GetString());
+        await using var db = await runtime.Fixture.Factory.CreateDbContextAsync();
+        Assert.Equal(1, await db.Tags.CountAsync(tag => tag.Name == "Confirmed after another call", deadline.Token));
+    }
+
+    internal static StdioClientTransport Transport(McpFixture fixture, params string[] options) => new(new()
     {
         Command = "dotnet",
-        Arguments = [ServerPath, "--Mcp:AccessMode", "ReadWrite", "--Mcp:AllowedWriteProfileIds:0", fixture.Owner.ToString()],
+        Arguments = [ServerPath, "--Mcp:AccessMode", "ReadWrite", "--Mcp:AllowedWriteProfileIds:0", fixture.Owner.ToString(), .. options],
         EnvironmentVariables = EnvironmentFor(fixture.DirectoryPath),
         InheritEnvironmentVariables = false,
         ShutdownTimeout = TimeSpan.FromSeconds(8)

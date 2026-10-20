@@ -143,29 +143,26 @@ public sealed partial class McpWriteService
             case "create_goal":
                 var createGoal = Read<CreateGoalRequest>(args, "request");
                 if (createGoal.OwnerId != profile) throw new ArgumentException("The goal profile must match.");
-                GoalService.ValidateSchedule(createGoal.Schedule);
-                _ = GoalService.ValidateDefinition(createGoal.Definition, createGoal.Schedule.Metric);
+                await services.GetRequiredService<IGoalService>().ValidateCreateAsync(createGoal, token);
                 break;
             case "edit_goal":
                 var edit = Read<EditGoalRequest>(args, "request");
                 if (edit.OwnerId != profile) throw new ArgumentException("The goal profile must match.");
+                await services.GetRequiredService<IGoalService>().ValidateEditAsync(edit, token);
                 var goal = await services.GetRequiredService<IGoalService>().GetDetailAsync(edit.GoalId, edit.ExpectedEdition, cancellationToken: token);
-                if (goal is null || goal.Goal.OwnerId != profile || goal.Goal.MutationVersion != edit.ExpectedVersion) throw new ArgumentException("The goal changed or is unavailable.");
-                _ = GoalService.ValidateDefinition(edit.Definition, goal.Goal.Schedule.Metric);
                 before = goal;
                 break;
             case "archive_goal":
                 var archive = Read<ArchiveGoalRequest>(args, "request");
-                if (archive.OwnerId != profile || !await db.Goals.AnyAsync(item => item.Id == archive.GoalId && item.OwnerId == profile && item.MutationVersion == archive.ExpectedVersion, token))
-                    throw new ArgumentException("The goal changed or is unavailable.");
+                if (archive.OwnerId != profile) throw new ArgumentException("The goal profile must match.");
+                await services.GetRequiredService<IGoalService>().ValidateArchiveAsync(archive, token);
                 effects = "Archives future editions according to the profile's reporting date; completed history is retained.";
                 break;
             case "save_saved_search":
                 var criteria = Read<SavedSearchCriteria>(args, "criteria");
-                _ = SavedSearchCriteriaJson.Validate(criteria);
                 ReportingDates.Validate(criteria.Dates);
                 var savedId = Optional<Guid?>(args, "id");
-                if (savedId.HasValue && !await db.SavedSearches.AnyAsync(item => item.Id == savedId && item.OwnerId == profile, token)) throw new ArgumentException("The saved search is unavailable.");
+                await services.GetRequiredService<IActivityOrganizationService>().ValidateSavedSearchAsync(profile!.Value, Read<string>(args, "name"), criteria, savedId, token);
                 break;
             case "update_profile_timezone":
                 _ = ReportingTimeZone.Resolve(Read<string>(args, "timeZoneId"));
@@ -221,6 +218,8 @@ public sealed partial class McpWriteService
                 if (await db.Tags.AnyAsync(item => item.OwnerId == profile && item.NormalizedName == normalized && item.Id != exceptTag, token)) throw new ArgumentException("A tag with that name already exists.");
                 break;
             case "rename_saved_search":
+                await services.GetRequiredService<IActivityOrganizationService>().ValidateSavedSearchRenameAsync(profile!.Value, Read<Guid>(args, "savedSearchId"), Read<string>(args, "name"), token);
+                break;
             case "delete_saved_search":
             case "delete_activity_metric":
             case "remove_watched_folder":
