@@ -75,29 +75,382 @@ An invalid option, unknown `Mcp` key or malformed profile allowlist fails startu
 
 ## Tools
 
-| Tool | Result |
+All 15 tools are read-only. Parameter names below are the exact JSON names advertised to clients. Use `list_profiles` first and pass the selected `profileId` explicitly to subsequent calls. Unspecified optional filters impose no restriction unless a different default is shown.
+
+| Tool | Required parameters | Optional parameters and defaults |
+| --- | --- | --- |
+| [`get_server_status`](#get_server_status) | None | None |
+| [`list_profiles`](#list_profiles) | None | `page=1`, `pageSize=25` |
+| [`list_activity_filter_values`](#list_activity_filter_values) | `profileId`, `kind` | `search`, `page=1`, `pageSize=25` |
+| [`search_activities`](#search_activities) | `profileId` | `criteria`, `dates` (all time), `sort="start-desc"`, `page=1`, `pageSize=25` |
+| [`get_activity`](#get_activity) | `profileId`, `activityId` | None |
+| [`get_dashboard`](#get_dashboard) | `profileId` | `criteria`, `dates` (year to date), `comparison="priorYear"`, `granularity="monthly"` |
+| [`get_training_calendar`](#get_training_calendar) | `profileId` | `month` (current month), `criteria` |
+| [`get_records`](#get_records) | `profileId`, `sport` | `dates` (all time), `scope="all"` |
+| [`get_record_attempts`](#get_record_attempts) | `profileId`, `sport`, `kind`, `key` | `dates` (all time), `scope="all"`, `multiplePerActivity=false`, `page=1` |
+| [`search_segments`](#search_segments) | `profileId` | `search`, `sport`, `sort="name-asc"`, `page=1`, `pageSize=25` |
+| [`get_segment`](#get_segment) | `profileId`, `segmentId` | None |
+| [`list_segment_efforts`](#list_segment_efforts) | `profileId`, `segmentId` | `filter`, `page=1`, `pageSize=25` |
+| [`compare_segment_efforts`](#compare_segment_efforts) | `profileId`, `segmentId`, `baselineEffortId`, `comparisonEffortId` | None |
+| [`search_routes`](#search_routes) | `profileId` | `search`, `sport`, `sort="name-asc"`, `page=1`, `pageSize=25` |
+| [`get_route`](#get_route) | `profileId`, `routeId` | None |
+
+### Shared values and pagination
+
+| Parameter | Type and allowed values |
 | --- | --- |
-| `get_server_status` | Version, stdio transport, read-only mode, database readiness and limits |
-| `list_profiles` | Permitted profiles and reporting timezones |
-| `list_activity_filter_values` | Paginated `device`, `gear` or `tag` values |
-| `search_activities` | Filtered activity page and complete matching totals |
-| `get_activity` | Scalar measurements, tags and related collection counts |
-| `get_dashboard` | Totals, comparison, sports and bounded trends |
-| `get_training_calendar` | Owner-local daily and weekly summaries for one month |
-| `get_records` | Benchmark definitions, record values and calculation availability |
-| `get_record_attempts` | Ranked attempts for a benchmark returned by `get_records` |
-| `search_segments` | Matching segment definitions and effort counts |
-| `get_segment` | Definition summary, relationship counts and metric status |
-| `list_segment_efforts` | Filtered, paginated saved efforts |
-| `compare_segment_efforts` | Two explicit efforts, elapsed delta and at most 100 timing samples |
-| `search_routes` | Matching route summaries |
-| `get_route` | Scalar route measurements and description |
+| `profileId`, `activityId`, `segmentId`, `routeId`, `baselineEffortId`, `comparisonEffortId` | Nonempty UUID strings identifying existing entities in the permitted profile |
+| `sport` | String: `"cycling"`, `"running"`, `"walking"`, `"rowing"` |
+| Filter-value `kind` | String: `"device"`, `"gear"`, `"tag"` |
+| Record-attempt `kind` | String: `"distance"`, `"duration"`, `"elevation"`, `"averageSpeed"`, `"distanceEffort"`, `"powerCurve"`, `"timedDistanceEffort"` |
+| Record-attempt `key` | String: a benchmark key returned by `get_records`, paired with its matching `kind` and `sport` |
+| `scope` | String: `"all"`, `"outdoor"`, `"indoor"` |
+| `comparison` | String: `"priorYear"`, `"previousPeriod"` |
+| `granularity` | String: `"monthly"`, `"weekly"` |
+| `search` | Optional search string; route and segment searches match names, and filter-value searches match values |
+| `month` | Optional ISO calendar date identifying the month, for example `"2026-01-01"`; omitted means the profile's current local month |
+| `multiplePerActivity` | Boolean, default `false`; requests multiple qualifying attempts from an activity for benchmarks that support them |
+| `page` | Integer from 1 to 1000, default 1 |
+| `pageSize` | Integer from 1 to 100, default 25 |
 
-Use `list_profiles` first. `search_activities` accepts a `criteria` object matching the application's activity filters, a `dates` object such as `{"period":"custom","from":"2026-01-01","to":"2026-01-31"}`, an activity sort and pagination. Tools advertise input and output schemas. Enums use camelCase strings, dates use ISO calendar dates, distances are metres, durations seconds, and power watts.
+`get_record_attempts` always uses pages of 50 and has no `pageSize` parameter. Invalid pagination is rejected. Activity search totals cover every matching activity, independently of the returned page. Distances and ascent are metres, durations are seconds, and power is watts.
 
-Relative dates capture one server instant and resolve in the selected profile's reporting timezone. Responses include resolved date ranges. Activity search defaults to all time, dashboard to year-to-date/monthly, calendar to the profile's current month, and records to all time.
+### Date selection: `dates`
 
-List pages default to 25 with a maximum of 100; page numbers range from 1 to 1000. Record attempts use pages of 50. Invalid pagination is rejected. Dashboard requests exceeding 120 trend buckets are rejected before activity materialization; use a narrower period or monthly grouping. `search_activities` still provides complete all-time totals. Oversized responses fail explicitly rather than returning cut-off JSON.
+`search_activities`, `get_dashboard`, `get_records` and `get_record_attempts` accept this optional object. Every field is optional:
+
+| Field | Type and allowed values | Default within the object |
+| --- | --- | --- |
+| `period` | String: `"all-time"`, `"custom"`, `"today"`, `"this-week"`, `"last-week"`, `"this-month"`, `"last-month"`, `"year-to-date"`, `"last-year"` | `"all-time"` |
+| `from` | ISO calendar date, for example `"2026-01-01"` | No lower bound |
+| `to` | ISO calendar date, for example `"2026-01-31"` | No upper bound |
+
+Supply `from` or `to` only with `period="custom"`. Custom bounds are inclusive calendar dates in the profile's reporting timezone. Either bound can be omitted, and `from` must not be later than `to`. The maximum `to` date is `9999-12-30`; dates near the calendar limits can also be rejected if timezone conversion would overflow.
+
+Relative dates capture one server instant and resolve in the profile's reporting timezone. Reporting responses include resolved date ranges. Weeks start on Monday.
+
+Omitting the entire `dates` object gives year-to-date for `get_dashboard` and all time for the other three tools. Supplying an empty `dates` object gives all time, including for `get_dashboard`; set `period` explicitly when that distinction matters.
+
+### Activity criteria: `criteria`
+
+`search_activities`, `get_dashboard` and `get_training_calendar` accept this optional object. Every field is optional:
+
+| Field | Type and meaning | Default |
+| --- | --- | --- |
+| `sport` | Sport string from the values above | Any sport |
+| `search` | Search text | No text filter |
+| `textMode` | String: `"literal"` or `"words"`; words mode supports quoted phrases | `"literal"` |
+| `device` | Device-name text | No device filter |
+| `deviceExact` | Boolean controlling exact device matching | `false` |
+| `gear` | Gear-name text | No gear filter |
+| `gearUnassigned` | Boolean selecting activities without assigned gear | `false` |
+| `isIndoor` | Boolean selecting indoor or outdoor activities | Either |
+| `hasGps` | Boolean selecting activities with or without GPS | Either |
+| `hasPower` | Boolean selecting activities with or without power | Either |
+| `minDistanceMeters`, `maxDistanceMeters` | Numeric distance bounds in metres | Unbounded |
+| `minMovingSeconds`, `maxMovingSeconds` | Numeric moving-time bounds in seconds | Unbounded |
+| `minAscentMeters`, `maxAscentMeters` | Numeric ascent bounds in metres | Unbounded |
+| `tagIds` | Array of included tag UUID strings | None |
+| `tagMode` | String: `"any"` or `"all"`, controlling matching of included tags | `"any"` |
+| `excludedTagIds` | Array of excluded tag UUID strings | None |
+| `tagPresence` | String: `"any"`, `"tagged"`, `"untagged"` | `"any"` |
+
+Numeric bounds must be finite and non-negative, with minimum no greater than maximum. A tag cannot be both included and excluded. `tagPresence="untagged"` cannot be combined with included tags. `gear` and `gearUnassigned=true` cannot be combined. Obtain tag IDs with `list_activity_filter_values` using `kind="tag"`.
+
+### Segment effort filter: `filter`
+
+`list_segment_efforts` accepts this optional object. Every field is optional:
+
+| Field | Type and meaning | Default |
+| --- | --- | --- |
+| `from` | Inclusive ISO calendar date in the profile's reporting timezone | No lower bound |
+| `to` | Inclusive ISO calendar date in the profile's reporting timezone | No upper bound |
+| `minimumElapsedSeconds` | Numeric elapsed-time minimum in seconds | Unbounded |
+| `maximumElapsedSeconds` | Numeric elapsed-time maximum in seconds | Unbounded |
+| `sort` | String: `"rank"`, `"date"`, `"elapsed"`, `"speed"`, `"heart-rate"`, `"power"` | `"rank"` |
+
+Elapsed bounds must be finite and non-negative, with minimum no greater than maximum. `from` must not be later than `to`. Sorting uses ascending rank, newest date, shortest elapsed time, or highest speed, heart rate or power, respectively.
+
+### Search ordering: `sort`
+
+| Tool | Allowed values | Default |
+| --- | --- | --- |
+| `search_activities` | `"start-desc"`, `"start-asc"`, `"distance-desc"`, `"distance-asc"`, `"duration-desc"`, `"elevation-desc"` | `"start-desc"` |
+| `search_segments` | `"name-asc"`, `"name-desc"`, `"distance-asc"`, `"distance-desc"` | `"name-asc"` |
+| `search_routes` | `"name-asc"`, `"name-desc"`, `"distance-asc"`, `"distance-desc"`, `"elevation-asc"`, `"elevation-desc"` | `"name-asc"` |
+
+### Example calls
+
+Each JSON example is the `params` object for an MCP `tools/call` request: `name` selects the tool and `arguments` contains its inputs. The client handles initialization and the surrounding JSON-RPC message. These are not HTTP requests or shell commands.
+
+Every UUID below is fictional. Replace profile IDs with values from `list_profiles`, activity IDs from `search_activities`, segment IDs from `search_segments`, effort IDs from `list_segment_efforts`, and route IDs from `search_routes`. Keep related entities in the same profile. No personal paths or local-library records are included in these examples.
+
+#### get_server_status
+
+Read the server version, transport, access mode, database readiness and execution limits. No arguments are required.
+
+~~~json
+{
+  "name": "get_server_status",
+  "arguments": {}
+}
+~~~
+
+#### list_profiles
+
+Discover permitted profiles, activity totals and reporting timezone settings before choosing a profile ID.
+
+~~~json
+{
+  "name": "list_profiles",
+  "arguments": {
+    "page": 1,
+    "pageSize": 25
+  }
+}
+~~~
+
+#### list_activity_filter_values
+
+Find tag IDs and names for one profile. Set `kind` to `"device"` or `"gear"` for those filter values instead.
+
+~~~json
+{
+  "name": "list_activity_filter_values",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "kind": "tag",
+    "search": "training",
+    "page": 1,
+    "pageSize": 25
+  }
+}
+~~~
+
+#### search_activities
+
+Find GPS cycling activities of at least 10 km in January 2026, ordered by greatest distance. The response contains a page of activities and totals for all matching activities.
+
+~~~json
+{
+  "name": "search_activities",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "criteria": {
+      "sport": "cycling",
+      "hasGps": true,
+      "minDistanceMeters": 10000
+    },
+    "dates": {
+      "period": "custom",
+      "from": "2026-01-01",
+      "to": "2026-01-31"
+    },
+    "sort": "distance-desc",
+    "page": 1,
+    "pageSize": 10
+  }
+}
+~~~
+
+#### get_activity
+
+Read scalar activity measurements, tags and related collection counts for an activity returned by search. Full tracks, laps, metric streams and original files are not returned.
+
+~~~json
+{
+  "name": "get_activity",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "activityId": "22222222-2222-4222-8222-222222222222"
+  }
+}
+~~~
+
+#### get_dashboard
+
+Read cycling totals, a prior-year comparison, sport totals and monthly trends for the year to date. Requests exceeding 120 trend buckets are rejected; narrow the period or use monthly grouping.
+
+~~~json
+{
+  "name": "get_dashboard",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "criteria": {
+      "sport": "cycling"
+    },
+    "dates": {
+      "period": "year-to-date"
+    },
+    "comparison": "priorYear",
+    "granularity": "monthly"
+  }
+}
+~~~
+
+#### get_training_calendar
+
+Read daily, weekly and monthly cycling summaries for January 2026 in the profile's reporting timezone.
+
+~~~json
+{
+  "name": "get_training_calendar",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "month": "2026-01-01",
+    "criteria": {
+      "sport": "cycling"
+    }
+  }
+}
+~~~
+
+#### get_records
+
+Read all-time outdoor cycling records and benchmark definitions, including their `kind` and `key` values for subsequent attempt queries. The response identifies calculation availability and whether results come from a persisted snapshot or an in-memory calculation.
+
+~~~json
+{
+  "name": "get_records",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "sport": "cycling",
+    "scope": "outdoor",
+    "dates": {
+      "period": "all-time"
+    }
+  }
+}
+~~~
+
+#### get_record_attempts
+
+Read ranked attempts for the longest-distance cycling benchmark. Use the exact `kind` and `key` returned by `get_records`; `"distance"` and `"Longest distance"` are a supported pair. Each page contains at most 50 attempts, including coverage and available recorded interval information.
+
+~~~json
+{
+  "name": "get_record_attempts",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "sport": "cycling",
+    "kind": "distance",
+    "key": "Longest distance",
+    "scope": "outdoor",
+    "dates": {
+      "period": "all-time"
+    },
+    "multiplePerActivity": false,
+    "page": 1
+  }
+}
+~~~
+
+#### search_segments
+
+Find cycling segment definitions whose names contain the example search text. Results include effort counts and best elapsed times.
+
+~~~json
+{
+  "name": "search_segments",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "search": "Example climb",
+    "sport": "cycling",
+    "sort": "name-asc",
+    "page": 1,
+    "pageSize": 25
+  }
+}
+~~~
+
+#### get_segment
+
+Read a segment definition summary, parent and child relationship counts, and effort metric calculation status. Geometry and tracks are not returned.
+
+~~~json
+{
+  "name": "get_segment",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "segmentId": "33333333-3333-4333-8333-333333333333"
+  }
+}
+~~~
+
+#### list_segment_efforts
+
+Read January 2026 efforts lasting from 60 through 3600 seconds, ordered by rank. Use returned effort IDs when requesting a comparison.
+
+~~~json
+{
+  "name": "list_segment_efforts",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "segmentId": "33333333-3333-4333-8333-333333333333",
+    "filter": {
+      "from": "2026-01-01",
+      "to": "2026-01-31",
+      "minimumElapsedSeconds": 60,
+      "maximumElapsedSeconds": 3600,
+      "sort": "rank"
+    },
+    "page": 1,
+    "pageSize": 25
+  }
+}
+~~~
+
+#### compare_segment_efforts
+
+Compare two explicit efforts from the same segment and profile. The response includes the elapsed-time delta and at most 100 distance-aligned timing samples without GPS coordinates. The delta is comparison minus baseline elapsed time; a negative value means the comparison effort was faster. Unavailable alignments have an explicit reason.
+
+~~~json
+{
+  "name": "compare_segment_efforts",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "segmentId": "33333333-3333-4333-8333-333333333333",
+    "baselineEffortId": "44444444-4444-4444-8444-444444444444",
+    "comparisonEffortId": "55555555-5555-4555-8555-555555555555"
+  }
+}
+~~~
+
+#### search_routes
+
+Find saved cycling routes whose names contain the example search text, ordered by greatest distance.
+
+~~~json
+{
+  "name": "search_routes",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "search": "Example loop",
+    "sport": "cycling",
+    "sort": "distance-desc",
+    "page": 1,
+    "pageSize": 25
+  }
+}
+~~~
+
+#### get_route
+
+Read scalar route measurements and the route description. Geometry and source files are not returned.
+
+~~~json
+{
+  "name": "get_route",
+  "arguments": {
+    "profileId": "11111111-1111-4111-8111-111111111111",
+    "routeId": "66666666-6666-4666-8666-666666666666"
+  }
+}
+~~~
+
+### Results and availability
+
+Tools advertise input and output schemas. Oversized responses fail explicitly rather than returning cut-off JSON. Dashboard requests exceeding 120 trend buckets are rejected before activity materialization. Use a narrower period or monthly grouping; `search_activities` still provides complete all-time totals.
 
 All-time records identify their source as `persisted_snapshot`. Missing snapshots or incompatible calculation versions produce an explicit unavailable result and are never repaired by MCP. Matching calculation versions do not prove that every concurrent import has finished recomputation. Selected-period records are calculated in memory without persistence. Comparison failures retain their domain-specific unavailable reasons; absent measurements remain null rather than zero.
 
