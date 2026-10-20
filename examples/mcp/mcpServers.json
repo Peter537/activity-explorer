@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "activity-explorer": {
+      "command": "dotnet",
+      "args": ["/absolute/path/to/published/ActivityExplorer.Mcp.dll"],
+      "env": {
+        "ACTIVITY_EXPLORER_DATA": "/absolute/path/to/existing/data",
+        "Mcp__AccessMode": "ReadOnly"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Template only: replace both absolute paths before adding this entry to your
+# user ~/.codex/config.toml or a trusted project's .codex/config.toml.
+# Windows paths can use forward slashes. Keep personal paths in local config.
+[mcp_servers.activity-explorer]
+command = "dotnet"
+args = ["/absolute/path/to/published/ActivityExplorer.Mcp.dll"]
+
+[mcp_servers.activity-explorer.env]
+ACTIVITY_EXPLORER_DATA = "/absolute/path/to/existing/data"
+Mcp__AccessMode = "ReadOnly"

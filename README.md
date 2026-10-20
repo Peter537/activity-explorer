@@ -38,7 +38,7 @@ Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credent
 
 ## Quick start
 
-Local desktop and IDE clients can also query the existing database through the separate, read-only [MCP server](docs/mcp.md).
+Local desktop and IDE clients can also query the existing database through the separate, read-only [MCP server](docs/mcp.md). After publishing, use the [Codex setup script](scripts/register-mcp-codex.ps1) or adapt the [client configuration examples](examples/mcp/). See [Register with Codex](docs/mcp.md#register-with-codex) for setup and verification.
 
 Prerequisites:
 

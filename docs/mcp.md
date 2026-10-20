@@ -13,23 +13,41 @@ dotnet publish src/ActivityExplorer.Mcp/ActivityExplorer.Mcp.csproj --configurat
 
 Configure the client's stdio server with command `dotnet`, the **absolute path** to the published `ActivityExplorer.Mcp.dll` as its argument, and `ACTIVITY_EXPLORER_DATA` pointing to the existing data directory. The .NET 10 runtime must be installed. Keep the complete published directory together. Launching the DLL avoids building or restoring packages when a client connects.
 
-For clients using the common `mcpServers` configuration shape, adapt these example paths:
+### Register with Codex
 
-~~~json
-{
-  "mcpServers": {
-    "activity-explorer": {
-      "command": "dotnet",
-      "args": ["C:/ActivityExplorer/mcp/ActivityExplorer.Mcp.dll"],
-      "env": {
-        "ACTIVITY_EXPLORER_DATA": "C:/ActivityExplorer/data"
-      }
-    }
-  }
-}
+With PowerShell 7 or later, run the setup helper after publishing. Supply the existing data directory used by the web app. This Windows example selects its default data directory; use your custom path instead if the web app uses `ACTIVITY_EXPLORER_DATA`:
+
+~~~powershell
+./scripts/register-mcp-codex.ps1 -DataDirectory (Join-Path $env:LOCALAPPDATA 'Activity Explorer') -WhatIf
+./scripts/register-mcp-codex.ps1 -DataDirectory (Join-Path $env:LOCALAPPDATA 'Activity Explorer')
+codex mcp get activity-explorer
 ~~~
 
-Client configuration formats vary. There is no HTTP endpoint or listening port. Each client launches its own process; closing stdin shuts it down. Logs go to stderr, and stdout contains only MCP messages.
+The [setup script](../scripts/register-mcp-codex.ps1) resolves the published DLL relative to its own checkout, even when invoked from another working directory. It checks for the database, published runtime files, Codex CLI and .NET 10 runtime. It registers absolute executable, DLL and data paths through `codex mcp add`, explicitly selecting `ReadOnly`. `-WhatIf` checks prerequisites without changing registration. It does not build, migrate or open the database.
+
+The helper updates the named server in Codex's user configuration, normally `~/.codex/config.toml`, shared by local desktop, CLI and IDE clients on the same host. It leaves unrelated settings and repository files alone. Rerunning it replaces that server's registration; retain any custom server options separately before doing so. Use `-PublishedDirectory` for a different publish location, `-ServerName` for a separate registration, or `-CodexCommand` / `-DotnetCommand` to select installed executables. Repeat registration after moving the checkout or data directory. Republishing to the same location only requires restarting the server.
+
+Restart the desktop app or IDE extension, or start a new `codex` CLI session. Use `/mcp` to inspect the connection, then ask:
+
+> Use activity-explorer to call get_server_status, then list_profiles.
+
+Confirm that status reports `transport: "stdio"`, `accessMode: "ReadOnly"` and `databaseReady: true`. `list_profiles` should return the permitted profiles, or an empty page if there are none. A registration listed by `codex mcp list` alone does not prove that initialization or a tool call succeeds. No OAuth login is needed for this local server.
+
+Remove the local registration with:
+
+~~~powershell
+codex mcp remove activity-explorer
+~~~
+
+For manual setup, adapt the [Codex TOML template](../examples/mcp/codex.config.toml). Codex also supports project-scoped `.codex/config.toml` in trusted projects, but that connection applies only within that project. The examples are templates and are not loaded automatically. Keep each user's resolved paths and any profile allowlist in their local configuration. See the [official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) for client configuration and restart options.
+
+### Other desktop and IDE clients
+
+Adapt the [generic mcpServers JSON template](../examples/mcp/mcpServers.json) for clients using that configuration shape. Replace the DLL and data directory placeholders with absolute paths in the client's user configuration. The command is `dotnet`; if it is unavailable on the client's PATH, use its absolute executable path. Placeholders are literal examples, not environment-variable substitutions.
+
+Client configuration formats vary; select stdio when asked for the transport. There is no HTTP endpoint or listening port. Each client launches its own process; closing stdin shuts it down. Logs go to stderr, and stdout contains only MCP messages. A manually launched server can appear idle while it waits for MCP input.
+
+If startup reports an unavailable or incompatible database, check that the data directory matches the web app's and that the matching web app can open it. If tools do not appear, check the client's server diagnostics and restart the connection after changing configuration. Keep the complete published directory together, and republish after updating server code.
 
 ## Read-only contract
 
