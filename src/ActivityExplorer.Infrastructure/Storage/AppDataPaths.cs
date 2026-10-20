@@ -9,7 +9,7 @@ public sealed class AppDataPaths : IAppDataPaths
         var configured = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA");
         Root = string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Activity Explorer")
-            : Path.GetFullPath(configured);
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(configured));
     }
 
     public string Root { get; }

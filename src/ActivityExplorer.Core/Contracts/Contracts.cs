@@ -24,6 +24,7 @@ public interface IMapSettingsService
 public interface IOwnerMutationLock
 {
     ValueTask<IAsyncDisposable> AcquireAsync(IEnumerable<Guid> ownerIds, CancellationToken cancellationToken = default);
+    Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken = default);
 }
 
 public sealed record PreparedFileOperation(Guid OperationId, string TargetRelativePath);

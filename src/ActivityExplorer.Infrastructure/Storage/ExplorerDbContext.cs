@@ -34,6 +34,26 @@ public sealed class ExplorerDbContext : DbContext
     public DbSet<GoalDefinitionRevision> GoalDefinitionRevisions => Set<GoalDefinitionRevision>();
     public DbSet<ActivityExplorationIndex> ActivityExplorationIndexes => Set<ActivityExplorationIndex>();
     public DbSet<ActivityExplorationCell> ActivityExplorationCells => Set<ActivityExplorationCell>();
+    public DbSet<McpOperation> McpOperations => Set<McpOperation>();
+    public DbSet<McpEffect> McpEffects => Set<McpEffect>();
+
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        var scope = McpOperationScope.Current;
+        var record = scope is { Recorded: false, EntityType: not null }
+            && ChangeTracker.Entries().Any(entry => scope.EntityType.IsInstanceOfType(entry.Entity)
+                && entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+        if (record)
+        {
+            var entry = ChangeTracker.Entries().First(item => scope!.EntityType!.IsInstanceOfType(item.Entity)
+                && item.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+            var key = entry.Metadata.FindPrimaryKey()?.Properties.FirstOrDefault(property => property.ClrType == typeof(Guid));
+            McpEffects.Add(new McpEffect { Id = scope!.Id, EntityId = key is null ? null : entry.Property(key.Name).CurrentValue as Guid? });
+        }
+        var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        if (record) scope!.Recorded = true;
+        return result;
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

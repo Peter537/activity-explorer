@@ -1,12 +1,24 @@
 using System.Collections.Frozen;
 using System.Reflection;
 using ActivityExplorer.Mcp.Tools;
+using ActivityExplorer.Core.Models;
+using ActivityExplorer.Mcp.Configuration;
 using ModelContextProtocol.Server;
 
 namespace ActivityExplorer.Mcp;
 
 public static class ToolCatalog
 {
+    public static bool IsAvailable(string name, McpOptions options)
+    {
+        if (Names.Contains(name)) return true;
+        if (!options.WritesEnabled) return false;
+        if (name is "get_write_context" or "get_prepared_change" or "get_operation_status" or "apply_prepared_change") return true;
+        if (!name.StartsWith("prepare_", StringComparison.Ordinal)) return false;
+        var action = name[8..];
+        return McpChangeCatalog.Actions.Contains(action) && (!McpChangeCatalog.Destructive(action) || options.AllowDestructive)
+            && (!McpChangeCatalog.Administration(action) || options.AllowAdministration);
+    }
     public static IReadOnlySet<string> Names { get; } = new[]
     {
         "get_server_status", "list_profiles", "list_activity_filter_values", "search_activities", "get_activity",

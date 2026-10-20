@@ -19,7 +19,10 @@ public sealed class ImportProcessor(
     ISegmentService segments,
     ILogger<ImportProcessor> logger) : IImportProcessor
 {
-    public async Task ProcessAsync(Guid importBatchId, CancellationToken cancellationToken = default)
+    public Task ProcessAsync(Guid importBatchId, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(async () => { await ProcessCoreAsync(importBatchId, cancellationToken); return true; }, cancellationToken);
+
+    private async Task ProcessCoreAsync(Guid importBatchId, CancellationToken cancellationToken)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var batch = await db.ImportBatches.SingleOrDefaultAsync(x => x.Id == importBatchId, cancellationToken)

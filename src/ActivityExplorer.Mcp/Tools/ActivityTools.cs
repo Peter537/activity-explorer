@@ -13,9 +13,9 @@ namespace ActivityExplorer.Mcp.Tools;
 public sealed class ActivityTools(ToolExecutionPolicy execution, IActivityReadService activities, IProfileReadService profiles, McpOptions options)
 {
     [McpServerTool(Name = "get_server_status", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true, OutputSchemaType = typeof(ToolEnvelope<ServerStatus>))]
-    [Description("Read server version, read-only access mode, database readiness and execution limits.")]
+    [Description("Read server version, configured access mode, database readiness and execution limits. ReadWrite capabilities also require the matching running Web app.")]
     public Task<CallToolResult> GetServerStatus(CancellationToken cancellationToken) =>
-        execution.RunAsync<ServerStatus>("get_server_status", null, (_, _) => Task.FromResult<ServerStatus?>(new(McpHost.ApplicationVersion, "stdio", "ReadOnly", true, 100, 1000, options.MaxResponseBytes, options.RequestTimeoutSeconds)), cancellationToken);
+        execution.RunAsync<ServerStatus>("get_server_status", null, (_, _) => Task.FromResult<ServerStatus?>(new(McpHost.ApplicationVersion, "stdio", options.WritesEnabled ? "ReadWrite" : "ReadOnly", true, 100, 1000, options.MaxResponseBytes, options.RequestTimeoutSeconds)), cancellationToken);
 
     [McpServerTool(Name = "list_profiles", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true, OutputSchemaType = typeof(ToolEnvelope<PagedResult<ProfileSummary>>))]
     [Description("List permitted local profiles and their reporting timezones. Choose a profile ID for subsequent calls.")]

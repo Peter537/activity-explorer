@@ -5,8 +5,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-public sealed class MapSettingsService(IDbContextFactory<ExplorerDbContext> contextFactory) : IMapSettingsService
+public sealed class MapSettingsService(IDbContextFactory<ExplorerDbContext> contextFactory, IOwnerMutationLock? ownerMutationLock = null) : IMapSettingsService
 {
+    private readonly IOwnerMutationLock _mutations = ownerMutationLock ?? new OwnerMutationLock();
     private const string Key = "maps.mode";
     private int _cachedMode = -1;
 
@@ -28,6 +29,7 @@ public sealed class MapSettingsService(IDbContextFactory<ExplorerDbContext> cont
 
     public async Task SetModeAsync(MapPrivacyMode mode, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await _mutations.AcquireAsync([], cancellationToken);
         if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var setting = await db.ApplicationSettings.SingleOrDefaultAsync(x => x.Key == Key, cancellationToken);

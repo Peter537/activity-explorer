@@ -1,0 +1,10 @@
+{
+  "McpWrites": {
+    "Enabled": false,
+    "ProfileIds": ["11111111-1111-4111-8111-111111111111"],
+    "AllowDestructive": false,
+    "AllowAdministration": false,
+    "PlanLifetimeMinutes": 15,
+    "MaxPendingPlans": 100
+  }
+}

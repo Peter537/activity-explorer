@@ -91,7 +91,10 @@ public sealed partial class ActivityQueryService(
 
     public Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(Guid? ownerId, CancellationToken cancellationToken = default) => _reader.GetSportActivityCountsAsync(ownerId, cancellationToken);
 
-    public async Task<ActivityDeletionResult> DeleteAsync(
+    public Task<ActivityDeletionResult> DeleteAsync(IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => DeleteCoreAsync(activityIds, cancellationToken), cancellationToken);
+
+    private async Task<ActivityDeletionResult> DeleteCoreAsync(
         IReadOnlyCollection<Guid> activityIds,
         CancellationToken cancellationToken = default)
     {
@@ -292,7 +295,10 @@ public sealed partial class ActivityQueryService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default)
+    public Task UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(async () => { await UpdateCoreAsync(id, request, cancellationToken); return true; }, cancellationToken);
+
+    private async Task UpdateCoreAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken)
     {
         var title = request.Title.Trim();
         if (title.Length is < 1 or > 240)
@@ -445,7 +451,7 @@ public sealed partial class ActivityQueryService(
             await segments.RecomputeAsync(segmentId, cancellationToken);
     }
 
-    private static void ValidateMetric(ActivityMetricRequest request)
+    public static void ValidateMetric(ActivityMetricRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Label))
             throw new ArgumentException("Metric label is required.", nameof(request));

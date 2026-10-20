@@ -2,6 +2,8 @@
 
 The default test suite is deterministic and uses synthetic, fictional data. It makes no live Garmin, Strava, OpenFreeMap, or OpenStreetMap request. Browser regressions run only when explicitly enabled.
 
+MCP write tests cover all 40 command families, preview immutability, stale/expired reviews, profile and capability boundaries, atomic mutation receipts, restart outcomes, immutable exports and native acceptance/decline under both protocol generations. They start isolated loopback Web hosts and never change a personal MCP registration. The opt-in MCP browser scenario covers file selection, Web approval/decline, stale-review recovery, keyboard activation, 320–1280 pixel layouts and 200% text; its screenshots are saved under `artifacts/mcp-ui/`.
+
 ## Release verification
 
 ~~~powershell

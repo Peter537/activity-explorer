@@ -1,0 +1,67 @@
+@page "/mcp"
+@rendermode InteractiveServer
+@inject McpWriteService Writes
+@inject IProfileService Profiles
+@inject IConfiguration Configuration
+
+<PageTitle>MCP access - Activity Explorer</PageTitle>
+<PageHeader Title="MCP access" Summary="Review the capabilities granted to local desktop and IDE clients, and select files they may use." />
+@if (!Writes.Enabled)
+{
+    <div class="notice">MCP writes are disabled. Read-only clients can continue to query the library. Enable MCP writes and select permitted profile IDs in the Web app configuration to allow prepared changes.</div>
+}
+else
+{
+    <section class="panel form-panel">
+        <h2>Granted capabilities</h2>
+        <p>Every change requires a preview and confirmation. Destructive actions: <strong>@(Writes.Options.AllowDestructive ? "enabled" : "disabled")</strong>. Global administration: <strong>@(Writes.Options.AllowAdministration ? "enabled" : "disabled")</strong>.</p>
+        <p>Permitted profiles: @string.Join(", ", _profiles.Where(profile => Writes.Options.ProfileIds.Contains(profile.Id)).Select(profile => profile.DisplayName))</p>
+        <p class="muted">Newly created profiles are not automatically granted access. File selections expire after one hour or a Web app restart.</p>
+    </section>
+    <section class="panel form-panel">
+        <h2>Approve a file or folder</h2>
+        <div class="inline-fields">
+            <label><span>Profile</span><select @bind="_profileId" disabled="@(!RendererInfo.IsInteractive || _busy)">@foreach (var profile in _profiles.Where(profile => Writes.Options.ProfileIds.Contains(profile.Id))) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label class="grow"><span>File for a later import</span><InputFile OnChange="SelectFile" disabled="@(!RendererInfo.IsInteractive || _busy || _profileId == Guid.Empty)" /></label>
+        </div>
+        <p class="muted">Selecting a file copies it to temporary staging. It does not import activities, routes or segments. The client must prepare and confirm the import separately.</p>
+        <div class="inline-fields">
+            <label class="grow"><span>Absolute folder path</span><input @bind="_folder" disabled="@(!RendererInfo.IsInteractive || _busy)" /></label>
+            <button class="button secondary" disabled="@(!RendererInfo.IsInteractive || _busy || _profileId == Guid.Empty)" @onclick="ApproveFolder">Approve folder selection</button>
+        </div>
+        <p class="muted">Approving a folder selection does not start watching it. The client must separately preview and confirm ongoing imports.</p>
+        @if (_message is not null) { <div class="notice" role="status">@_message</div> }
+    </section>
+}
+
+@code {
+    private IReadOnlyList<ProfileSummary> _profiles = [];
+    private Guid _profileId;
+    private string _folder = "";
+    private string? _message;
+    private bool _busy;
+    protected override async Task OnInitializedAsync()
+    {
+        if (Writes.Enabled) _profiles = await Profiles.ListAsync();
+        _profileId = _profiles.FirstOrDefault(profile => Writes.Options.ProfileIds.Contains(profile.Id))?.Id ?? Guid.Empty;
+    }
+    private async Task SelectFile(InputFileChangeEventArgs args)
+    {
+        _busy = true;
+        _message = "Copying the selected file to temporary staging. No import has started.";
+        try
+        {
+            var maximum = Configuration.GetValue("Imports:MaxUploadBytes", 10L * 1024 * 1024 * 1024);
+            await using var stream = args.File.OpenReadStream(maximum);
+            var asset = await Writes.ApproveFileAsync(_profileId, args.File.Name, stream, maximum, CancellationToken.None);
+            _message = $"Selected {asset.Name}. Asset ID: {asset.Id}. No import has started.";
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
+    private void ApproveFolder()
+    {
+        try { var asset = Writes.ApproveFolder(_profileId, _folder); _message = $"Selected folder {asset.Name}. Asset ID: {asset.Id}. Watching has not started."; }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException) { _message = exception.Message; }
+    }
+}

@@ -5,7 +5,7 @@ using ActivityExplorer.Core.Models;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
-internal static class SavedSearchCriteriaJson
+public static class SavedSearchCriteriaJson
 {
     private static readonly JsonSerializerOptions Options = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
 

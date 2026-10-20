@@ -33,7 +33,10 @@ public sealed class RouteService(
                 GeometryCodec.FromWkb(route.GeometryWkb));
     }
 
-    public async Task<Guid> CreateFromActivityAsync(CreateRouteRequest request, CancellationToken cancellationToken = default)
+    public Task<Guid> CreateFromActivityAsync(CreateRouteRequest request, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => CreateFromActivityCoreAsync(request, cancellationToken), cancellationToken);
+
+    private async Task<Guid> CreateFromActivityCoreAsync(CreateRouteRequest request, CancellationToken cancellationToken)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var activity = await db.Activities.AsNoTracking()
@@ -51,6 +54,7 @@ public sealed class RouteService(
 
     public async Task<Guid> CreateAsync(CreateRoutePathRequest request, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         ValidateRequest(request);
         var points = ValidPoints(request.Points);
 
@@ -165,8 +169,8 @@ public sealed class RouteService(
         var route = await GetAsync(id, cancellationToken);
         if (route is null) return null;
 
-        var builder = new StringBuilder();
-        using var writer = XmlWriter.Create(builder, new XmlWriterSettings { Indent = true, OmitXmlDeclaration = false });
+        using var output = new MemoryStream();
+        using var writer = XmlWriter.Create(output, new XmlWriterSettings { Indent = true, OmitXmlDeclaration = false, Encoding = new UTF8Encoding(false) });
         writer.WriteStartDocument();
         writer.WriteStartElement("gpx", "http://www.topografix.com/GPX/1/1");
         writer.WriteAttributeString("version", "1.1");
@@ -188,9 +192,9 @@ public sealed class RouteService(
         writer.WriteEndElement();
         writer.WriteEndDocument();
         writer.Flush();
-        return builder.ToString();
+        return Encoding.UTF8.GetString(output.ToArray());
     }
-    private static void ValidateRequest(CreateRoutePathRequest request)
+    public static void ValidateRequest(CreateRoutePathRequest request)
     {
         var name = request.Name.Trim();
         if (name.Length is < 1 or > 240)
@@ -203,7 +207,7 @@ public sealed class RouteService(
             throw new ArgumentException("A route cannot contain more than 250,000 points.", nameof(request));
     }
 
-    private static TrackPoint[] ValidPoints(IReadOnlyList<TrackPoint> source)
+    public static TrackPoint[] ValidPoints(IReadOnlyList<TrackPoint> source)
     {
         var points = source.Where(x => x.Latitude.HasValue && x.Longitude.HasValue).ToArray();
         if (points.Length < 2)

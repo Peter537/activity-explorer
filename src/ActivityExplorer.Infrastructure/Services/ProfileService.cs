@@ -17,6 +17,7 @@ public sealed class ProfileService(
 
     public async Task<Guid> CreateAsync(string displayName, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await ownerMutationLock.AcquireAsync([], cancellationToken);
         var name = displayName.Trim();
         if (name.Length is < 1 or > 120) throw new ArgumentException("Profile name must contain 1 to 120 characters.", nameof(displayName));
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);

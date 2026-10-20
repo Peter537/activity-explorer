@@ -19,3 +19,7 @@ artifacts/
 *.gz
 *.zip
 activities.csv
+mcp-connection.json
+web-writer.lock
+mcp-assets/
+mcp-downloads/

@@ -38,7 +38,7 @@ Activity Explorer does not use the Strava API, Garmin Connect API, OAuth credent
 
 ## Quick start
 
-Local desktop and IDE clients can also query the existing database through the separate, read-only [MCP server](docs/mcp.md). After publishing, use the [Codex setup script](scripts/register-mcp-codex.ps1) or adapt the [client configuration examples](examples/mcp/). See [Register with Codex](docs/mcp.md#register-with-codex) for setup and verification.
+Local desktop and IDE clients can query the existing database through the separate [MCP server](docs/mcp.md), which defaults to read-only. Optional write capabilities use the running Web app, dry-run previews and human confirmation; destructive actions and global administration require additional opt-ins. After publishing, use the [Codex setup script](scripts/register-mcp-codex.ps1) or adapt the [client configuration examples](examples/mcp/). See [Register with Codex](docs/mcp.md#register-with-codex) for setup and verification.
 
 Prerequisites:
 
@@ -188,7 +188,7 @@ Activity deletion uses an inline confirmation that names the affected activity o
 src/
   ActivityExplorer.Core/            Domain models, DTOs, and contracts
   ActivityExplorer.Infrastructure/  SQLite, imports, calculations, background work
-  ActivityExplorer.Mcp/             Read-only local stdio MCP host
+  ActivityExplorer.Mcp/             Local stdio MCP host; read-only by default
   ActivityExplorer.Web/             Blazor Interactive Server host and UI
 tests/
   ActivityExplorer.Tests/           Unit and SQLite integration tests

@@ -1,0 +1,2 @@
+.mcp-review-details { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow-y: auto; }
+.action-row { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }

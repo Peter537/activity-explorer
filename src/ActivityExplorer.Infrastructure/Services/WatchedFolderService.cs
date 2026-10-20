@@ -12,8 +12,9 @@ namespace ActivityExplorer.Infrastructure.Services;
 public sealed class WatchedFolderService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     IImportQueue queue,
-    AppDataPaths paths) : IWatchedFolderService
+    AppDataPaths paths, IOwnerMutationLock? ownerMutationLock = null) : IWatchedFolderService
 {
+    private readonly IOwnerMutationLock _mutations = ownerMutationLock ?? new OwnerMutationLock();
     private static readonly string[] Supported = [".fit", ".gpx", ".tcx", ".gz", ".zip"];
 
     public async Task<IReadOnlyList<WatchedFolderSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default)
@@ -28,6 +29,7 @@ public sealed class WatchedFolderService(
 
     public async Task<Guid> AddAsync(Guid ownerId, string path, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await _mutations.AcquireAsync([ownerId], cancellationToken);
         var fullPath = Path.GetFullPath(path.Trim());
         if (!Directory.Exists(fullPath)) throw new DirectoryNotFoundException("The watched folder does not exist.");
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
@@ -43,6 +45,7 @@ public sealed class WatchedFolderService(
 
     public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await _mutations.AcquireAsync([], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var folder = await db.WatchedFolders.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (folder is null) return;
@@ -50,7 +53,10 @@ public sealed class WatchedFolderService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task ReconcileAsync(CancellationToken cancellationToken = default)
+    public Task ReconcileAsync(CancellationToken cancellationToken = default) =>
+        _mutations.RunAsync(async () => { await ReconcileCoreAsync(cancellationToken); return true; }, cancellationToken);
+
+    private async Task ReconcileCoreAsync(CancellationToken cancellationToken)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var folders = await db.WatchedFolders.Where(x => x.Enabled).ToListAsync(cancellationToken);

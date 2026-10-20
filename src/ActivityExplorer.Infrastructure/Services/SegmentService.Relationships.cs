@@ -85,8 +85,10 @@ public sealed partial class SegmentService
     {
         await using var ownerLock = await AcquireParentLockAsync(parentId, cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await db.SegmentLinks.Where(link => link.ParentSegmentId == parentId && link.ChildSegmentId == childId)
-            .ExecuteDeleteAsync(cancellationToken);
+        var link = await db.SegmentLinks.SingleOrDefaultAsync(item => item.ParentSegmentId == parentId && item.ChildSegmentId == childId, cancellationToken);
+        if (link is null) return;
+        db.SegmentLinks.Remove(link);
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<IAsyncDisposable> AcquireParentLockAsync(Guid parentId, CancellationToken cancellationToken)

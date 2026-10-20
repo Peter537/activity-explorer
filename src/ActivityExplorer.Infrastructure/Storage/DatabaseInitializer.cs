@@ -22,6 +22,14 @@ public sealed class DatabaseInitializer(
         await EnsureOrganizationSchemaAsync(db, cancellationToken);
         await EnsureGoalsSchemaAsync(db, cancellationToken);
         await EnsureExplorationSchemaAsync(db, cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "McpOperations" (
+                "Id" TEXT NOT NULL PRIMARY KEY, "Action" TEXT NOT NULL, "ProfileIdsJson" TEXT NOT NULL,
+                "RequestJson" TEXT NOT NULL, "Fingerprint" TEXT NOT NULL, "Status" TEXT NOT NULL,
+                "EntityId" TEXT NULL, "ResultJson" TEXT NULL, "Message" TEXT NULL,
+                "CreatedAtUtc" INTEGER NOT NULL, "CompletedAtUtc" INTEGER NULL);
+            CREATE TABLE IF NOT EXISTS "McpEffects" ("Id" TEXT NOT NULL PRIMARY KEY, "EntityId" TEXT NULL);
+            """, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches

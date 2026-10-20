@@ -1,7 +1,7 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-Registers the published read-only Activity Explorer MCP server with local Codex clients.
+Registers the published Activity Explorer MCP server with local Codex clients. Defaults to read-only.
 .DESCRIPTION
 Updates only the named server in Codex's user configuration. Does not build the
 server, initialize application data, or write machine-specific paths to the repo.
@@ -24,10 +24,20 @@ param(
     [string]$ServerName = 'activity-explorer',
 
     [string]$CodexCommand = 'codex',
-    [string]$DotnetCommand = 'dotnet'
+    [string]$DotnetCommand = 'dotnet',
+    [switch]$EnableWrites,
+    [Guid[]]$WriteProfileIds,
+    [switch]$AllowDestructive,
+    [switch]$AllowAdministration
 )
 
 $ErrorActionPreference = 'Stop'
+if ($EnableWrites -and (-not $WriteProfileIds -or $WriteProfileIds.Contains([Guid]::Empty))) {
+    throw 'EnableWrites requires explicit nonempty WriteProfileIds.'
+}
+if (-not $EnableWrites -and ($WriteProfileIds -or $AllowDestructive -or $AllowAdministration)) {
+    throw 'Write permissions require EnableWrites. The default remains read-only.'
+}
 
 if (-not (Test-Path -LiteralPath $DataDirectory -PathType Container)) {
     throw 'DataDirectory must be an existing directory used by the web application.'
@@ -54,9 +64,15 @@ if ($PSCmdlet.ShouldProcess('Codex user MCP configuration', "Register '$ServerNa
     $codexArguments = @(
         'mcp', 'add', $ServerName,
         '--env', "ACTIVITY_EXPLORER_DATA=$dataRoot",
-        '--env', 'Mcp__AccessMode=ReadOnly',
-        '--', $dotnet.Source, $serverPath
+        '--env', "Mcp__AccessMode=$(if ($EnableWrites) { 'ReadWrite' } else { 'ReadOnly' })"
     )
+    if ($EnableWrites) {
+        for ($profileIndex = 0; $profileIndex -lt $WriteProfileIds.Count; $profileIndex++) {
+            $codexArguments += @('--env', "Mcp__AllowedWriteProfileIds__${profileIndex}=$($WriteProfileIds[$profileIndex])")
+        }
+        $codexArguments += @('--env', "Mcp__AllowDestructive=$($AllowDestructive.IsPresent)", '--env', "Mcp__AllowAdministration=$($AllowAdministration.IsPresent)")
+    }
+    $codexArguments += @('--', $dotnet.Source, $serverPath)
     & $codex.Source @codexArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Codex registration failed with exit code $LASTEXITCODE."

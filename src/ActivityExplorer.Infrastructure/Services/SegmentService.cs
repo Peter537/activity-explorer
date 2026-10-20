@@ -73,6 +73,7 @@ public sealed partial class SegmentService(
 
     public async Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         ValidateNameAndTolerance(request.Name, request.ToleranceMeters, nameof(request));
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var activity = await db.Activities.AsNoTracking().Include(x => x.Stream)
@@ -117,6 +118,7 @@ public sealed partial class SegmentService(
 
     public async Task<Guid> CreateAsync(CreateSegmentPathRequest request, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         ValidateNameAndTolerance(request.Name, request.ToleranceMeters, nameof(request));
         ValidateProvenance(request.SourceKind, request.SourceName, request.SourceFormat, nameof(request));
         var points = ValidatePoints(request.Points, nameof(request));
@@ -157,6 +159,7 @@ public sealed partial class SegmentService(
 
     public async Task RecomputeAsync(Guid segmentId, CancellationToken cancellationToken = default)
     {
+        await using var mutation = await ownerMutationLock.AcquireAsync([], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var segment = await db.Segments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == segmentId, cancellationToken);
         if (segment is null) return;
@@ -250,7 +253,7 @@ public sealed partial class SegmentService(
         return ranked;
     }
 
-    private static void ValidateNameAndTolerance(string name, double toleranceMeters, string parameterName)
+    public static void ValidateNameAndTolerance(string name, double toleranceMeters, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Name is required.", parameterName);
         if (name.Trim().Length > 240) throw new ArgumentException("Name cannot exceed 240 characters.", parameterName);
@@ -279,7 +282,7 @@ public sealed partial class SegmentService(
         return trimmed.Length <= maximumLength ? trimmed : trimmed[..maximumLength];
     }
 
-    private static TrackPoint[] ValidatePoints(IReadOnlyList<TrackPoint> input, string parameterName)
+    public static TrackPoint[] ValidatePoints(IReadOnlyList<TrackPoint> input, string parameterName)
     {
         if (input.Count > 250_000) throw new ArgumentException("A segment cannot contain more than 250,000 points.", parameterName);
         var points = input.Where(x => x.Latitude.HasValue && x.Longitude.HasValue).ToArray();

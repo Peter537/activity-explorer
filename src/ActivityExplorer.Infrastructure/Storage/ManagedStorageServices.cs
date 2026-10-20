@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Infrastructure.Processing;
@@ -79,37 +78,40 @@ public sealed class OriginalStore(AppDataPaths paths) : IOriginalStore
     }
 }
 
-public sealed class OwnerMutationLock : IOwnerMutationLock
+public sealed class OwnerMutationLock : IOwnerMutationLock, IDisposable
 {
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _locks = new();
+    // SQLite has one writer. The global gate also protects multi-owner and global commands.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly AsyncLocal<Scope?> _scope = new();
 
     public async ValueTask<IAsyncDisposable> AcquireAsync(
         IEnumerable<Guid> ownerIds,
         CancellationToken cancellationToken = default)
     {
-        var acquired = new List<SemaphoreSlim>();
-        try
-        {
-            foreach (var ownerId in ownerIds.Distinct().Order())
-            {
-                var gate = _locks.GetOrAdd(ownerId, _ => new SemaphoreSlim(1, 1));
-                await gate.WaitAsync(cancellationToken);
-                acquired.Add(gate);
-            }
-            return new Releaser(acquired);
-        }
-        catch
-        {
-            for (var index = acquired.Count - 1; index >= 0; index--) acquired[index].Release();
-            throw;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_scope.Value?.Active == true) return new Releaser(null);
+        await _gate.WaitAsync(cancellationToken);
+        return new Releaser(_gate);
     }
 
-    private sealed class Releaser(IReadOnlyList<SemaphoreSlim> gates) : IAsyncDisposable
+    public async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken = default)
+    {
+        if (_scope.Value?.Active == true) return await action();
+        await using var lease = await AcquireAsync([], cancellationToken);
+        var previous = _scope.Value;
+        var scope = new Scope();
+        _scope.Value = scope;
+        try { return await action(); }
+        finally { scope.Active = false; _scope.Value = previous; }
+    }
+
+    private sealed class Scope { public bool Active { get; set; } = true; }
+    public void Dispose() => _gate.Dispose();
+    private sealed class Releaser(SemaphoreSlim? gate) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {
-            for (var index = gates.Count - 1; index >= 0; index--) gates[index].Release();
+            gate?.Release();
             return ValueTask.CompletedTask;
         }
     }

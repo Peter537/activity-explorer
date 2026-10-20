@@ -1,0 +1,56 @@
+@page "/mcp/review/{Id:guid}"
+@rendermode InteractiveServer
+@inject McpWriteService Writes
+@inject IProfileService Profiles
+
+<PageTitle>Review MCP change - Activity Explorer</PageTitle>
+<PageHeader Title="Review MCP change" Summary="Approve only the prepared change shown below. Opening this page does not approve or apply it." />
+@if (_preview is not null)
+{
+    <section class="panel form-panel">
+        <h2>@(_preview.Summary[..1].ToUpperInvariant() + _preview.Summary[1..])</h2>
+        <p>Profiles: @string.Join(", ", _preview.ProfileIds.Select(id => _profileNames.GetValueOrDefault(id, id.ToString()))). Expires: @_preview.ExpiresAt.ToLocalTime().ToString("g").</p>
+        <pre class="mcp-review-details">@System.Text.Json.JsonSerializer.Serialize(_preview.Details, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })</pre>
+        @if (_preview.ConfirmationPhrase is not null)
+        {
+            <label><span>Type @_preview.ConfirmationPhrase exactly to confirm</span><input @bind="_phrase" autocomplete="off" disabled="@(!RendererInfo.IsInteractive || _busy)" /></label>
+        }
+        <div class="action-row">
+            <button class="@(_preview.ConfirmationPhrase is null ? "button primary" : "button danger")" disabled="@(!RendererInfo.IsInteractive || _busy)" @onclick="Approve">Approve and apply change</button>
+            <button class="button secondary" disabled="@(!RendererInfo.IsInteractive || _busy)" @onclick="Decline">Decline change</button>
+        </div>
+    </section>
+}
+@if (_message is not null) { <div class="notice" role="status">@_message</div> }
+<p><a href="/mcp">MCP access and file selections</a></p>
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private McpChangePreview? _preview;
+    private string? _phrase;
+    private string? _message;
+    private bool _busy;
+    private Dictionary<Guid, string> _profileNames = [];
+    protected override async Task OnParametersSetAsync()
+    {
+        _preview = null; _phrase = null;
+        try
+        {
+            _preview = Writes.GetPreview(Id);
+            _profileNames = (await Profiles.ListAsync()).ToDictionary(profile => profile.Id, profile => profile.DisplayName);
+        }
+        catch (Exception exception) when (exception is KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+    }
+    private async Task Approve()
+    {
+        _busy = true;
+        try { var status = await Writes.ApproveAsync(Id, _phrase, CancellationToken.None); _preview = null; _message = $"Change approved. Operation {status.OperationId}: {status.Status}. Ask the client to check operation status for the result."; }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
+    private void Decline()
+    {
+        try { Writes.Decline(Id); _preview = null; _message = "Change declined. No operation was queued."; }
+        catch (Exception exception) when (exception is KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+    }
+}

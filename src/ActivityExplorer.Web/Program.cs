@@ -40,8 +40,13 @@ builder.Services.AddAntiforgery(options =>
 builder.Services.AddSingleton<ILoggerProvider>(provider => new RollingFileLoggerProvider(provider.GetRequiredService<AppDataPaths>().LogsPath));
 builder.Services.AddScoped<ProfileState>();
 builder.Services.AddSingleton<MultipartUploadReader>();
+builder.Services.AddSingleton(McpWriteOptions.Read(builder.Configuration));
+builder.Services.AddSingleton<McpWriteService>();
+builder.Services.AddHostedService<McpOperationWorker>();
+builder.Services.AddSingleton<WebWriterLease>();
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<WebWriterLease>();
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/error", createScopeForErrors: true);
@@ -70,6 +75,16 @@ app.Use(async (context, next) =>
 app.UseStaticFiles();
 app.UseAntiforgery();
 app.MapStaticAssets();
+app.MapMcpWrites();
+var mcpWrites = app.Services.GetRequiredService<McpWriteService>();
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    if (!mcpWrites.Enabled) return;
+    if (app.Urls.Any(url => !Uri.TryCreate(url, UriKind.Absolute, out var address) || !address.IsLoopback))
+        throw new InvalidOperationException("All Web listeners must be loopback-only when MCP writes are enabled.");
+    mcpWrites.PublishConnectionAsync(app.Urls.FirstOrDefault() ?? "http://localhost", CancellationToken.None).GetAwaiter().GetResult();
+});
+app.Lifetime.ApplicationStopped.Register(mcpWrites.RemoveConnection);
 
 var internalApi = app.MapGroup("/internal");
 internalApi.MapGet("/antiforgery/token", (HttpContext context, IAntiforgery antiforgery) =>

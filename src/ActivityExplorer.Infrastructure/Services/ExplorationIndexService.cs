@@ -39,8 +39,12 @@ public sealed class ExplorationIndexService(
         return new(total, indexed, limited);
     }
 
-    public async Task<ExplorationIndexStatus> BuildAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress = null,
+    public Task<ExplorationIndexStatus> BuildAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress = null,
         bool recheckLimited = false, CancellationToken cancellationToken = default)
+        => ownerMutationLock.RunAsync(() => BuildCoreAsync(scope, progress, recheckLimited, cancellationToken), cancellationToken);
+
+    private async Task<ExplorationIndexStatus> BuildCoreAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress,
+        bool recheckLimited, CancellationToken cancellationToken)
     {
         var status = await GetStatusAsync(scope, cancellationToken);
         var recheck = new Queue<Guid>();

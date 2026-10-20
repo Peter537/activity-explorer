@@ -281,6 +281,7 @@ public sealed partial class DatabaseIntegrationTests
     private sealed class TransferBeforeAcquireLock(IOwnerMutationLock inner, Func<Task> transfer) : IOwnerMutationLock
     {
         private bool _transferred;
+        public Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken = default) => inner.RunAsync(action, cancellationToken);
         public async ValueTask<IAsyncDisposable> AcquireAsync(IEnumerable<Guid> ownerIds, CancellationToken cancellationToken = default)
         {
             if (!_transferred)

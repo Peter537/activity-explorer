@@ -346,7 +346,7 @@ public sealed class GoalService(
         revision.Target = definition.Target;
     }
 
-    private static GoalDefinition ValidateDefinition(GoalDefinition definition, GoalMetric metric)
+    public static GoalDefinition ValidateDefinition(GoalDefinition definition, GoalMetric metric)
     {
         ArgumentNullException.ThrowIfNull(definition);
         var name = definition.Name?.Trim() ?? string.Empty;
@@ -358,7 +358,7 @@ public sealed class GoalService(
         return definition with { Name = name };
     }
 
-    private static void ValidateSchedule(GoalSchedule schedule)
+    public static void ValidateSchedule(GoalSchedule schedule)
     {
         ArgumentNullException.ThrowIfNull(schedule);
         if (!Enum.IsDefined(schedule.Metric)) throw new ArgumentException("Choose a valid goal metric.");
