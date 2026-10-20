@@ -17,7 +17,7 @@ public sealed class McpOptions
         var section = configuration.GetSection("Mcp");
         var known = typeof(McpOptions).GetProperties().Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (section.GetChildren().Any(child => !known.Contains(child.Key))) throw new ArgumentException("Unknown MCP configuration option.");
-        var options = section.Get<McpOptions>() ?? new();
+        var options = section.Get<McpOptions>(binder => binder.ErrorOnUnknownConfiguration = true) ?? new();
         if (!string.Equals(options.AccessMode, "ReadOnly", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("This release supports ReadOnly access only. Writable tools are not available.");
         if (section.GetSection(nameof(AllowedProfileIds)).Exists() && options.AllowedProfileIds is not { Length: > 0 } || options.AllowedProfileIds?.Contains(Guid.Empty) == true)

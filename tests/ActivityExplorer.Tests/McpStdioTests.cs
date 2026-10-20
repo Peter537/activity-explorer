@@ -80,6 +80,21 @@ public sealed class McpStdioTests
         Assert.Contains("ReadOnly", invalid.Error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Mixed_valid_and_invalid_profile_ids_fail_before_database_access()
+    {
+        await using var fixture = await McpFixture.CreateAsync();
+        var missing = Path.Combine(fixture.DirectoryPath, "does-not-exist");
+        var result = await RunToEofAsync(missing,
+            "--Mcp:AllowedProfileIds:0", fixture.Owner.ToString(),
+            "--Mcp:AllowedProfileIds:1", "not-a-guid");
+
+        Assert.Equal(2, result.Exit);
+        Assert.Empty(result.Output);
+        Assert.StartsWith("Invalid MCP configuration:", result.Error, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(missing));
+    }
+
     private static Dictionary<string, string?> ChildEnvironment(string dataRoot)
     {
         var environment = new Dictionary<string, string?> { ["ACTIVITY_EXPLORER_DATA"] = dataRoot, ["DOTNET_NOLOGO"] = "1" };
