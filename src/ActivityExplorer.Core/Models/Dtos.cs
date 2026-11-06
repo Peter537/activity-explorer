@@ -30,6 +30,10 @@ public sealed record ActivitySearchResult(
 
 public sealed record ActivityDeletionResult(
     int DeletedCount, bool FileCleanupPending, bool StatisticsRefreshPending);
+public sealed record ProfileDeletionResult(Guid OwnerId, bool FileCleanupPending);
+public sealed record ActivityUpdateResult(
+    Guid ActivityId, Guid OwnerId, bool FileCleanupPending, bool StatisticsRefreshPending, bool SegmentRefreshPending);
+public sealed record RouteImportResult(Guid RouteId, bool FileCleanupPending);
 
 public sealed record ActivitySummary(
     Guid Id, Guid OwnerId, string OwnerName, string Title, SportKind Sport, DateTimeOffset StartTime,

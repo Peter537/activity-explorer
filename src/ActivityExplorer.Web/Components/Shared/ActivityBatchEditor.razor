@@ -1,9 +1,15 @@
 @inject IActivityOrganizationService Organization
+@implements IDisposable
 
 <section class="panel batch-editor" aria-label="Bulk activity editor" aria-busy="@_busy">
-    <h2 @ref="_heading" tabindex="-1">@(_review is null ? "Edit activities" : "Review activity changes")</h2>
+    <h2 @ref="_heading" tabindex="-1">@(_state is Applied ? "Activity changes applied" : _review is null ? "Edit activities" : "Review activity changes")</h2>
     <StatusMessage Message="@_error" IsError="true" />
-    @if (_review is null)
+    @if (_state is Applied applied)
+    {
+        <p>Reviewed @applied.Result.ReviewedCount.ToString("N0") activities; changed @applied.Result.ChangedCount.ToString("N0").</p>
+        <button class="button" @onclick="OnCancel">Close editing</button>
+    }
+    else if (_review is null)
     {
         <p>@(AllMatching ? "Prepare an exact snapshot of the applied search." : $"Edit {SelectedIds.Count:N0} selected activities across pages.")</p>
         <div class="batch-fields">
@@ -30,8 +36,8 @@
             @if (_review.Changes.GearMode == GearEditMode.Clear) { <li>Clear gear</li> }
         </ul>
         <div class="button-row">
-            <button class="button primary" disabled="@(_busy || _stale)" @onclick="Apply">Apply changes</button>
-            <button class="button" disabled="@_busy" @onclick="ChangeEdits">Change edits</button>
+            <button class="button primary" disabled="@(_state is not Reviewed)" @onclick="Apply">Apply changes</button>
+            <button class="button" disabled="@(_busy || _state is Unconfirmed)" @onclick="ChangeEdits">Change edits</button>
             <button class="button" disabled="@_busy" @onclick="OnCancel">Cancel editing</button>
         </div>
     }
@@ -50,9 +56,19 @@
     private IReadOnlyList<Guid> _add = [], _remove = [];
     private GearEditMode _gearMode;
     private string _gear = "";
-    private BatchReview? _review;
-    private bool _busy, _stale;
-    private string? _error;
+    private BatchState _state = new Editing();
+    private bool _disposed;
+    private bool _busy => _state is Preparing or Applying;
+    private BatchReview? _review => _state switch
+    {
+        Reviewed value => value.Review, Applying value => value.Review, NeedsReview value => value.Review,
+        Unconfirmed value => value.Review, _ => null
+    };
+    private string? _error => _state switch
+    {
+        Editing value => value.Error, NeedsReview value => value.Error, Unconfirmed value => value.Error,
+        Applied value => value.RefreshError, _ => null
+    };
     private ElementReference _heading;
     private bool _focusReview;
 
@@ -65,33 +81,49 @@
 
     private async Task Prepare()
     {
-        if (_busy) return;
-        _busy = true;
-        _error = null;
+        if (_disposed || _state is not Editing) return;
+        _state = new Preparing();
         try
         {
-            _review = await Organization.PrepareBatchAsync(OwnerId, AllMatching ? null : SelectedIds.ToArray(),
+            var review = await Organization.PrepareBatchAsync(OwnerId, AllMatching ? null : SelectedIds.ToArray(),
                 AllMatching ? Filter : null, new(_add, _remove, _gearMode, _gear));
-            _stale = false;
+            if (_disposed) return;
+            _state = new Reviewed(review);
             _focusReview = true;
         }
-        catch (Exception exception) { _error = exception.Message; }
-        finally { _busy = false; }
+        catch (Exception exception) { if (!_disposed) _state = new Editing(exception.Message); }
     }
 
     private async Task Apply()
     {
-        if (_busy || _stale || _review is null) return;
-        _busy = true;
-        _error = null;
+        if (_disposed || _state is not Reviewed reviewed) return;
+        _state = new Applying(reviewed.Review);
+        BatchEditResult result;
         try
         {
-            var result = await Organization.ApplyBatchAsync(_review);
-            await OnApplied.InvokeAsync(result);
+            result = await Organization.ApplyBatchAsync(reviewed.Review);
         }
-        catch (Exception exception) { _error = $"Nothing changed. {exception.Message}"; _stale = true; }
-        finally { _busy = false; }
+        catch (Exception exception)
+        {
+            if (!_disposed) _state = exception is ArgumentException or InvalidOperationException
+                ? new NeedsReview(reviewed.Review, $"Nothing changed. {exception.Message}")
+                : new Unconfirmed(reviewed.Review, "The result could not be confirmed. Refresh activities before reviewing another change.");
+            return;
+        }
+        if (_disposed) return;
+        _state = new Applied(result);
+        try { await OnApplied.InvokeAsync(result); }
+        catch { if (!_disposed) _state = new Applied(result, "Changes were applied, but the activity view could not be refreshed. Refresh activities to see the result."); }
     }
 
-    private void ChangeEdits() { _review = null; _stale = false; _error = null; }
+    private void ChangeEdits() { if (!_disposed && !_busy && _state is not (Applied or Unconfirmed)) _state = new Editing(); }
+    public void Dispose() { _disposed = true; GC.SuppressFinalize(this); }
+    private abstract record BatchState;
+    private sealed record Editing(string? Error = null) : BatchState;
+    private sealed record Preparing : BatchState;
+    private sealed record Reviewed(BatchReview Review) : BatchState;
+    private sealed record Applying(BatchReview Review) : BatchState;
+    private sealed record NeedsReview(BatchReview Review, string Error) : BatchState;
+    private sealed record Unconfirmed(BatchReview Review, string Error) : BatchState;
+    private sealed record Applied(BatchEditResult Result, string? RefreshError = null) : BatchState;
 }

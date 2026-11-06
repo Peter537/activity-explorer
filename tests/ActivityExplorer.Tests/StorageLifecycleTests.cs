@@ -7,12 +7,176 @@ using ActivityExplorer.Infrastructure.Services;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ActivityExplorer.Tests;
 
 public sealed class StorageLifecycleTests
 {
+    [Fact]
+    public async Task Enqueue_signals_a_batch_committed_when_request_is_cancelled_after_save()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var source = setup.Stage("source.gpx", TestSupport.Gpx());
+        using var cancellation = new CancellationTokenSource();
+        var options = new DbContextOptionsBuilder<ExplorerDbContext>()
+            .UseSqlite($"Data Source={setup.Paths.DatabasePath}")
+            .AddInterceptors(new CancelAfterSave(cancellation))
+            .Options;
+        using var ownerLock = new OwnerMutationLock();
+        var queue = new ImportQueue(new TestDbFactory(options), setup.Paths, ownerLock);
+
+        var id = await queue.EnqueueAsync(new ImportRequest(ownerId, source, "source.gpx", SourceKind.Gpx), cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using var reader = queue.ReadAllAsync(timeout.Token).GetAsyncEnumerator(timeout.Token);
+        Assert.True(await reader.MoveNextAsync());
+        Assert.Equal(id, reader.Current);
+        await using var db = await setup.Factory.CreateDbContextAsync();
+        Assert.Equal(ImportStatus.Queued, (await db.ImportBatches.SingleAsync(x => x.Id == id)).Status);
+        Assert.True(File.Exists(source));
+    }
+
+    private sealed class CancelAfterSave(CancellationTokenSource cancellation) : SaveChangesInterceptor
+    {
+        public override ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+        {
+            cancellation.Cancel();
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_copy_removes_partial_target_and_can_be_retried()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var source = setup.Stage("source.gpx", TestSupport.Gpx());
+        var hash = await Fingerprint.Sha256Async(source, CancellationToken.None);
+        var target = setup.Originals.GetOriginalTarget(ownerId, hash, ".gpx");
+        var coordinator = new FileOperationCoordinator(setup.Factory, setup.Paths, setup.Originals,
+            NullLogger<FileOperationCoordinator>.Instance)
+        {
+            CopyAsync = async (input, output, token) =>
+            {
+                await output.WriteAsync(new byte[] { 1, 2, 3 }, token);
+                throw new IOException("Simulated interrupted copy.");
+            }
+        };
+
+        await Assert.ThrowsAsync<IOException>(() => coordinator.PrepareCopyAsync(ownerId, null, source, target, hash));
+        Assert.False(File.Exists(target));
+        var prepared = await setup.FileOperations.PrepareCopyAsync(ownerId, null, source, target, hash);
+        Assert.True(File.Exists(target));
+        await setup.FileOperations.RollbackAsync(prepared.OperationId);
+    }
+
+    [Fact]
+    public async Task Cancelled_copy_removes_partial_target()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var source = setup.Stage("source.gpx", TestSupport.Gpx());
+        var hash = await Fingerprint.Sha256Async(source, CancellationToken.None);
+        var target = setup.Originals.GetOriginalTarget(ownerId, hash, ".gpx");
+        using var cancellation = new CancellationTokenSource();
+        var coordinator = new FileOperationCoordinator(setup.Factory, setup.Paths, setup.Originals,
+            NullLogger<FileOperationCoordinator>.Instance)
+        {
+            CopyAsync = async (input, output, token) =>
+            {
+                await output.WriteAsync(new byte[] { 1, 2, 3 }, token);
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+            }
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            coordinator.PrepareCopyAsync(ownerId, null, source, target, hash, cancellationToken: cancellation.Token));
+        Assert.False(File.Exists(target));
+        Assert.True(File.Exists(source));
+    }
+
+    [Fact]
+    public async Task Failed_partial_copy_cleanup_remains_recoverable_until_cleanup_succeeds()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var source = setup.Stage("source.gpx", TestSupport.Gpx());
+        var hash = await Fingerprint.Sha256Async(source, CancellationToken.None);
+        var target = setup.Originals.GetOriginalTarget(ownerId, hash, ".gpx");
+        var coordinator = new FileOperationCoordinator(setup.Factory, setup.Paths, setup.Originals,
+            NullLogger<FileOperationCoordinator>.Instance)
+        {
+            CopyAsync = async (input, output, token) =>
+            {
+                await output.WriteAsync(new byte[] { 1, 2, 3 }, token);
+                throw new IOException("Simulated interrupted copy.");
+            },
+            DeleteFile = _ => throw new IOException("Simulated cleanup failure.")
+        };
+
+        await Assert.ThrowsAsync<IOException>(() => coordinator.PrepareCopyAsync(ownerId, null, source, target, hash));
+        Assert.True(File.Exists(target));
+        await coordinator.RecoverAsync();
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            Assert.Equal(FileOperationState.Pending, (await db.FileOperations.SingleAsync()).State);
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelledRecovery = new FileOperationCoordinator(setup.Factory, setup.Paths, setup.Originals,
+            NullLogger<FileOperationCoordinator>.Instance)
+        {
+            DeleteFile = _ => { cancellation.Cancel(); cancellation.Token.ThrowIfCancellationRequested(); }
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledRecovery.RecoverAsync(cancellation.Token));
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            Assert.Equal(FileOperationState.Pending, (await db.FileOperations.SingleAsync()).State);
+
+        await setup.FileOperations.RecoverAsync();
+        Assert.False(File.Exists(target));
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            Assert.Equal(FileOperationState.RolledBack, (await db.FileOperations.SingleAsync()).State);
+        var prepared = await setup.FileOperations.PrepareCopyAsync(ownerId, null, source, target, hash);
+        await setup.FileOperations.RollbackAsync(prepared.OperationId);
+    }
+
+    [Fact]
+    public async Task Copy_hash_failure_keeps_preexisting_referenced_target_and_failed_journal()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var source = setup.Stage("source.gpx", TestSupport.Gpx());
+        var hash = await Fingerprint.Sha256Async(source, CancellationToken.None);
+        var target = setup.Originals.GetOriginalTarget(ownerId, hash, ".gpx");
+        await File.WriteAllTextAsync(target, "existing original");
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            var batch = Batch(ownerId, ImportStatus.Completed, string.Empty);
+            db.SourceFiles.Add(new SourceFile
+            {
+                OwnerId = ownerId,
+                ImportBatch = batch,
+                SourceKind = SourceKind.Gpx,
+                OriginalName = "original.gpx",
+                StoredPath = setup.Originals.ToStoredPath(target),
+                Sha256 = hash,
+                Length = 17
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            setup.FileOperations.PrepareCopyAsync(ownerId, null, source, target, hash));
+        await setup.FileOperations.RecoverAsync();
+        Assert.Equal("existing original", await File.ReadAllTextAsync(target));
+        await using var verification = await setup.Factory.CreateDbContextAsync();
+        Assert.Equal(FileOperationState.Failed, (await verification.FileOperations.SingleAsync()).State);
+    }
+
     [Fact]
     public void Managed_path_guard_rejects_traversal_and_outside_rooted_paths()
     {

@@ -129,7 +129,7 @@ public sealed partial class McpWriteService(
         if (!string.Equals(phrase, plan.Preview.ConfirmationPhrase, StringComparison.Ordinal)) throw new ArgumentException("The confirmation phrase does not match the reviewed change.");
         if (plan.Preview.ExpiresAt <= clock.GetUtcNow()) throw new InvalidOperationException("The preview expired. Prepare and review it again.");
         if (plan.Fingerprint != await FingerprintAsync(token)) throw new InvalidOperationException("The application data changed after preview. Prepare and review the change again.");
-        if (await db.McpOperations.CountAsync(operation => operation.Status == "queued" || operation.Status == "running", token) >= 32)
+        if (await db.McpOperations.CountAsync(operation => operation.Status == McpExecutionState.Queued || operation.Status == McpExecutionState.Running, token) >= 32)
             throw new InvalidOperationException("The write queue is full. Try again when an operation finishes.");
         db.McpOperations.Add(new McpOperation
         {
@@ -153,17 +153,22 @@ public sealed partial class McpWriteService(
             ?? throw new KeyNotFoundException("The operation is unavailable.");
         AuthorizeReceipt(operation);
         var result = operation.ResultJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(operation.ResultJson);
-        var status = operation.Status;
+        var progress = new OperationProgress(operation.Status);
         if (operation.Action == "import_activities" && operation.EntityId.HasValue)
         {
             var batch = await db.ImportBatches.AsNoTracking().SingleOrDefaultAsync(item => item.Id == operation.EntityId, token);
             if (batch is not null)
             {
-                status = batch.Status.ToString();
+                progress = progress with { Import = batch.Status };
                 result = McpChangeJson.Element(new { importBatchId = batch.Id, batch.ActivitiesCreated, batch.ActivitiesUpdated, batch.DuplicatesSkipped, batch.UnsupportedSkipped, batch.Warnings });
             }
         }
-        return new(id, operation.Action, status, operation.EntityId, result, operation.Message, operation.CreatedAtUtc, operation.CompletedAtUtc, JsonSerializer.Deserialize<Guid[]>(operation.ProfileIdsJson)!);
+        return new(id, operation.Action, progress.ProtocolStatus, operation.EntityId, result, operation.Message, operation.CreatedAtUtc, operation.CompletedAtUtc, JsonSerializer.Deserialize<Guid[]>(operation.ProfileIdsJson)!);
+    }
+
+    private sealed record OperationProgress(McpExecutionState Execution, ImportStatus? Import = null)
+    {
+        public string ProtocolStatus => Import?.ToString() ?? McpExecutionStates.ToValue(Execution);
     }
 
     private void AuthorizeReceipt(McpOperation operation)

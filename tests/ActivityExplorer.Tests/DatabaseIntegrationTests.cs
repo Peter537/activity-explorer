@@ -680,7 +680,7 @@ public sealed partial class DatabaseIntegrationTests
         var storage = CreateStorageServices(setup, paths);
         var service = new RouteService(setup.Factory, storage.Originals, storage.FileOperations, storage.OwnerLock);
 
-        var routeId = await service.ImportGpxAsync(
+        var result = await service.ImportGpxAsync(
             new CreateRoutePathRequest(owner, "Imported route", null, SportKind.Running, points),
             staged,
             "route.gpx",
@@ -688,7 +688,8 @@ public sealed partial class DatabaseIntegrationTests
             new FileInfo(staged).Length);
 
         await using var db = await setup.Factory.CreateDbContextAsync();
-        var route = await db.Routes.Include(x => x.SourceFiles).SingleAsync(x => x.Id == routeId);
+        Assert.False(result.FileCleanupPending);
+        var route = await db.Routes.Include(x => x.SourceFiles).SingleAsync(x => x.Id == result.RouteId);
         var source = Assert.Single(route.SourceFiles);
         var batch = await db.ImportBatches.SingleAsync(x => x.Id == source.ImportBatchId);
         Assert.Equal(ImportBatchKind.RouteImport, batch.Kind);

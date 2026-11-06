@@ -1,4 +1,5 @@
 @page "/activities/{Id:guid}/segments/new"
+@implements IDisposable
 @inject IActivityQueryService Activities
 @inject ISegmentService Segments
 @inject NavigationManager Navigation
@@ -44,49 +45,82 @@ else
     private bool _creating;
     private string? _loadError;
     private string? _message;
+    private CancellationTokenSource? _sourceCancellation;
+    private int _sourceVersion;
+    private bool _disposed;
     private string ActivityUrl => $"/activities/{Id}";
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
+        if (_disposed) return;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
+        _sourceCancellation = new();
+        var token = _sourceCancellation.Token;
+        var version = ++_sourceVersion;
+        var activityId = Id;
         _loaded = false;
+        _creating = false;
+        _activity = null;
+        _path = null;
         _loadError = null;
         _message = null;
         try
         {
-            _activity = await Activities.GetAsync(Id);
-            _path = _activity is null ? null : SegmentCreatorPath.FromActivity(_activity.Points);
+            var activity = await Activities.GetAsync(activityId, token);
+            if (!IsCurrentSource(version)) return;
+            _activity = activity;
+            _path = activity is null ? null : SegmentCreatorPath.FromActivity(activity.Points);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch
         {
+            if (!IsCurrentSource(version)) return;
             _activity = null;
             _path = null;
             _loadError = "The activity could not be loaded. Try again.";
         }
-        finally { _loaded = true; }
+        finally { if (IsCurrentSource(version)) _loaded = true; }
     }
 
     private async Task CreateSegment(SegmentCreatorSubmission submission)
     {
+        if (_disposed || _creating || !_loaded || _activity is null || _path is null) return;
+        var activity = _activity;
+        var path = _path;
+        var version = _sourceVersion;
+        var token = _sourceCancellation!.Token;
         _creating = true;
         _message = null;
         try
         {
             var id = await Segments.CreateFromActivityAsync(new CreateSegmentRequest(
-                _activity!.Summary.OwnerId,
-                Id,
+                activity.Summary.OwnerId,
+                activity.Summary.Id,
                 submission.Name,
-                _path!.SourceIndexAt(submission.StartIndex),
-                _path.SourceIndexAt(submission.EndIndex),
+                path.SourceIndexAt(submission.StartIndex),
+                path.SourceIndexAt(submission.EndIndex),
                 submission.ToleranceMeters,
-                submission.ReverseDirection));
-            Navigation.NavigateTo($"/segments/{id}");
+                submission.ReverseDirection), token);
+            if (IsCurrentSource(version)) Navigation.NavigateTo($"/segments/{id}");
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            _message = exception.Message;
+            if (IsCurrentSource(version)) _message = exception.Message;
         }
-        finally { _creating = false; }
+        finally { if (IsCurrentSource(version)) _creating = false; }
+    }
+
+    private bool IsCurrentSource(int version) => !_disposed && version == _sourceVersion;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _sourceVersion++;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
     }
 }

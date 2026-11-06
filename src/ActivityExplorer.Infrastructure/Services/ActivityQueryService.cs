@@ -295,10 +295,10 @@ public sealed partial class ActivityQueryService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public Task UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default) =>
-        ownerMutationLock.RunAsync(async () => { await UpdateCoreAsync(id, request, cancellationToken); return true; }, cancellationToken);
+    public Task<ActivityUpdateResult> UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => UpdateCoreAsync(id, request, cancellationToken), cancellationToken);
 
-    private async Task UpdateCoreAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken)
+    private async Task<ActivityUpdateResult> UpdateCoreAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken)
     {
         var title = request.Title.Trim();
         if (title.Length is < 1 or > 240)
@@ -335,7 +335,7 @@ public sealed partial class ActivityQueryService(
         if (oldOwner == request.OwnerId)
         {
             await db.SaveChangesAsync(cancellationToken);
-            return;
+            return new ActivityUpdateResult(id, request.OwnerId, false, false, false);
         }
 
         if (await db.Activities.AnyAsync(x =>
@@ -351,7 +351,7 @@ public sealed partial class ActivityQueryService(
             .Select(x => x.ExternalId!)
             .Distinct().ToArray();
         var targetSources = await db.SourceFiles.AsNoTracking()
-            .Where(x => x.OwnerId == request.OwnerId &&
+            .Where(x => x.OwnerId == request.OwnerId && (x.ActivityId != null || x.RouteId == null) &&
                 (hashes.Contains(x.Sha256) || x.ExternalId != null && externalIds.Contains(x.ExternalId)))
             .Select(x => new { x.Provider, x.Sha256, x.ExternalId })
             .ToListAsync(cancellationToken);
@@ -438,17 +438,51 @@ public sealed partial class ActivityQueryService(
             throw;
         }
 
+        var fileCleanupPending = false;
         foreach (var operation in prepared)
-            await fileOperations.CommitAsync(operation.OperationId, cancellationToken);
+        {
+            try { await fileOperations.CommitAsync(operation.OperationId, cancellationToken); }
+            catch (Exception exception)
+            {
+                fileCleanupPending = true;
+                logger.LogError(exception, "Activity transfer file cleanup {OperationId} is pending recovery.", operation.OperationId);
+            }
+        }
 
-        await statistics.RecomputeAsync(oldOwner, cancellationToken);
-        await statistics.RecomputeAsync(request.OwnerId, cancellationToken);
-        var affectedSegments = await db.Segments.AsNoTracking()
-            .Where(x => x.OwnerId == oldOwner || x.OwnerId == request.OwnerId)
-            .Select(x => x.Id)
-            .ToListAsync(cancellationToken);
-        foreach (var segmentId in affectedSegments)
-            await segments.RecomputeAsync(segmentId, cancellationToken);
+        var statisticsRefreshPending = false;
+        foreach (var ownerId in new[] { oldOwner, request.OwnerId })
+        {
+            try { await statistics.RecomputeAsync(ownerId, cancellationToken); }
+            catch (Exception exception)
+            {
+                statisticsRefreshPending = true;
+                logger.LogError(exception, "Activity transfer statistics refresh for owner {OwnerId} is pending.", ownerId);
+            }
+        }
+
+        var segmentRefreshPending = false;
+        try
+        {
+            var affectedSegments = await db.Segments.AsNoTracking()
+                .Where(x => x.OwnerId == oldOwner || x.OwnerId == request.OwnerId)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            foreach (var segmentId in affectedSegments)
+            {
+                try { await segments.RecomputeAsync(segmentId, cancellationToken); }
+                catch (Exception exception)
+                {
+                    segmentRefreshPending = true;
+                    logger.LogError(exception, "Activity transfer segment refresh for {SegmentId} is pending.", segmentId);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            segmentRefreshPending = true;
+            logger.LogError(exception, "Activity transfer segment refresh is pending.");
+        }
+        return new ActivityUpdateResult(id, request.OwnerId, fileCleanupPending, statisticsRefreshPending, segmentRefreshPending);
     }
 
     public static void ValidateMetric(ActivityMetricRequest request)

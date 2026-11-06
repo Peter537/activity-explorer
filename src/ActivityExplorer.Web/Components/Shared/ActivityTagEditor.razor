@@ -20,10 +20,11 @@
         }
         <button @ref="_editButton" class="button" type="button" aria-expanded="@(_editing ? "true" : "false")" aria-controls="@_editorId" disabled="@_busy" @onclick="ToggleEditorAsync">@(_editing ? "Cancel tag changes" : "Edit tags")</button>
     </div>
+    <StatusMessage Message="@_message" IsError="@_error" />
+    @if (!_editing && _error) { <button class="button" type="button" disabled="@_busy" @onclick="ReloadActivity">Reload activity</button> }
     @if (_editing)
     {
         <div id="@_editorId" class="tag-editor" aria-busy="@_busy">
-            <StatusMessage Message="@_message" IsError="@_error" />
             @if (!_loaded)
             {
                 <p role="status">Loading tags...</p>
@@ -77,7 +78,7 @@
         _cancellation = new();
         _identity = identity;
         _selectedIds = Tags.Select(tag => tag.Id).ToArray();
-        _editing = _busy = false;
+        _editing = _busy = _error = _loadFailed = _focusEdit = false;
         _message = null;
         _newName = "";
     }
@@ -106,6 +107,7 @@
         _busy = true;
         _loaded = false;
         _loadFailed = false;
+        _error = false;
         _message = null;
         try
         {
@@ -130,15 +132,17 @@
 
     private async Task CreateTagAsync()
     {
-        if (_busy) return;
+        if (_disposed || _busy || !_editing || _loadFailed) return;
         var token = _cancellation.Token;
         var owner = OwnerId;
         _busy = true;
         _message = null;
         _error = false;
+        var created = false;
         try
         {
             var id = await Organization.CreateTagAsync(owner, _newName, token);
+            created = true;
             if (_disposed || token.IsCancellationRequested) return;
             _newName = "";
             _selectedIds = [.. _selectedIds, id];
@@ -152,7 +156,9 @@
         {
             if (_disposed || token.IsCancellationRequested) return;
             _error = true;
-            _message = exception is ArgumentException or InvalidOperationException
+            if (created) _loadFailed = true;
+            _message = created ? "The tag was created and selected, but the tag list could not be refreshed. Try loading tags again before saving."
+                : exception is ArgumentException or InvalidOperationException
                 ? exception.Message : "The tag could not be created. Try again.";
         }
         finally
@@ -163,14 +169,16 @@
 
     private async Task SaveAsync()
     {
-        if (_busy) return;
+        if (_disposed || _busy || !_editing || _loadFailed) return;
         var token = _cancellation.Token;
         _busy = true;
         _message = null;
         _error = false;
+        var saved = false;
         try
         {
             await Organization.SetActivityTagsAsync(OwnerId, ActivityId, _selectedIds, MutationVersion, token);
+            saved = true;
             if (_disposed || token.IsCancellationRequested) return;
             _editing = false;
             await Changed.InvokeAsync();
@@ -180,7 +188,8 @@
         {
             if (_disposed || token.IsCancellationRequested) return;
             _error = true;
-            _message = exception is ArgumentException or InvalidOperationException
+            _message = saved ? "Activity tags were saved, but the activity view could not be refreshed. Reload the activity to see the result."
+                : exception is ArgumentException or InvalidOperationException
                 ? $"Nothing changed. {exception.Message}" : "Activity tags could not be saved. Try again or reload the activity.";
         }
         finally

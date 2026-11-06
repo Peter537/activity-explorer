@@ -16,16 +16,14 @@ public sealed partial class McpWriteService
     public async Task RecoverAsync(CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
-        foreach (var operation in await db.McpOperations.Where(item => item.Status == "queued" || item.Status == "running").ToArrayAsync(token))
+        foreach (var operation in await db.McpOperations.Where(item => item.Status == McpExecutionState.Queued || item.Status == McpExecutionState.Running).ToArrayAsync(token))
         {
             var effect = await db.McpEffects.AsNoTracking().SingleOrDefaultAsync(item => item.Id == operation.Id, token);
             operation.EntityId = effect?.EntityId;
-            operation.Status = effect is null ? "interrupted" : "committed_with_warnings";
             operation.Message = effect is null
                 ? "The Web app stopped. The operation will not be replayed automatically; inspect the current state and prepare a new preview."
                 : "The database mutation committed. Check the entity and normal file/import recovery; the original command will not be repeated.";
-            operation.RequestJson = "";
-            operation.CompletedAtUtc = clock.GetUtcNow();
+            operation.Finish(effect is null ? McpExecutionState.Interrupted : McpExecutionState.CommittedWithWarnings, clock.GetUtcNow());
         }
         await db.SaveChangesAsync(token);
     }
@@ -34,33 +32,34 @@ public sealed partial class McpWriteService
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var operation = await db.McpOperations.SingleAsync(item => item.Id == id, token);
-        if (operation.Status != "queued") return false;
+        if (operation.Status != McpExecutionState.Queued) return false;
+        var outcome = McpExecutionState.Completed;
         try
         {
             var request = JsonSerializer.Deserialize<McpChangeRequest>(operation.RequestJson, McpChangeJson.Options)!;
             Authorize(request);
             if (operation.Fingerprint != await FingerprintAsync(token))
                 throw new InvalidOperationException("The application data changed while this operation was queued. Prepare and review it again.");
-            operation.Status = "running";
+            operation.StartExecution();
             await db.SaveChangesAsync(token);
             using (var scope = new McpOperationScope(id, EffectType(request.Action)))
             {
-                var (entityId, result) = await ApplyAsync(request, id, token);
+                var (entityId, result, warning) = await ApplyAsync(request, id, token);
                 operation.EntityId = entityId;
                 operation.ResultJson = JsonSerializer.Serialize(result, McpChangeJson.Options);
+                operation.Message = warning;
+                if (warning is not null) outcome = McpExecutionState.CommittedWithWarnings;
             }
-            operation.Status = "completed";
         }
         catch (Exception exception)
         {
             var effect = await db.McpEffects.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, CancellationToken.None);
-            operation.Status = effect is null ? "failed" : "committed_with_warnings";
+            outcome = effect is null ? McpExecutionState.Failed : McpExecutionState.CommittedWithWarnings;
             operation.EntityId = effect?.EntityId;
             operation.Message = exception is ArgumentException or InvalidOperationException or UnauthorizedAccessException or InvalidDataException
                 ? exception.Message : exception is OperationCanceledException ? "The operation was interrupted. Check status before preparing another change." : "The operation could not finish. Inspect its entity and Web logs before preparing another change.";
         }
-        operation.RequestJson = "";
-        operation.CompletedAtUtc = clock.GetUtcNow();
+        operation.Finish(outcome, clock.GetUtcNow());
         await db.SaveChangesAsync(CancellationToken.None);
         return true;
     }, token);
@@ -85,7 +84,7 @@ public sealed partial class McpWriteService
         _ => null
     };
 
-    private async Task<(Guid? EntityId, object Result)> ApplyAsync(McpChangeRequest change, Guid operationId, CancellationToken token)
+    private async Task<(Guid? EntityId, object Result, string? Warning)> ApplyAsync(McpChangeRequest change, Guid operationId, CancellationToken token)
     {
         var args = change.Arguments;
         var profile = change.ProfileId.GetValueOrDefault();
@@ -94,6 +93,7 @@ public sealed partial class McpWriteService
         T Service<T>() where T : notnull => services.GetRequiredService<T>();
         Guid? entityId = null;
         object result = new { applied = true };
+        string? warning = null;
         switch (change.Action)
         {
             case "create_segment_from_activity":
@@ -106,11 +106,23 @@ public sealed partial class McpWriteService
             case "attach_segment": await Service<ISegmentService>().AttachAsync(Id("parentSegmentId"), Id("childSegmentId"), token); break;
             case "detach_segment": await Service<ISegmentService>().DetachAsync(Id("parentSegmentId"), Id("childSegmentId"), token); break;
             case "recompute_segment": await Service<ISegmentService>().RecomputeAsync(Id("segmentId"), token); break;
-            case "update_activity": await Service<IActivityQueryService>().UpdateAsync(Id("activityId"), Read<UpdateActivityRequest>(args, "request"), token); break;
+            case "update_activity":
+                var updated = await Service<IActivityQueryService>().UpdateAsync(Id("activityId"), Read<UpdateActivityRequest>(args, "request"), token);
+                warning = UpdateWarning(updated);
+                if (warning is not null) result = updated;
+                break;
             case "transfer_activity":
                 var activity = await Service<IActivityQueryService>().GetAsync(Id("activityId"), token) ?? throw new ArgumentException("The activity is unavailable.");
-                await Service<IActivityQueryService>().UpdateAsync(Id("activityId"), new(activity.Summary.Title, activity.Description, activity.GearName, Id("destinationProfileId")), token); break;
-            case "delete_activities": result = await Service<IActivityQueryService>().DeleteAsync(Read<Guid[]>(args, "activityIds"), token); break;
+                var transferred = await Service<IActivityQueryService>().UpdateAsync(Id("activityId"), new(activity.Summary.Title, activity.Description, activity.GearName, Id("destinationProfileId")), token);
+                warning = UpdateWarning(transferred);
+                if (warning is not null) result = transferred;
+                break;
+            case "delete_activities":
+                var deleted = await Service<IActivityQueryService>().DeleteAsync(Read<Guid[]>(args, "activityIds"), token);
+                result = deleted;
+                if (deleted.FileCleanupPending || deleted.StatisticsRefreshPending)
+                    warning = "The activities were deleted. File cleanup or record refresh remains pending; do not repeat the deletion.";
+                break;
             case "add_activity_metric": entityId = await Service<IActivityQueryService>().AddMetricAsync(Id("activityId"), Read<ActivityMetricRequest>(args, "request"), token); break;
             case "update_activity_metric": await Service<IActivityQueryService>().UpdateMetricAsync(Id("activityId"), Id("metricId"), Read<ActivityMetricRequest>(args, "request"), token); break;
             case "delete_activity_metric": await Service<IActivityQueryService>().DeleteMetricAsync(Id("activityId"), Id("metricId"), token); break;
@@ -136,7 +148,14 @@ public sealed partial class McpWriteService
                 var route = await RouteRequestAsync(change, token);
                 var routeAsset = RequireAsset(Id("assetId"), profile, "file");
                 _assets.TryRemove(routeAsset.Summary.Id, out _);
-                entityId = await Service<IRouteService>().ImportGpxAsync(route, routeAsset.Path, routeAsset.Summary.Name, routeAsset.Hash, routeAsset.Summary.Length, token); break;
+                var importedRoute = await Service<IRouteService>().ImportGpxAsync(route, routeAsset.Path, routeAsset.Summary.Name, routeAsset.Hash, routeAsset.Summary.Length, token);
+                entityId = importedRoute.RouteId;
+                if (importedRoute.FileCleanupPending)
+                {
+                    warning = "The route was created. File cleanup remains pending and will be retried at startup; do not import it again.";
+                    result = importedRoute;
+                }
+                break;
             case "import_activities":
                 var import = RequireAsset(Id("assetId"), profile, "file");
                 if (import.Hash != await Fingerprint.Sha256Async(import.Path, token)) throw new InvalidDataException("The approved file changed.");
@@ -152,7 +171,12 @@ public sealed partial class McpWriteService
                 await using (var db = await factory.CreateDbContextAsync(token))
                 {
                     var name = await db.Owners.Where(item => item.Id == profile).Select(item => item.DisplayName).SingleAsync(token);
-                    await Service<IProfileService>().DeleteAsync(profile, "DELETE " + name, token);
+                    var deletedProfile = await Service<IProfileService>().DeleteAsync(profile, "DELETE " + name, token);
+                    if (deletedProfile.FileCleanupPending)
+                    {
+                        warning = "The profile was deleted. File cleanup remains pending and will be retried at startup; do not repeat the deletion.";
+                        result = deletedProfile;
+                    }
                     CleanupAssets(all: true, profileId: profile);
                     var profileText = profile.ToString();
                     var downloads = await db.McpOperations.AsNoTracking().Where(item => (item.Action == "export_profile" || item.Action == "export_route" || item.Action == "download_original") && item.ProfileIdsJson.Contains(profileText)).Select(item => item.Id).ToArrayAsync(token);
@@ -204,9 +228,14 @@ public sealed partial class McpWriteService
                 }; break;
             default: throw new ArgumentException("Unsupported change.");
         }
-        if (entityId.HasValue && change.Action != "import_activities") result = new { entityId };
-        return (entityId, result);
+        if (entityId.HasValue && change.Action != "import_activities" && warning is null) result = new { entityId };
+        return (entityId, result, warning);
     }
+
+    private static string? UpdateWarning(ActivityUpdateResult result) =>
+        result.FileCleanupPending || result.StatisticsRefreshPending || result.SegmentRefreshPending
+            ? "The activity was saved. File cleanup or derived-data refresh remains pending; do not repeat the update or transfer."
+            : null;
 
     private async Task<object> DescribeImportAsync(Asset asset, SourceKind source, Guid profile, CancellationToken token)
     {

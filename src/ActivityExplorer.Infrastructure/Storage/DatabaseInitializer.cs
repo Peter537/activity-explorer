@@ -16,6 +16,7 @@ public sealed class DatabaseInitializer(
         paths.EnsureCreated();
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await db.Database.EnsureCreatedAsync(cancellationToken);
+        await EnsureSourceFileIndexesAsync(db, cancellationToken);
         await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
         await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
         await EnsureSegmentLinksAsync(db, cancellationToken);
@@ -44,6 +45,17 @@ public sealed class DatabaseInitializer(
         if (interrupted.Count > 0) await db.SaveChangesAsync(cancellationToken);
 
         await fileOperations.RecoverAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureSourceFileIndexesAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_SourceFiles_ActivityOwnerProviderSha256"
+                ON "SourceFiles" ("OwnerId", "Provider", "Sha256") WHERE "ActivityId" IS NOT NULL;
+            DROP INDEX IF EXISTS "IX_SourceFiles_OwnerId_Provider_Sha256";
+            """, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     internal static async Task EnsureSegmentProvenanceColumnsAsync(

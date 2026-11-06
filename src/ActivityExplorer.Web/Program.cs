@@ -332,10 +332,10 @@ internalApi.MapPost("/routes/import", async (
             return Results.BadRequest(new { error = "Choose a non-empty GPX file." });
         var points = await reader.ReadAsync(upload.FilePath, token);
         var hash = await Fingerprint.Sha256Async(upload.FilePath, token);
-        var id = await routes.ImportGpxAsync(
+        var imported = await routes.ImportGpxAsync(
             new CreateRoutePathRequest(ownerId, name, "Imported GPX path", sport, points),
             upload.FilePath, upload.FileName, hash, upload.Length, token);
-        return Results.Ok(new { id });
+        return Results.Ok(new { id = imported.RouteId, imported.FileCleanupPending });
     }
     catch (UploadTooLargeException exception)
     {

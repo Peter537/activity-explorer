@@ -70,7 +70,7 @@ public sealed class WatchedFolderService(
                 var info = new FileInfo(file);
                 if (DateTimeOffset.UtcNow - info.LastWriteTimeUtc < TimeSpan.FromSeconds(10)) continue;
                 var hash = await ActivityExplorer.Infrastructure.Processing.Fingerprint.Sha256Async(file, cancellationToken);
-                if (await db.SourceFiles.AsNoTracking().AnyAsync(x => x.OwnerId == folder.OwnerId && x.Sha256 == hash, cancellationToken)) continue;
+                if (await db.SourceFiles.AsNoTracking().AnyAsync(x => x.OwnerId == folder.OwnerId && (x.ActivityId != null || x.RouteId == null) && x.Sha256 == hash, cancellationToken)) continue;
                 var stageDirectory = ManagedPathGuard.ResolveUnder(
                     paths.StagingPath,
                     Path.Combine(paths.StagingPath, Guid.NewGuid().ToString("N")));

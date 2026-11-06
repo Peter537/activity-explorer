@@ -14,7 +14,7 @@
     <div class="organization-controls">
         <SavedSearches @key="(organizationOwner, nameof(SavedSearches))" OwnerId="organizationOwner" Tags="_tags" Revision="_organizationRevision"
                        AppliedCriteria="AppliedSearchCriteria" Disabled="@(_busy || _loading || _batchEditing || _deleteConfirming)" OnOpen="criteria => OpenSavedSearch(organizationOwner, criteria)" />
-        <TagManager @key="(organizationOwner, nameof(TagManager))" OwnerId="organizationOwner" Changed="() => OrganizationChanged(organizationOwner)" />
+        <TagManager @key="(organizationOwner, nameof(TagManager))" OwnerId="organizationOwner" Revision="_organizationRevision" Changed="() => OrganizationChanged(organizationOwner)" />
     </div>
 }
 else
@@ -449,6 +449,7 @@ else if (_result is not null)
         try
         {
             var result = await ActivitiesService.DeleteAsync(_pendingDeleteIds);
+            _organizationRevision++;
             _statusMessage = $"Permanently deleted {result.DeletedCount:N0} {(result.DeletedCount == 1 ? "activity" : "activities")}.";
             _warningMessage = BuildPendingWarning(result.FileCleanupPending, result.StatisticsRefreshPending);
             ClearSelectionAndConfirmation();

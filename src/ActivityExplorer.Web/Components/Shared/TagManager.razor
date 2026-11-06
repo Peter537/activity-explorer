@@ -5,7 +5,11 @@
     <summary @ref="_summary">Manage tags</summary>
     <div class="tag-manager-content" aria-busy="@_busy">
         <StatusMessage Message="@_message" IsError="@_error" />
-        @if (!_loaded)
+        @if (_committedMessage is not null)
+        {
+            <button class="button" type="button" disabled="@_busy" @onclick="RefreshMutationAsync">Refresh tags</button>
+        }
+        else if (!_loaded)
         {
             <p role="status">Loading tags...</p>
         }
@@ -83,15 +87,18 @@
 
 @code {
     [Parameter, EditorRequired] public Guid OwnerId { get; set; }
+    [Parameter] public int Revision { get; set; }
     [Parameter] public EventCallback Changed { get; set; }
 
     private IReadOnlyList<TagSummary> _tags = [];
     private IReadOnlyList<string> _affectedSearches = [];
     private Guid? _loadedOwner;
+    private int _loadedRevision;
     private Guid? _renamingId;
     private TagSummary? _deleting;
     private string _newName = "", _renameName = "", _query = "";
     private string? _message;
+    private string? _committedMessage;
     private bool _loaded, _busy, _loadFailed, _error, _disposed;
     private bool _focusRename, _focusDelete, _focusSummary;
     private ElementReference _renameInput, _deleteButton, _summary;
@@ -102,17 +109,30 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (_loadedOwner == OwnerId) return;
-        await _cancellation.CancelAsync();
-        _cancellation.Dispose();
-        _cancellation = new();
-        _loadedOwner = OwnerId;
-        _newName = "";
-        _query = "";
-        _renamingId = null;
-        _deleting = null;
-        _focusRename = _focusDelete = _focusSummary = false;
-        await LoadAsync();
+        if (_loadedOwner == OwnerId && _loadedRevision == Revision) return;
+        var ownerChanged = _loadedOwner != OwnerId;
+        if (ownerChanged)
+        {
+            await _cancellation.CancelAsync();
+            _cancellation.Dispose();
+            _cancellation = new();
+            _loadedOwner = OwnerId;
+            _newName = "";
+            _query = "";
+            _renamingId = null;
+            _deleting = null;
+            _committedMessage = null;
+            _focusRename = _focusDelete = _focusSummary = false;
+        }
+        else if (_deleting is not null)
+        {
+            _deleting = null;
+            _affectedSearches = [];
+            _focusDelete = false;
+            _focusSummary = true;
+        }
+        _loadedRevision = Revision;
+        await LoadTagsAsync(preserveMessage: !ownerChanged && !_error);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -122,30 +142,33 @@
         if (_focusSummary) { _focusSummary = false; await _summary.FocusAsync(); }
     }
 
-    private async Task LoadAsync()
+    private Task LoadAsync() => LoadTagsAsync(preserveMessage: false);
+
+    private async Task LoadTagsAsync(bool preserveMessage)
     {
         var owner = OwnerId;
+        var revision = Revision;
         var token = _cancellation.Token;
         _busy = true;
         _loaded = false;
-        _message = null;
+        if (!preserveMessage) _message = null;
         _loadFailed = false;
         try
         {
             var tags = await Organization.ListTagsAsync(owner, token);
-            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner || Revision != revision) return;
             _tags = tags;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch
         {
-            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner || Revision != revision) return;
             _message = "Tags could not be loaded. Try again.";
             _error = _loadFailed = true;
         }
         finally
         {
-            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) { _busy = false; _loaded = true; }
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner && Revision == revision) { _busy = false; _loaded = true; }
         }
     }
 
@@ -162,12 +185,13 @@
     {
         if (_busy) return;
         var owner = OwnerId;
+        var revision = Revision;
         var token = _cancellation.Token;
         _renamingId = null;
         _deleting = null;
         _affectedSearches = [];
         await LoadAsync();
-        if (_disposed || token.IsCancellationRequested || OwnerId != owner || _loadFailed) return;
+        if (_disposed || token.IsCancellationRequested || OwnerId != owner || Revision != revision || _loadFailed) return;
         var current = _tags.FirstOrDefault(candidate => candidate.Id == tag.Id);
         if (current is null)
         {
@@ -179,7 +203,7 @@
         try
         {
             var searches = await Organization.ListSavedSearchesAsync(owner, token);
-            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner || Revision != revision) return;
             _affectedSearches = searches.Where(search => search.Criteria is { } criteria &&
                     criteria.Tags.Concat(criteria.ExcludedTags ?? []).Any(reference => reference.Id == tag.Id))
                 .Select(search => search.Name).ToArray();
@@ -189,13 +213,13 @@
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch
         {
-            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner || Revision != revision) return;
             _message = "Saved searches could not be checked. Try deleting the tag again.";
             _error = true;
         }
         finally
         {
-            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) _busy = false;
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner && Revision == revision) _busy = false;
         }
     }
 
@@ -221,7 +245,7 @@
 
     private async Task MutateAsync(Func<Guid, CancellationToken, Task> mutation, string success, bool clearName = false)
     {
-        if (_busy) return;
+        if (_disposed || _busy || _committedMessage is not null) return;
         var owner = OwnerId;
         var token = _cancellation.Token;
         _busy = true;
@@ -235,11 +259,9 @@
             _renamingId = null;
             _deleting = null;
             _message = success;
+            _committedMessage = success;
             _focusSummary = !clearName;
-            var tags = await Organization.ListTagsAsync(owner, token);
-            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
-            _tags = tags;
-            await Changed.InvokeAsync();
+            await RefreshMutationAsync();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
@@ -248,6 +270,36 @@
             _error = true;
             _message = exception is ArgumentException or InvalidOperationException
                 ? exception.Message : "The tag change could not be completed. Try again.";
+        }
+        finally
+        {
+            if (!_disposed && !token.IsCancellationRequested && OwnerId == owner) _busy = false;
+        }
+    }
+
+    private async Task RefreshMutationAsync()
+    {
+        if (_disposed || _committedMessage is null) return;
+        var owner = OwnerId;
+        var token = _cancellation.Token;
+        _busy = true;
+        try
+        {
+            var tags = await Organization.ListTagsAsync(owner, token);
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _tags = tags;
+            await Changed.InvokeAsync();
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _message = _committedMessage;
+            _committedMessage = null;
+            _error = false;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch
+        {
+            if (_disposed || token.IsCancellationRequested || OwnerId != owner) return;
+            _error = true;
+            _message = $"{_committedMessage} The current view could not be refreshed. Refresh tags to see the result.";
         }
         finally
         {

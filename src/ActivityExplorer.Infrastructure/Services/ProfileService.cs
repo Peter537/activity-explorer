@@ -3,6 +3,7 @@ using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
@@ -10,7 +11,8 @@ public sealed class ProfileService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     AppDataPaths paths,
     IFileOperationCoordinator fileOperations,
-    IOwnerMutationLock ownerMutationLock) : IProfileService
+    IOwnerMutationLock ownerMutationLock,
+    ILogger<ProfileService>? logger = null) : IProfileService
 {
     private static readonly JsonSerializerOptions ExportJsonOptions = new() { WriteIndented = true };
     public Task<IReadOnlyList<ProfileSummary>> ListAsync(CancellationToken cancellationToken = default) => new ProfileReadService(contextFactory).ListAsync(cancellationToken);
@@ -44,7 +46,7 @@ public sealed class ProfileService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task DeleteAsync(Guid ownerId, string confirmation, CancellationToken cancellationToken = default)
+    public async Task<ProfileDeletionResult> DeleteAsync(Guid ownerId, string confirmation, CancellationToken cancellationToken = default)
     {
         await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
@@ -96,11 +98,12 @@ public sealed class ProfileService(
             }
             catch (Exception exception)
             {
-                throw new IOException(
-                    "The profile was removed, but encrypted/private file cleanup is pending and will be retried at startup.",
-                    exception);
+                logger?.LogError("Profile deletion file cleanup {OperationId} is pending recovery ({ErrorType}).",
+                    quarantineOperation.Value, exception.GetType().Name);
+                return new ProfileDeletionResult(ownerId, FileCleanupPending: true);
             }
         }
+        return new ProfileDeletionResult(ownerId, FileCleanupPending: false);
     }
 
     public async Task<ProfileExport> ExportAsync(Guid ownerId, CancellationToken cancellationToken = default)

@@ -7,6 +7,7 @@ using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
@@ -14,7 +15,8 @@ public sealed class RouteService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     IOriginalStore originals,
     IFileOperationCoordinator fileOperations,
-    IOwnerMutationLock ownerMutationLock) : IRouteService
+    IOwnerMutationLock ownerMutationLock,
+    ILogger<RouteService>? logger = null) : IRouteService
 {
     public Task<IReadOnlyList<RouteSummary>> ListAsync(Guid? ownerId, CancellationToken cancellationToken = default) =>
         SearchAsync(new(ownerId), cancellationToken);
@@ -86,7 +88,7 @@ public sealed class RouteService(
         return route.Id;
     }
 
-    public async Task<Guid> ImportGpxAsync(
+    public async Task<RouteImportResult> ImportGpxAsync(
         CreateRoutePathRequest request,
         string stagedPath,
         string originalName,
@@ -153,8 +155,17 @@ public sealed class RouteService(
             db.Routes.Add(route);
             await db.SaveChangesAsync(cancellationToken);
             databaseCommitted = true;
-            await fileOperations.CommitAsync(operation.OperationId, cancellationToken);
-            return route.Id;
+            try
+            {
+                await fileOperations.CommitAsync(operation.OperationId, cancellationToken);
+                return new RouteImportResult(route.Id, FileCleanupPending: false);
+            }
+            catch (Exception exception)
+            {
+                logger?.LogError("Route import file cleanup {OperationId} is pending recovery ({ErrorType}).",
+                    operation.OperationId, exception.GetType().Name);
+                return new RouteImportResult(route.Id, FileCleanupPending: true);
+            }
         }
         catch
         {

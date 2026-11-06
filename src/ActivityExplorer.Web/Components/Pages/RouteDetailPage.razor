@@ -1,4 +1,5 @@
 @page "/routes/{Id:guid}"
+@implements IDisposable
 @inject IRouteService RouteService
 @inject ISegmentService SegmentService
 @inject NavigationManager Navigation
@@ -14,6 +15,10 @@ else
         <Metadata><span>@_route.Summary.Sport</span><span>@_route.Summary.OwnerName</span></Metadata>
         <Actions><a class="button primary" href="@($"/internal/routes/{Id}.gpx")" download>Export GPX</a></Actions>
     </PageHeader>
+    @if (CleanupPending)
+    {
+        <StatusMessage Message="The route was imported. File cleanup is pending and will be retried at startup; you can use this route without importing it again." IsWarning="true" />
+    }
     <section class="metric-grid"><MetricCard Label="Distance" Value="@Format.Distance(_route.Summary.DistanceMeters)" /><MetricCard Label="Elevation" Value="@($"{_route.Summary.ElevationMeters:N0} m")" /><MetricCard Label="Track points" Value="@_route.Points.Count.ToString("N0")" /></section>
     <SegmentCreatorWorkspace SourceId="Id" SourceLabel="route" Points="_route.Points"
                              InitialName="@_route.Summary.Name" Busy="_creating" ErrorMessage="@_message"
@@ -21,11 +26,15 @@ else
 }
 @code {
     [Parameter] public Guid Id { get; set; }
+    [SupplyParameterFromQuery(Name = "cleanupPending")] public bool CleanupPending { get; set; }
     private RouteDetail? _route;
     private string? _message;
     private bool _loaded;
     private bool _creating;
     private string? _loadError;
+    private CancellationTokenSource? _sourceCancellation;
+    private int _sourceVersion;
+    private bool _disposed;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -34,39 +43,67 @@ else
 
     private async Task LoadAsync()
     {
+        if (_disposed) return;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
+        _sourceCancellation = new();
+        var token = _sourceCancellation.Token;
+        var version = ++_sourceVersion;
+        var routeId = Id;
         _loaded = false;
+        _creating = false;
+        _route = null;
         _loadError = null;
+        _message = null;
         try
         {
-            _route = await RouteService.GetAsync(Id);
+            var route = await RouteService.GetAsync(routeId, token);
+            if (IsCurrentSource(version)) _route = route;
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch
         {
+            if (!IsCurrentSource(version)) return;
             _route = null;
             _loadError = "The route could not be loaded. Try again.";
         }
-        finally { _loaded = true; }
+        finally { if (IsCurrentSource(version)) _loaded = true; }
     }
 
     private async Task CreateSegment(SegmentCreatorSubmission submission)
     {
+        if (_disposed || _creating || !_loaded || _route is null) return;
+        var route = _route;
+        var version = _sourceVersion;
+        var token = _sourceCancellation!.Token;
         _creating = true;
         _message = null;
         try
         {
-            IEnumerable<TrackPoint> selected = _route!.Points.Skip(submission.StartIndex).Take(submission.EndIndex - submission.StartIndex + 1);
+            IEnumerable<TrackPoint> selected = route.Points.Skip(submission.StartIndex).Take(submission.EndIndex - submission.StartIndex + 1);
             if (submission.ReverseDirection) selected = selected.Reverse();
             var id = await SegmentService.CreateAsync(new CreateSegmentPathRequest(
-                _route.Summary.OwnerId,
+                route.Summary.OwnerId,
                 submission.Name,
-                _route.Summary.Sport,
+                route.Summary.Sport,
                 selected.ToArray(),
                 submission.ToleranceMeters,
                 SourceKind: SegmentSourceKind.Route,
-                SourceName: _route.Summary.Name));
-            Navigation.NavigateTo($"/segments/{id}");
+                SourceName: route.Summary.Name), token);
+            if (IsCurrentSource(version)) Navigation.NavigateTo($"/segments/{id}");
         }
-        catch (Exception exception) { _message = exception.Message; }
-        finally { _creating = false; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) { if (IsCurrentSource(version)) _message = exception.Message; }
+        finally { if (IsCurrentSource(version)) _creating = false; }
+    }
+
+    private bool IsCurrentSource(int version) => !_disposed && version == _sourceVersion;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _sourceVersion++;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
     }
 }

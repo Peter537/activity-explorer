@@ -4,6 +4,8 @@
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
 @inject IActivityRangeAnalyzer RangeAnalyzer
+@inject IStatisticsService Statistics
+@inject ISegmentService Segments
 @implements IDisposable
 @using ActivityExplorer.Web.Components.Shared
 
@@ -14,7 +16,7 @@
 }
 else if (_loadError is not null)
 {
-    <section class="empty-state"><h1>Activity unavailable</h1><p>@_loadError</p><button class="button" type="button" @onclick="LoadAsync">Try again</button></section>
+    <section class="empty-state"><h1>Activity unavailable</h1><p>@_loadError</p><StatusMessage Message="@_message" /><button class="button" type="button" @onclick="LoadAsync">Try again</button></section>
 }
 else if (_activity is null)
 {
@@ -33,8 +35,8 @@ else
             {
                 <button class="button" type="button" disabled title="Requires at least two GPS points">Create segment</button>
             }
-            <button class="button" disabled="@_deleteBusy" @onclick="() => _editing = !_editing">Edit activity</button>
-            <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming)" @onclick="BeginDelete">Delete activity</button>
+            <button class="button" disabled="@(_deleteBusy || _metadataSave is not null || _refreshing)" @onclick="() => _editing = !_editing">Edit activity</button>
+            <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming || _metadataSave is not null || _refreshing)" @onclick="BeginDelete">Delete activity</button>
         </Actions>
     </PageHeader>
     <ActivityTagEditor @ref="_tagEditor" OwnerId="_activity.Summary.OwnerId" ActivityId="Id" Tags="_activity.Summary.Tags"
@@ -53,6 +55,11 @@ else
     }
     <StatusMessage Message="@_deleteMessage" IsError="true" />
     @if (_message is not null) { <div class="notice" role="status">@_message</div> }
+    @if (_saveUnconfirmed) { <button class="button" @onclick="LoadAsync">Reload activity before saving again</button> }
+    @if (_pendingRefresh is not null)
+    {
+        <button class="button" disabled="@(_refreshing || _metadataSave is not null)" @onclick="RetryMaintenance">@(_refreshing ? "Refreshing results..." : "Retry records and segment refresh")</button>
+    }
     <section class="metric-grid five">
         <MetricCard Label="Distance" Value="@Format.Distance(_activity.Summary.DistanceMeters)" />
         <MetricCard Label="Moving time" Value="@Format.Duration(_activity.Summary.MovingSeconds)" />
@@ -77,7 +84,7 @@ else
                 <label><span>Gear</span><input @bind="_gear" /></label>
                 <label class="wide"><span>Notes</span><textarea @bind="_description"></textarea></label>
             </div>
-            <button class="button primary" @onclick="Save">Save changes</button>
+            <button class="button primary" disabled="@(_metadataSave is not null || _refreshing || _saveUnconfirmed)" @onclick="Save">@(_metadataSave is null ? "Save changes" : "Saving changes...")</button>
         </section>
     }
     @if (HasMap)
@@ -268,6 +275,13 @@ else
     private bool _disposed;
     private ActivityTagEditor? _tagEditor;
     private bool _focusTagEditor;
+    private MetadataSave? _metadataSave;
+    private PendingRefresh? _pendingRefresh;
+    private bool _refreshing;
+    private bool _saveUnconfirmed;
+    private CancellationTokenSource _mutationLifetime = new();
+    private sealed record MetadataSave(Guid ActivityId, Guid PreviousOwnerId, UpdateActivityRequest Request);
+    private sealed record PendingRefresh(Guid ActivityId, IReadOnlyList<Guid> Owners, bool Statistics, bool Segments, bool FileCleanup);
 
 
 
@@ -297,6 +311,21 @@ else
         using var cancellation = new CancellationTokenSource();
         _loadCancellation = cancellation;
         var activityId = Id;
+        if (_loadedId != activityId)
+        {
+            _mutationLifetime.Cancel();
+            _mutationLifetime.Dispose();
+            _mutationLifetime = new();
+            _metadataSave = null;
+            _pendingRefresh = null;
+            _refreshing = false;
+            _saveUnconfirmed = false;
+            _editing = false;
+            CancelMetricEdit();
+            _deleteConfirming = _deleteBusy = false;
+            _deleteMessage = _message = null;
+            _focusTagEditor = false;
+        }
         _loaded = false;
         _loadError = null;
         _range = null;
@@ -308,6 +337,7 @@ else
             var projection = activity is null ? null : await Task.Run(() => RangeAnalyzer.ProjectMap(activity.Points, cancellationToken: cancellation.Token), cancellation.Token);
             if (cancellation.IsCancellationRequested || _disposed) return;
             _activity = activity;
+            _saveUnconfirmed = false;
             _fullMapProjection = projection;
             _loadedId = activityId;
             _loaded = true;
@@ -513,15 +543,80 @@ else
 
     private async Task Save()
     {
+        if (_disposed || !_editing || _metadataSave is not null || _refreshing || _saveUnconfirmed || _activity is null) return;
+        var submission = new MetadataSave(Id, _activity.Summary.OwnerId, new(_title, _description, _gear, _ownerId));
+        var token = _mutationLifetime.Token;
+        _metadataSave = submission;
+        var saved = false;
         try
         {
-            await Activities.UpdateAsync(Id, new UpdateActivityRequest(_title, _description, _gear, _ownerId));
-            _message = "Activity metadata saved locally."; _editing = false; await LoadAsync();
+            var result = await Activities.UpdateAsync(submission.ActivityId, submission.Request, token);
+            saved = true;
+            if (!IsCurrentSave(submission)) return;
+            _editing = false;
+            _pendingRefresh = result.StatisticsRefreshPending || result.SegmentRefreshPending
+                ? new PendingRefresh(result.ActivityId, new[] { submission.PreviousOwnerId, result.OwnerId }.Distinct().ToArray(),
+                    result.StatisticsRefreshPending, result.SegmentRefreshPending, result.FileCleanupPending) : null;
+            _message = SavedMessage(result.FileCleanupPending, result.StatisticsRefreshPending || result.SegmentRefreshPending);
+            await LoadAsync();
         }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception)
         {
-            _message = exception.Message;
+            if (IsCurrentSave(submission))
+            {
+                _saveUnconfirmed = !saved && exception is not (ArgumentException or InvalidOperationException);
+                _message = saved ? "The activity was saved, but its view could not refresh. Reload the activity; do not repeat the save."
+                    : exception is ArgumentException or InvalidOperationException ? exception.Message
+                    : "The save result could not be confirmed. Reload the activity before trying again.";
+            }
         }
+        finally { if (ReferenceEquals(_metadataSave, submission)) _metadataSave = null; }
+    }
+
+    private bool IsCurrentSave(MetadataSave submission) => !_disposed && Id == submission.ActivityId && ReferenceEquals(_metadataSave, submission);
+
+    private static string SavedMessage(bool fileCleanup, bool refresh) => "Activity metadata saved locally."
+        + (fileCleanup ? " File cleanup is pending and will be retried at startup." : "")
+        + (refresh ? " Records or segment results still need refreshing. Retry refresh without saving or transferring again." : "");
+
+    private async Task RetryMaintenance()
+    {
+        if (_disposed || _refreshing || _metadataSave is not null || _pendingRefresh is not { } pending) return;
+        _refreshing = true;
+        var token = _mutationLifetime.Token;
+        var statisticsPending = pending.Statistics;
+        var segmentsPending = pending.Segments;
+        try
+        {
+            if (statisticsPending)
+            {
+                try
+                {
+                    foreach (var owner in pending.Owners) await Statistics.RecomputeAsync(owner, token);
+                    statisticsPending = false;
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch { }
+            }
+            if (segmentsPending)
+            {
+                try
+                {
+                    foreach (var owner in pending.Owners)
+                        foreach (var segment in await Segments.ListAsync(owner, token)) await Segments.RecomputeAsync(segment.Id, token);
+                    segmentsPending = false;
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch { }
+            }
+            if (_disposed || token.IsCancellationRequested || Id != pending.ActivityId || !ReferenceEquals(_pendingRefresh, pending)) return;
+            _pendingRefresh = statisticsPending || segmentsPending ? pending with { Statistics = statisticsPending, Segments = segmentsPending } : null;
+            _message = SavedMessage(pending.FileCleanup, _pendingRefresh is not null);
+            await LoadAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        finally { if (!_disposed && Id == pending.ActivityId) _refreshing = false; }
     }
 
     private void BeginDelete()
@@ -565,6 +660,9 @@ else
     public void Dispose()
     {
         _disposed = true;
+        _metadataSave = null;
+        _mutationLifetime.Cancel();
+        _mutationLifetime.Dispose();
         _loadCancellation?.Cancel();
         _rangeCancellation?.Cancel();
     }

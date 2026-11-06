@@ -1,4 +1,5 @@
 @page "/segments/{Id:guid}/subsegments/new"
+@implements IDisposable
 @inject ISegmentService Segments
 @inject NavigationManager Navigation
 
@@ -83,81 +84,118 @@ else
     private string? _loadError;
     private string? _message;
     private int _loadVersion;
+    private CancellationTokenSource? _sourceCancellation;
+    private bool _disposed;
     private string ParentUrl => $"/segments/{Id}";
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
+        if (_disposed) return;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
+        _sourceCancellation = new();
+        var token = _sourceCancellation.Token;
         var version = ++_loadVersion;
+        var parentId = Id;
         _loaded = false;
+        _busy = _previewing = false;
         _parent = null;
         _loadError = null;
         _message = null;
         _preview = null;
+        _sections = [];
         _existingId = null;
         _candidateSearch = "";
         try
         {
-            var parent = await Segments.GetAsync(Id);
-            var segments = parent is null ? [] : await Segments.ListAsync(parent.Summary.OwnerId);
-            if (version != _loadVersion) return;
+            var parent = await Segments.GetAsync(parentId, cancellationToken: token);
+            if (!IsCurrentSource(version)) return;
+            var segments = parent is null ? [] : await Segments.ListAsync(parent.Summary.OwnerId, token);
+            if (!IsCurrentSource(version)) return;
             _parent = parent;
-            _candidates = parent is null ? [] : segments.Where(segment => segment.Id != Id &&
+            _candidates = parent is null ? [] : segments.Where(segment => segment.Id != parentId &&
                 segment.Sport == parent.Summary.Sport && !parent.Children.Any(child => child.Summary.Id == segment.Id)).ToArray();
         }
-        catch { if (version == _loadVersion) _loadError = "The parent segment could not be loaded. Try again."; }
-        finally { if (version == _loadVersion) _loaded = true; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch { if (IsCurrentSource(version)) _loadError = "The parent segment could not be loaded. Try again."; }
+        finally { if (IsCurrentSource(version)) _loaded = true; }
     }
 
     private void SetMode(bool existing) { _useExisting = existing; _message = null; }
 
     private async Task PreviewAsync()
     {
+        if (_disposed || !_loaded || _parent is null) return;
         _preview = null;
         _message = null;
         if (!_existingId.HasValue) return;
         var version = _loadVersion;
+        var parentId = _parent.Summary.Id;
+        var childId = _existingId.Value;
+        var token = _sourceCancellation!.Token;
         _previewing = true;
         try
         {
-            var preview = await Segments.PreviewAttachmentAsync(Id, _existingId.Value);
-            if (version != _loadVersion) return;
+            var preview = await Segments.PreviewAttachmentAsync(parentId, childId, token);
+            if (!IsCurrentSource(version)) return;
             _preview = preview;
             _sections = [new SegmentMapSection(preview.Child.Id, preview.Child.Name, 1, preview.Placements)];
         }
-        catch (InvalidOperationException exception) { if (version == _loadVersion) _message = exception.Message; }
-        catch { if (version == _loadVersion) _message = "The segment could not be checked. Choose it again to retry."; }
-        finally { _previewing = false; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (InvalidOperationException exception) { if (IsCurrentSource(version)) _message = exception.Message; }
+        catch { if (IsCurrentSource(version)) _message = "The segment could not be checked. Choose it again to retry."; }
+        finally { if (IsCurrentSource(version)) _previewing = false; }
     }
 
     private async Task CreateAsync(SegmentCreatorSubmission submission)
     {
+        if (_disposed || _busy || !_loaded || _parent is null) return;
+        var parentId = _parent.Summary.Id;
+        var version = _loadVersion;
+        var token = _sourceCancellation!.Token;
         _busy = true;
         _message = null;
         try
         {
-            var childId = await Segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(Id, submission.Name,
-                submission.StartIndex, submission.EndIndex, submission.ToleranceMeters));
-            Navigation.NavigateTo($"{ParentUrl}?section={childId}");
+            var childId = await Segments.CreateSubsegmentAsync(new CreateSubsegmentRequest(parentId, submission.Name,
+                submission.StartIndex, submission.EndIndex, submission.ToleranceMeters), token);
+            if (IsCurrentSource(version)) Navigation.NavigateTo($"/segments/{parentId}?section={childId}");
         }
-        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException) { _message = exception.Message; }
-        catch { _message = "The sub-segment could not be created. Your selection was kept; try again."; }
-        finally { _busy = false; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException) { if (IsCurrentSource(version)) _message = exception.Message; }
+        catch { if (IsCurrentSource(version)) _message = "The sub-segment could not be created. Your selection was kept; try again."; }
+        finally { if (IsCurrentSource(version)) _busy = false; }
     }
 
     private async Task AttachAsync()
     {
-        if (_preview is null) return;
+        if (_disposed || _busy || !_loaded || _parent is null || _preview is null) return;
+        var parentId = _parent.Summary.Id;
+        var childId = _preview.Child.Id;
+        var version = _loadVersion;
+        var token = _sourceCancellation!.Token;
         _busy = true;
         _message = null;
         try
         {
-            await Segments.AttachAsync(Id, _preview.Child.Id);
-            Navigation.NavigateTo($"{ParentUrl}?section={_preview.Child.Id}");
+            await Segments.AttachAsync(parentId, childId, token);
+            if (IsCurrentSource(version)) Navigation.NavigateTo($"/segments/{parentId}?section={childId}");
         }
-        catch (InvalidOperationException exception) { _message = exception.Message; }
-        catch { _message = "The segment could not be attached. Try again."; }
-        finally { _busy = false; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (InvalidOperationException exception) { if (IsCurrentSource(version)) _message = exception.Message; }
+        catch { if (IsCurrentSource(version)) _message = "The segment could not be attached. Try again."; }
+        finally { if (IsCurrentSource(version)) _busy = false; }
+    }
+
+    private bool IsCurrentSource(int version) => !_disposed && version == _loadVersion;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _loadVersion++;
+        _sourceCancellation?.Cancel();
+        _sourceCancellation?.Dispose();
     }
 }

@@ -223,12 +223,14 @@ else if (_routes is not null)
         _busyAction = true;
         try
         {
-            var id = await JS.InvokeAsync<Guid>("activityExplorerImports.uploadRoute", "route-import-file", _ownerId, _sport, _name);
-            Navigation.NavigateTo($"/routes/{id}");
+            var imported = await JS.InvokeAsync<RouteUploadResponse>("activityExplorerImports.uploadRoute", "route-import-file", _ownerId, _sport, _name);
+            if (!_disposed) Navigation.NavigateTo($"/routes/{imported.Id}" + (imported.FileCleanupPending ? "?cleanupPending=true" : ""));
         }
         catch (JSException exception) { _message = exception.Message; }
         finally { _busyAction = false; }
     }
+
+    private sealed record RouteUploadResponse(Guid Id, bool FileCleanupPending);
 
     private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
 

@@ -62,6 +62,8 @@ public sealed class ExplorerDbContext : DbContext
         modelBuilder.HasDbFunction(typeof(ActivitySearchFunctions).GetMethod(nameof(ActivitySearchFunctions.EqualsName))!)
             .HasName("activity_equals_name");
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
+        modelBuilder.Entity<McpOperation>().Property(x => x.Status).HasConversion(
+            state => McpExecutionStates.ToValue(state), value => McpExecutionStates.Parse(value));
         modelBuilder.Entity<ActivityExplorationIndex>().HasKey(x => x.ActivityId);
         modelBuilder.Entity<ActivityExplorationIndex>().HasOne(x => x.Activity).WithMany()
             .HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
@@ -82,7 +84,9 @@ public sealed class ExplorerDbContext : DbContext
         modelBuilder.Entity<ActivityTag>().HasOne(x => x.Activity).WithMany(x => x.Tags).HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ActivityTag>().HasOne(x => x.Tag).WithMany().HasForeignKey(x => x.TagId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ImportBatch>().HasIndex(x => new { x.OwnerId, x.CreatedAtUtc });
-        modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.Sha256 }).IsUnique();
+        modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.Sha256 })
+            .HasDatabaseName("IX_SourceFiles_ActivityOwnerProviderSha256")
+            .IsUnique().HasFilter("\"ActivityId\" IS NOT NULL");
         modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.ExternalId });
         modelBuilder.Entity<SourceFile>().HasIndex(x => x.RouteId).IsUnique().HasFilter("\"RouteId\" IS NOT NULL");
         modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.NaturalFingerprint }).IsUnique();

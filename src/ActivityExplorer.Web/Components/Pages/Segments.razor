@@ -83,6 +83,8 @@ else
     private bool LibrarySearchActive => !string.IsNullOrWhiteSpace(Search) || !string.IsNullOrWhiteSpace(SearchSport);
     private ILookup<Guid, Guid> _children = Array.Empty<SegmentRelationship>().ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
     private int _loadVersion;
+    private CancellationTokenSource? _loadCancellation;
+    private bool _disposed;
     private IReadOnlyList<TrackPoint> _drawn = [];
     private const string ImportInputId = "segment-path-file";
     private MapCanvas? _drawMap;
@@ -151,18 +153,28 @@ else
     private void SetOwner() => _ownerId = ProfileState.SelectedOwnerId ?? ProfileState.Profiles.FirstOrDefault()?.Id ?? Guid.Empty;
     private async Task Load()
     {
+        if (_disposed) return;
+        _loadCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _loadCancellation = cancellation;
         var version = ++_loadVersion;
         var ownerId = ProfileState.SelectedOwnerId;
-        var segments = await SegmentService.ListAsync(ownerId);
-        var links = await SegmentService.ListRelationshipsAsync(ownerId);
-        if (version != _loadVersion) return;
-        _segments = segments;
-        _segmentsById = segments.ToDictionary(segment => segment.Id);
-        var visibleLinks = links.Where(link => _segmentsById.ContainsKey(link.ParentSegmentId) && _segmentsById.ContainsKey(link.ChildSegmentId)).ToArray();
-        _links = visibleLinks;
-        _children = visibleLinks.ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
-        _parentCounts = visibleLinks.GroupBy(link => link.ChildSegmentId).ToDictionary(group => group.Key, group => group.Count());
-        RefreshLibrary();
+        try
+        {
+            var segments = await SegmentService.ListAsync(ownerId, cancellation.Token);
+            if (_disposed || version != _loadVersion || cancellation.IsCancellationRequested) return;
+            var links = await SegmentService.ListRelationshipsAsync(ownerId, cancellation.Token);
+            if (_disposed || version != _loadVersion || cancellation.IsCancellationRequested) return;
+            _segments = segments;
+            _segmentsById = segments.ToDictionary(segment => segment.Id);
+            var visibleLinks = links.Where(link => _segmentsById.ContainsKey(link.ParentSegmentId) && _segmentsById.ContainsKey(link.ChildSegmentId)).ToArray();
+            _links = visibleLinks;
+            _children = visibleLinks.ToLookup(link => link.ParentSegmentId, link => link.ChildSegmentId);
+            _parentCounts = visibleLinks.GroupBy(link => link.ChildSegmentId).ToDictionary(group => group.Key, group => group.Count());
+            RefreshLibrary();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        finally { if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null; }
     }
     private Task DrawingChanged(IReadOnlyList<TrackPoint> points) { _drawn = points; return Task.CompletedTask; }
     private async Task Undo() { if (_drawMap is not null) await _drawMap.UndoAsync(); }
@@ -213,5 +225,11 @@ else
     }
 
     private void Changed() => InvokeAsync(async () => { SetOwner(); await Load(); StateHasChanged(); });
-    public void Dispose() => ProfileState.Changed -= Changed;
+    public void Dispose()
+    {
+        _disposed = true;
+        _loadVersion++;
+        _loadCancellation?.Cancel();
+        ProfileState.Changed -= Changed;
+    }
 }

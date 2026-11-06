@@ -37,6 +37,8 @@ The staging tree follows the durable import state:
 
 Route GPX imports create a completed import batch and a linked `SourceFile`; their staged upload is removed only after the verified original and database provenance are committed.
 
+The same GPX can supply an activity and independently imported routes. Each retains its own source association and import history while sharing the owner's immutable stored file. Deleting or transferring the activity keeps the file while a route still references it. Startup replaces the older source-hash index transactionally with an activity-only unique index; existing rows and originals are preserved.
+
 Local segment-path uploads are intentionally different. The endpoint parses one bounded path, applies the reviewed trim and direction, persists only local geometry plus source kind, safe base file name, and normalized format, and then deletes staging. It does not create a `SourceFile` or managed original. FIT segment UUIDs, leader times, leaderboard fields, provider IDs, and other non-geometry metadata are not retained.
 
 ## What the database contains
@@ -98,6 +100,8 @@ The profile JSON export contains summarized records only; it is not a backup of 
 ## Activity transfer and deletion
 
 Reassigning an activity to another profile first checks fingerprint, Garmin/Strava ID, provider/hash, and external-ID conflicts. Collisions block instead of merging. Originals are copied and SHA-256 verified before ownership changes commit; source rows are rehomed under a completed transfer batch. User-created routes and segments stay with the source profile, lose only their source-activity link, and derived statistics/efforts are recomputed for both profiles.
+
+Once a transfer, profile deletion, or GPX route import commits, a later cleanup or refresh failure is reported as committed work with pending follow-up. It does not mean the original change should be repeated. File journals support cleanup recovery at startup. Pending statistics or segment refresh is reported separately; retry the relevant calculation rather than repeating the transfer. A failed page refresh after a successful edit likewise does not undo the saved edit.
 
 Activity deletion is permanent. The detail page confirms one named activity; the Activities page can confirm selected rows or an exact snapshot of all IDs matching the current profile and filters. A later import is not added to an already displayed filtered confirmation. Deletion removes streams, laps, supplementary metrics, efforts, exploration checkpoints/memberships, and activity provenance. User-created routes, segments, and aggregate import-history entries remain, but source-activity links are cleared and affected segment ranks and records are rebuilt.
 

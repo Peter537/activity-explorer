@@ -86,16 +86,24 @@
 
     private async Task ConfirmDelete()
     {
-        if (!CanConfirmDelete || _deleting is null) return;
+        if (_busy || !CanConfirmDelete || _deleting is null) return;
         _busy = true;
+        ProfileDeletionResult? deleted = null;
         try
         {
-            await ProfilesService.DeleteAsync(_deleting.Id, _confirmation);
+            deleted = await ProfilesService.DeleteAsync(_deleting.Id, _confirmation);
             _deleting = null;
+            _confirmation = "";
+            _message = deleted.FileCleanupPending
+                ? "Profile data was permanently deleted. Copied-file cleanup is pending and will be retried at startup."
+                : "Profile data and copied originals were permanently deleted.";
             await ProfileState.RefreshAsync();
-            _message = "Profile data and copied originals were permanently deleted.";
         }
-        catch (Exception exception) { _message = exception.Message; }
+        catch (Exception exception)
+        {
+            _message = deleted is null ? exception.Message
+                : "The profile was deleted, but the profile list could not refresh. Reload the page; do not repeat the deletion.";
+        }
         finally { _busy = false; }
     }
 

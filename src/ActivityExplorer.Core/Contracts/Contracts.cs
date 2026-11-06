@@ -83,7 +83,7 @@ public interface IActivityQueryService
     Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
     Task<ActivityDeletionResult> DeleteAsync(
         IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default);
-    Task UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default);
+    Task<ActivityUpdateResult> UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default);
     Task<Guid> AddMetricAsync(Guid activityId, ActivityMetricRequest request, CancellationToken cancellationToken = default);
     Task UpdateMetricAsync(Guid activityId, Guid metricId, ActivityMetricRequest request, CancellationToken cancellationToken = default);
     Task DeleteMetricAsync(Guid activityId, Guid metricId, CancellationToken cancellationToken = default);
@@ -120,7 +120,7 @@ public interface IRouteService
     Task<RouteDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Guid> CreateFromActivityAsync(CreateRouteRequest request, CancellationToken cancellationToken = default);
     Task<Guid> CreateAsync(CreateRoutePathRequest request, CancellationToken cancellationToken = default);
-    Task<Guid> ImportGpxAsync(CreateRoutePathRequest request, string stagedPath, string originalName, string sha256, long length, CancellationToken cancellationToken = default);
+    Task<RouteImportResult> ImportGpxAsync(CreateRoutePathRequest request, string stagedPath, string originalName, string sha256, long length, CancellationToken cancellationToken = default);
     Task<string?> ExportGpxAsync(Guid id, CancellationToken cancellationToken = default);
 }
 

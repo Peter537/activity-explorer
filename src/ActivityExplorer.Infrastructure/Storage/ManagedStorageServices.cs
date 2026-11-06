@@ -123,6 +123,10 @@ public sealed class FileOperationCoordinator(
     IOriginalStore originals,
     ILogger<FileOperationCoordinator> logger) : IFileOperationCoordinator
 {
+    internal Func<Stream, Stream, CancellationToken, Task> CopyAsync { get; init; } =
+        static (source, destination, token) => source.CopyToAsync(destination, token);
+    internal Action<string> DeleteFile { get; init; } = File.Delete;
+
     public async Task<PreparedFileOperation> PrepareCopyAsync(
         Guid ownerId,
         Guid? entityId,
@@ -157,8 +161,8 @@ public sealed class FileOperationCoordinator(
             {
                 await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, true);
-                await input.CopyToAsync(output, cancellationToken);
                 created = true;
+                await CopyAsync(input, output, cancellationToken);
             }
             var actualHash = await Fingerprint.Sha256Async(target, cancellationToken);
             if (!string.Equals(actualHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
@@ -170,8 +174,22 @@ public sealed class FileOperationCoordinator(
         }
         catch (Exception exception)
         {
-            if (created && File.Exists(target)) File.Delete(target);
-            operation.State = FileOperationState.Failed;
+            var cleanupPending = false;
+            if (created)
+            {
+                try
+                {
+                    var referenced = await db.SourceFiles.AsNoTracking()
+                        .AnyAsync(x => x.StoredPath == operation.TargetRelativePath, CancellationToken.None);
+                    if (!referenced && File.Exists(target)) DeleteFile(target);
+                }
+                catch (Exception cleanupException) when (cleanupException is IOException or UnauthorizedAccessException)
+                {
+                    cleanupPending = true;
+                    logger.LogWarning(cleanupException, "Could not clean up file operation {OperationId}; recovery will retry.", operation.Id);
+                }
+            }
+            operation.State = cleanupPending ? FileOperationState.Pending : FileOperationState.Failed;
             operation.ErrorMessage = SafeMessage(exception.Message);
             operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(CancellationToken.None);
@@ -293,7 +311,7 @@ public sealed class FileOperationCoordinator(
             if (!referenced)
             {
                 var target = originals.ResolveStoredPath(operation.TargetRelativePath);
-                if (File.Exists(target)) File.Delete(target);
+                if (File.Exists(target)) DeleteFile(target);
             }
         }
         else if (operation.Kind == FileOperationKind.OwnerQuarantine &&
@@ -369,10 +387,17 @@ public sealed class FileOperationCoordinator(
                     throw new InvalidOperationException($"Unsupported file operation kind {operation.Kind}.");
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Could not recover file operation {OperationId}.", operation.Id);
-                await MarkFailedAsync(operation.Id, exception.Message);
+                if (operation.Kind == FileOperationKind.Copy && exception is IOException or UnauthorizedAccessException)
+                    await RecordRecoveryErrorAsync(operation.Id, exception.Message);
+                else
+                    await MarkFailedAsync(operation.Id, exception.Message);
             }
         }
     }
@@ -382,6 +407,15 @@ public sealed class FileOperationCoordinator(
         await using var db = await contextFactory.CreateDbContextAsync();
         var operation = await db.FileOperations.SingleAsync(x => x.Id == operationId);
         operation.State = FileOperationState.Failed;
+        operation.ErrorMessage = SafeMessage(message);
+        operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
+    private async Task RecordRecoveryErrorAsync(Guid operationId, string message)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var operation = await db.FileOperations.SingleAsync(x => x.Id == operationId);
         operation.ErrorMessage = SafeMessage(message);
         operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();

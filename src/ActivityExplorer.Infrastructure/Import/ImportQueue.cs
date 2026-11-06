@@ -36,7 +36,8 @@ public sealed class ImportQueue(
         };
         db.ImportBatches.Add(batch);
         await db.SaveChangesAsync(cancellationToken);
-        await _channel.Writer.WriteAsync(batch.Id, cancellationToken);
+        // The persisted batch owns the staged file even if the request is cancelled now.
+        await _channel.Writer.WriteAsync(batch.Id, CancellationToken.None);
         return batch.Id;
     }
 

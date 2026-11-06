@@ -34,6 +34,7 @@ public sealed class ImportProcessor(
         batch.StartedAtUtc ??= DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
+        var persistOutcomeSeparately = false;
         try
         {
             var importer = importers.FirstOrDefault(x => x.CanImport(stagedPath))
@@ -78,12 +79,14 @@ public sealed class ImportProcessor(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            persistOutcomeSeparately = true;
             batch.Status = ImportStatus.Interrupted;
             batch.ErrorMessage = "Import stopped because the application is shutting down.";
             throw;
         }
         catch (Exception exception)
         {
+            persistOutcomeSeparately = true;
             batch.Status = ImportStatus.Failed;
             batch.ErrorMessage = Redact(exception.Message);
             logger.LogError(exception, "Import batch {ImportBatchId} failed.", batch.Id);
@@ -92,7 +95,19 @@ public sealed class ImportProcessor(
         {
             var terminal = batch.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed;
             batch.CompletedAtUtc = terminal ? DateTimeOffset.UtcNow : null;
-            await db.SaveChangesAsync(CancellationToken.None);
+            if (persistOutcomeSeparately)
+            {
+                await using var outcomeDb = await contextFactory.CreateDbContextAsync(CancellationToken.None);
+                var persisted = await outcomeDb.ImportBatches.SingleAsync(x => x.Id == batch.Id, CancellationToken.None);
+                persisted.Status = batch.Status;
+                persisted.ErrorMessage = batch.ErrorMessage;
+                persisted.CompletedAtUtc = batch.CompletedAtUtc;
+                await outcomeDb.SaveChangesAsync(CancellationToken.None);
+            }
+            else
+            {
+                await db.SaveChangesAsync(CancellationToken.None);
+            }
             if (terminal) CleanupStaging(stagedPath);
         }
     }
@@ -120,7 +135,7 @@ public sealed class ImportProcessor(
 
 
         var exactSource = await db.SourceFiles
-            .Where(x => x.OwnerId == batch.OwnerId && x.Sha256 == candidate.Sha256)
+            .Where(x => x.OwnerId == batch.OwnerId && (x.ActivityId != null || x.RouteId == null) && x.Sha256 == candidate.Sha256)
             .OrderByDescending(x => x.Provider == candidate.Provider)
             .FirstOrDefaultAsync(cancellationToken);
         if (exactSource is not null)
@@ -156,7 +171,7 @@ public sealed class ImportProcessor(
                 exactSource.ParserVersion = Math.Max(exactSource.ParserVersion, candidate.ParserVersion);
             }
             else if (!await db.SourceFiles.AnyAsync(x =>
-                         x.OwnerId == batch.OwnerId && x.Provider == candidate.Provider && x.Sha256 == candidate.Sha256,
+                         x.OwnerId == batch.OwnerId && (x.ActivityId != null || x.RouteId == null) && x.Provider == candidate.Provider && x.Sha256 == candidate.Sha256,
                          cancellationToken))
             {
                 if (exactActivity is not null) exactActivity.ExplorationInputVersion++;
@@ -211,7 +226,7 @@ public sealed class ImportProcessor(
             fileOperation = await fileOperations.PrepareCopyAsync(
                 batch.OwnerId, activity!.Id, candidate.FilePath, target, candidate.Sha256,
                 cancellationToken: cancellationToken);
-            activity.SourceFiles.Add(new SourceFile
+            db.SourceFiles.Add(new SourceFile
             {
                 OwnerId = batch.OwnerId,
                 ImportBatchId = batch.Id,

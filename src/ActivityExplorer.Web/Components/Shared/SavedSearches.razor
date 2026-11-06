@@ -144,10 +144,11 @@
         if (OpenOnly) return;
         if (AppliedCriteria is null) throw new InvalidOperationException("Apply valid filters before saving a search.");
         var id = await Organization.SaveSavedSearchAsync(OwnerId, _name, AppliedCriteria, replace ? Selected?.Id : null);
+        if (_disposed) return;
         _selected = id.ToString();
         _repair = null;
-        await Load();
         _message = "Saved search.";
+        await Load();
     });
 
     private Task Rename() => Run(async () =>
@@ -155,8 +156,9 @@
         if (OpenOnly) return;
         if (Selected is null) return;
         await Organization.RenameSavedSearchAsync(OwnerId, Selected.Id, _name);
-        await Load();
+        if (_disposed) return;
         _message = "Renamed search.";
+        await Load();
     });
 
     private Task Delete() => Run(async () =>
@@ -164,11 +166,12 @@
         if (OpenOnly) return;
         if (Selected is null) return;
         await Organization.DeleteSavedSearchAsync(OwnerId, Selected.Id);
+        if (_disposed) return;
         _selected = _name = "";
         _repair = null;
         _deleteReview = false;
-        await Load();
         _message = "Deleted saved search. Activities are unchanged.";
+        await Load();
     });
 
     private Task Repair() => Run(async () =>
@@ -181,21 +184,27 @@
             ExcludedTags = _repairExcludedTags.Select(id => new SavedTagReference(id, Tags.Single(tag => tag.Id == id).Name)).ToArray()
         };
         await Organization.SaveSavedSearchAsync(OwnerId, _repair.Name, criteria, _repair.Id);
+        if (_disposed) return;
         _repair = null;
+        _message = "Repaired search.";
         await Load();
         if (_disposed) return;
-        await OnOpen.InvokeAsync(criteria);
-        _message = "Repaired and opened saved search.";
+        try
+        {
+            await OnOpen.InvokeAsync(criteria);
+            if (!_disposed) _message = "Repaired and opened saved search.";
+        }
+        catch { if (!_disposed) _error = "The repaired search was saved, but could not be opened. Open search to try again."; }
     });
 
     private async Task Run(Func<Task> action)
     {
-        if (_busy || Disabled) return;
+        if (_disposed || _busy || Disabled) return;
         _busy = true;
         _error = _message = null;
         try { await action(); }
-        catch (Exception exception) { _error = exception.Message; }
-        finally { _busy = false; }
+        catch (Exception exception) { if (!_disposed) _error = exception.Message; }
+        finally { if (!_disposed) _busy = false; }
     }
 
     public void Dispose() { _disposed = true; _generation++; }

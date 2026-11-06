@@ -165,6 +165,8 @@ public sealed class McpWriteTests
         var status = await WaitAsync(setup.Writes, preview.PlanId);
         Assert.Equal("completed", status.Status);
         await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.Equal("completed", await db.Database.SqlQuery<string>(
+            $"SELECT \"Status\" AS \"Value\" FROM \"McpOperations\" WHERE \"Id\" = {preview.PlanId}").SingleAsync());
         Assert.Equal(1, await db.Segments.CountAsync(item => item.Name == "One climb"));
         var effect = await db.McpEffects.SingleAsync(item => item.Id == preview.PlanId);
         Assert.Equal(status.EntityId, effect.EntityId);
@@ -331,8 +333,11 @@ public sealed class McpWriteTests
         var committed = Guid.NewGuid(); var unfinished = Guid.NewGuid();
         await using (var db = await setup.Fixture.Factory.CreateDbContextAsync())
         {
-            db.McpOperations.AddRange(new McpOperation { Id = committed, Action = "create_tag", Status = "running", ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner }), RequestJson = "private request" },
-                new McpOperation { Id = unfinished, Action = "create_tag", Status = "running", ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner }), RequestJson = "private request" });
+            var committedOperation = new McpOperation { Id = committed, Action = "create_tag", ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner }), RequestJson = "private request" };
+            var unfinishedOperation = new McpOperation { Id = unfinished, Action = "create_tag", ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner }), RequestJson = "private request" };
+            committedOperation.StartExecution();
+            unfinishedOperation.StartExecution();
+            db.McpOperations.AddRange(committedOperation, unfinishedOperation);
             db.McpEffects.Add(new McpEffect { Id = committed, EntityId = setup.Fixture.TagId });
             await db.SaveChangesAsync();
         }
@@ -343,6 +348,103 @@ public sealed class McpWriteTests
         await using var check = await setup.Fixture.Factory.CreateDbContextAsync();
         Assert.All(await check.McpOperations.ToArrayAsync(), operation => Assert.Empty(operation.RequestJson));
         Assert.Single(await check.Tags.ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Legacy_terminal_receipts_keep_their_wire_values_and_cannot_replay()
+    {
+        await using var setup = await Setup.CreateAsync();
+        string[] states = ["completed", "failed", "interrupted", "committed_with_warnings"];
+        foreach (var state in states)
+        {
+            var id = Guid.NewGuid();
+            await using (var db = await setup.Fixture.Factory.CreateDbContextAsync())
+            {
+                db.McpOperations.Add(new McpOperation
+                {
+                    Id = id,
+                    Action = "create_tag",
+                    ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner }),
+                    RequestJson = JsonSerializer.Serialize(Request("create_tag", setup.Fixture.Owner, new { name = "Must not replay" }), McpChangeJson.Options)
+                });
+                await db.SaveChangesAsync();
+                await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE \"McpOperations\" SET \"Status\" = {state} WHERE \"Id\" = {id}");
+            }
+            Assert.Equal(state, (await setup.Writes.StatusAsync(id, CancellationToken.None)).Status);
+            await setup.Writes.ExecuteAsync(id, CancellationToken.None);
+            Assert.Equal(state, (await setup.Writes.StatusAsync(id, CancellationToken.None)).Status);
+        }
+        await using var check = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.False(await check.Tags.AnyAsync(tag => tag.Name == "Must not replay"));
+        Assert.Empty(await check.McpEffects.ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task An_unknown_stored_execution_state_is_rejected_instead_of_becoming_queued()
+    {
+        await using var setup = await Setup.CreateAsync();
+        var id = Guid.NewGuid();
+        await using (var db = await setup.Fixture.Factory.CreateDbContextAsync())
+        {
+            db.McpOperations.Add(new McpOperation
+            {
+                Id = id,
+                Action = "create_tag",
+                ProfileIdsJson = JsonSerializer.Serialize(new[] { setup.Fixture.Owner })
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE \"McpOperations\" SET \"Status\" = {"future_state"} WHERE \"Id\" = {id}");
+        }
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => setup.Writes.StatusAsync(id, CancellationToken.None));
+        Assert.Contains("incompatible", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Committed_route_cleanup_failure_keeps_its_receipt_and_cannot_repeat_the_import()
+    {
+        FailingCleanup? files = null;
+        await using var setup = await Setup.CreateAsync(configure: builder => builder.ConfigureServices(services =>
+            services.AddSingleton<IFileOperationCoordinator>(provider =>
+                files = new FailingCleanup(ActivatorUtilities.CreateInstance<FileOperationCoordinator>(provider)))));
+        await using var upload = new MemoryStream(Encoding.UTF8.GetBytes(TestSupport.Gpx()));
+        var asset = await setup.Writes.ApproveFileAsync(setup.Fixture.Owner, "pending-route.gpx", upload, 1024 * 1024, CancellationToken.None);
+        var preview = await setup.Writes.PrepareAsync(Request("import_route", setup.Fixture.Owner,
+            new { assetId = asset.Id, name = "Committed pending route", sport = SportKind.Cycling }), CancellationToken.None);
+
+        await setup.Writes.ApproveAsync(preview.PlanId, null, CancellationToken.None);
+        var status = await WaitAsync(setup.Writes, preview.PlanId);
+
+        Assert.Equal("committed_with_warnings", status.Status);
+        Assert.True(status.Result!.Value.GetProperty("fileCleanupPending").GetBoolean());
+        Assert.NotNull(status.EntityId);
+        var repeated = await setup.Writes.ApproveAsync(preview.PlanId, null, CancellationToken.None);
+        Assert.Equal(status.OperationId, repeated.OperationId);
+        Assert.Equal(status.EntityId, repeated.EntityId);
+        Assert.Equal(status.Status, repeated.Status);
+        await setup.Writes.ExecuteAsync(preview.PlanId, CancellationToken.None);
+        Assert.Equal(1, files!.CommitCalls);
+        await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.Equal(1, await db.Routes.CountAsync(route => route.Name == "Committed pending route"));
+        Assert.Equal(status.EntityId, (await db.McpEffects.SingleAsync(effect => effect.Id == preview.PlanId)).EntityId);
+    }
+
+    private sealed class FailingCleanup(IFileOperationCoordinator inner) : IFileOperationCoordinator
+    {
+        public int CommitCalls { get; private set; }
+        public Task<PreparedFileOperation> PrepareCopyAsync(Guid ownerId, Guid? entityId, string sourcePath, string targetPath,
+            string expectedSha256, bool deleteSourceOnCommit = false, CancellationToken cancellationToken = default) =>
+            inner.PrepareCopyAsync(ownerId, entityId, sourcePath, targetPath, expectedSha256, deleteSourceOnCommit, cancellationToken);
+        public Task<Guid?> QuarantineOwnerAsync(Guid ownerId, CancellationToken cancellationToken = default) =>
+            inner.QuarantineOwnerAsync(ownerId, cancellationToken);
+        public Task<Guid?> QuarantineFileAsync(Guid ownerId, Guid? entityId, string storedPath, CancellationToken cancellationToken = default) =>
+            inner.QuarantineFileAsync(ownerId, entityId, storedPath, cancellationToken);
+        public Task CommitAsync(Guid operationId, CancellationToken cancellationToken = default)
+        {
+            CommitCalls++;
+            return Task.FromException(new IOException("Synthetic postcommit cleanup failure."));
+        }
+        public Task RollbackAsync(Guid operationId, CancellationToken cancellationToken = default) => inner.RollbackAsync(operationId, cancellationToken);
+        public Task RecoverAsync(CancellationToken cancellationToken = default) => inner.RecoverAsync(cancellationToken);
     }
 
     [Fact]

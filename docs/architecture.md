@@ -114,7 +114,7 @@ Exploration's `NewOnly` selection filters cells before list pagination and viewp
 ## Import lifecycle
 
 1. The browser obtains a no-store antiforgery token. A bounded multipart reader streams one upload to a `CreateNew` file under a unique staging directory. A watched-folder import copies a stable source into the same managed area.
-2. An `ImportBatch` row commits before its identifier enters the single-reader in-process queue.
+2. An `ImportBatch` row commits before its identifier enters the single-reader in-process queue. After that save succeeds, queue notification and return of the batch ID are independent of request cancellation; the durable batch owns staging.
 3. The processor acquires the owner mutation lock, marks the batch running, and selects a parser.
 4. Archive contents expand only within the isolated staging tree under traversal, link, count, depth, and expanded-size limits.
 5. Candidates are matched by owner plus provider ID, SHA-256, and natural fingerprint.
@@ -124,6 +124,10 @@ Exploration's `NewOnly` selection filters cells before list pagination and viewp
 9. Startup marks abandoned running work interrupted, requeues queued/interrupted batches with staging, fails missing staging clearly, and recovers incomplete journal phases idempotently.
 
 Unknown pre-existing files under managed originals are retained and reported; they are never guessed to be orphans.
+
+Original-copy preparation tracks ownership as soon as a new target is opened. Failure removes an owned, unreferenced partial target after closing the stream. If cleanup fails, the journal remains recoverable; transient copy-recovery failures and requested cancellation do not make it permanently failed. Previously failed rows do not establish ownership and are not swept into automatic deletion.
+
+Enrichment explicitly registers newly retained source files as inserts, including when the activity already exists. Failed or interrupted candidate work records its batch outcome through a separate context, preserving the last committed counts without retrying the failed entity graph.
 
 Import-history queries apply name, status, warnings, source, workflow kind, and owner-local creation-date filters before the complete match count and newest-first visible limit. History narrowing is independent of active-upload polling. Import-result links resolve distinct activities/routes through their current source associations, validate batch ownership, and preserve an explicit batch scope in the destination URL. They do not infer a historical activity list from filenames or original import counts.
 
@@ -155,7 +159,7 @@ erDiagram
     Activity ||--o{ SegmentEffort : supplies
 ~~~
 
-`ApplicationSetting` persists the single global map mode. `FileOperationJournal` records prepared, database-committed, completed, rolled-back, and failed copy/quarantine operations with root-relative paths. Owner-scoped mutation locks serialize imports, transfers, and deletion for affected profiles.
+`ApplicationSetting` persists the single global map mode. `FileOperationJournal` records prepared, database-committed, completed, rolled-back, and failed copy/quarantine operations with root-relative paths. The mutation lock uses one global SQLite writer gate for imports, transfers, deletion, and global commands; an ambient scope permits nested calls.
 
 `SegmentLink` stores unique parent/child segment pairs with foreign keys that cascade relationship rows only. Relationship mutations use the same owner lock; attachment validates profile, sport, directional containment, and cycle avoidance. Section placements are derived from the ordered geometry matcher. Detail queries batch related summaries and select child efforts wholly inside the selected parent effort's activity-stream interval, without storing duplicate tracks or effort relationships.
 

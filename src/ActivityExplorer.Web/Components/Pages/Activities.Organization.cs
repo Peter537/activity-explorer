@@ -170,6 +170,7 @@ public partial class Activities
 
     private async Task RefreshOrganizationActivities()
     {
+        _organizationRevision++;
         ClearSelectionAndConfirmation();
         await LoadAsync();
     }

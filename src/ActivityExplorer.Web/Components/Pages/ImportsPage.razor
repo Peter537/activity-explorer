@@ -5,6 +5,7 @@
 @inject IWatchedFolderService WatchedFolders
 @inject ProfileState ProfileState
 @inject NavigationManager Navigation
+@using System.Text.Json.Serialization
 
 <PageTitle>Imports - Activity Explorer</PageTitle>
 <PageHeader Title="Imports" Summary="Stream files into a durable local queue. Accepted activity originals are preserved in private storage." />
@@ -18,8 +19,8 @@
         }
         else
         {
-            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
-            <label class="file-drop" for="@_garminInputId"><span>Choose the Garmin export ZIP</span><input id="@_garminInputId" type="file" accept=".zip" /></label>
+            <label><span>Profile</span><select @bind="_ownerId" disabled="@_uploading">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label class="file-drop" for="@_garminInputId"><span>Choose the Garmin export ZIP</span><input id="@_garminInputId" type="file" accept=".zip" disabled="@_uploading" /></label>
             <div class="workflow-actions">
                 <button class="button primary" disabled="@_uploading" @onclick="UploadGarmin">@(_uploading ? "Uploading Garmin export..." : "Queue Garmin history")</button>
                 <a href="https://support.garmin.com/en-US/?faq=W1TvTPW8JZ6LfJSfK512Q8" target="_blank" rel="noreferrer">Official export guide &rarr;</a>
@@ -34,11 +35,10 @@
         }
         else
         {
-            <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+            <label><span>Profile</span><select @bind="_ownerId" disabled="@_uploading">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
             <p class="muted">Choose several FIT, TCX, GPX, GZ, or ZIP files. Two uploads run at a time and known activities are skipped.</p>
-            <label class="file-drop" for="@_recentInputId"><span>Choose one or more files</span><input id="@_recentInputId" type="file" multiple accept=".zip,.fit,.gpx,.tcx,.gz" /></label>
+            <label class="file-drop" for="@_recentInputId"><span>Choose one or more files</span><input id="@_recentInputId" type="file" multiple accept=".zip,.fit,.gpx,.tcx,.gz" disabled="@_uploading" /></label>
             <button class="button primary" disabled="@_uploading" @onclick="UploadRecent">@(_uploading ? "Uploading..." : "Queue selected files")</button>
-            <StatusMessage Message="@_status" IsError="@_statusIsError" />
         }
     </article>
     <article class="panel guide-panel">
@@ -52,6 +52,20 @@
         }
     </article>
 </section>
+<StatusMessage Message="@_status" IsError="@_statusIsError" />
+@if (_uploadItems.Count > 0)
+{
+    <section class="panel" aria-label="Upload results">
+        <h2>Upload results</h2>
+        <ul>
+            @foreach (var item in _uploadItems)
+            {
+                <li><strong>@item.Name</strong> · @(item.Outcome == UploadOutcome.Queued ? "Queued for processing" : item.Outcome == UploadOutcome.Rejected ? "Upload rejected" : "Upload outcome unknown")@if (item.Error is not null) { <span> · @item.Error</span> }</li>
+            }
+        </ul>
+        @if (_uploadItems.Any(item => item.Outcome != UploadOutcome.Queued)) { <p>Select files again to retry. Check import history before retrying an unknown outcome; it may already be queued.</p> }
+    </section>
+}
 <details class="panel import-history" open="@HistoryHasFilters">
     <summary>
         <span>Import history</span>
@@ -114,7 +128,10 @@
     private IReadOnlyList<WatchedFolderSummary> _folders = [];
     private Guid _ownerId;
     private string _folderPath = string.Empty;
-    private bool _uploading;
+    private UploadState _uploadState;
+    private bool _uploading => _uploadState == UploadState.Uploading;
+    private IReadOnlyList<UploadItemResponse> _uploadItems = [];
+    private int _uploadOperation, _pollingRevision;
     private bool _statusIsError;
     private string? _status;
     private CancellationTokenSource? _polling;
@@ -138,40 +155,68 @@
 
     private async Task UploadMany(string inputId, string? sourceKind)
     {
-        _uploading = true;
+        if (_disposed || _uploading) return;
+        var operation = ++_uploadOperation;
+        var owner = _ownerId;
+        _uploadState = UploadState.Uploading;
+        _uploadItems = [];
         _status = null;
         _statusIsError = false;
         try
         {
-            var response = await JS.InvokeAsync<UploadManyResponse>("activityExplorerImports.uploadMany", inputId, _ownerId, sourceKind, 2);
-            _status = $"Queued {response.Ids.Count} file{(response.Ids.Count == 1 ? string.Empty : "s")}. The local import worker is processing them now.";
             await StopPollingAsync();
-            _polling = new CancellationTokenSource();
-            _pollingTask = PollAsync(response.Ids, _polling.Token);
+            if (_disposed || operation != _uploadOperation) return;
+            var response = await JS.InvokeAsync<UploadManyResponse>("activityExplorerImports.uploadMany", inputId, owner, sourceKind, 2);
+            if (_disposed || operation != _uploadOperation) return;
+            _uploadItems = response.Items;
+            var ids = response.Items.Where(item => item.Outcome == UploadOutcome.Queued && item.Id.HasValue).Select(item => item.Id!.Value).ToArray();
+            var allQueued = ids.Length == response.Items.Count;
+            _statusIsError = !allQueued;
+            _status = allQueued
+                ? $"Queued {ids.Length} file{(ids.Length == 1 ? string.Empty : "s")}. The local import worker is processing them now."
+                : $"Queued {ids.Length} of {response.Items.Count} files. Review the rejected or unknown upload outcomes below.";
+            if (ids.Length > 0)
+            {
+                _polling = new CancellationTokenSource();
+                _pollingTask = PollAsync(ids, allQueued, _pollingRevision, _polling.Token);
+            }
         }
-        catch (JSException exception) { _status = exception.Message; _statusIsError = true; }
-        finally { _uploading = false; await LoadAsync(); }
+        catch (JSException exception)
+        {
+            if (_disposed || operation != _uploadOperation) return;
+            _status = exception.Message;
+            _statusIsError = true;
+        }
+        finally
+        {
+            if (!_disposed && operation == _uploadOperation)
+            {
+                _uploadState = UploadState.Settled;
+                await LoadAsync();
+            }
+        }
     }
 
-    private async Task PollAsync(IReadOnlyList<Guid> ids, CancellationToken token)
+    private async Task PollAsync(IReadOnlyList<Guid> ids, bool allQueued, int revision, CancellationToken token)
     {
         try
         {
             while (!token.IsCancellationRequested)
             {
                 await Task.Delay(750, token);
-                await InvokeAsync(async () => { await LoadHistory(); StateHasChanged(); });
+                await InvokeAsync(async () => { if (_disposed || token.IsCancellationRequested || revision != _pollingRevision) return; await LoadHistory(); if (!_disposed) StateHasChanged(); });
                 var reports = await Task.WhenAll(ids.Select(id => History.GetReportAsync(id, token)));
+                if (_disposed || token.IsCancellationRequested || revision != _pollingRevision) return;
                 if (reports.All(report => report?.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or ImportStatus.Interrupted))
                 {
                     var warnings = reports.Sum(report => report?.Warnings ?? 0);
                     var failed = reports.Count(report => report?.Status == ImportStatus.Failed);
                     var interrupted = reports.Count(report => report?.Status == ImportStatus.Interrupted);
-                    _statusIsError = failed > 0 || interrupted > 0;
+                    _statusIsError = !allQueued || failed > 0 || interrupted > 0;
                     _status = failed > 0 || interrupted > 0
                         ? $"Processing stopped with {failed} failed and {interrupted} interrupted import{(failed + interrupted == 1 ? string.Empty : "s")}. Review import history for details."
                         : warnings == 0
-                            ? "All selected files finished processing successfully."
+                            ? allQueued ? "All selected files finished processing successfully." : "Queued files finished processing successfully. Other upload outcomes still need review below."
                             : $"Processing finished with {warnings} warning{(warnings == 1 ? string.Empty : "s")}.";
                     await InvokeAsync(StateHasChanged);
                     return;
@@ -181,6 +226,7 @@
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
         {
+            if (_disposed || token.IsCancellationRequested || revision != _pollingRevision) return;
             _statusIsError = true;
             _status = $"Import status polling stopped: {exception.Message}";
             await InvokeAsync(StateHasChanged);
@@ -213,7 +259,11 @@
         _historyLimit += 10;
         await NavigateHistory();
     }
-    private async Task LoadFolders() => _folders = await WatchedFolders.ListAsync(null);
+    private async Task LoadFolders()
+    {
+        var folders = await WatchedFolders.ListAsync(null);
+        if (!_disposed) _folders = folders;
+    }
     private async Task LoadAsync() => await Task.WhenAll(LoadHistory(), LoadFolders());
 
     private async Task AddFolder()
@@ -263,21 +313,29 @@
 
     private async Task StopPollingAsync()
     {
-        if (_polling is null) return;
-        _polling.Cancel();
-        if (_pollingTask is not null) await _pollingTask;
-        _polling.Dispose();
+        _pollingRevision++;
+        var polling = _polling;
+        var task = _pollingTask;
         _polling = null;
         _pollingTask = null;
+        if (polling is null) return;
+        await polling.CancelAsync();
+        if (task is not null) await task;
+        polling.Dispose();
     }
 
     private void ProfilesChanged() => InvokeAsync(async () =>
     {
+        if (_disposed) return;
         SetDefaultOwner(); _historyLimit = 10; _history = null;
         if (HistoryLimit is not null && _historyQueryError is null) { await LoadFolders(); await NavigateHistory(); }
         else await LoadAsync();
-        StateHasChanged();
+        if (!_disposed) StateHasChanged();
     });
-    public async ValueTask DisposeAsync() { _disposed = true; _historyRevision++; ProfileState.Changed -= ProfilesChanged; await StopPollingAsync(); }
-    private sealed record UploadManyResponse(IReadOnlyList<Guid> Ids);
+    public async ValueTask DisposeAsync() { _disposed = true; _uploadOperation++; _historyRevision++; ProfileState.Changed -= ProfilesChanged; await StopPollingAsync(); }
+    private enum UploadState { Idle, Uploading, Settled }
+    [JsonConverter(typeof(JsonStringEnumConverter<UploadOutcome>))]
+    private enum UploadOutcome { Queued, Rejected, Unknown }
+    private sealed record UploadManyResponse(IReadOnlyList<UploadItemResponse> Items);
+    private sealed record UploadItemResponse(int Index, string Name, UploadOutcome Outcome, Guid? Id, string? Error);
 }

@@ -14,6 +14,8 @@ Activity Explorer accepts user-supplied exports and files. It never requests acc
 
 Large browser uploads stream to disk rather than being retained in the Blazor circuit.
 
+Multi-file uploads report each file separately after all upload workers finish. **Queued** means the app returned an import batch ID; its processing is tracked even if another file was rejected. **Rejected** means the server refused that request. **Unknown** means the response was lost or could not be read, so the file may already have been queued. Check import history before selecting an unknown file again. Accepted files are not retried automatically, and processing success does not clear another file's upload warning.
+
 ## Garmin account exports
 
 Activity Explorer's supported bulk-history path is a user-requested Garmin account export. This is a manual portability workflow, not an automatic Garmin Connect sync.
@@ -128,11 +130,13 @@ Deduplication is owner-scoped and follows this order:
 
 A repeated export from the same provider does not create another activity, stored copy, or redundant source row. The same bytes from a different provider may add one distinct provenance row without copying the bytes. Equivalent cross-format files enrich the existing activity.
 
+Activity deduplication considers activity sources. Importing a GPX as a route does not prevent importing it as an activity, including through a watched folder, and the reverse order also works. Independently imported routes retain separate provenance and history while sharing the stored original where possible.
+
 Local user edits always win. FIT supplies canonical timing, laps, sensors, and track detail; Strava export metadata may fill title, description, and gear; TCX outranks GPX for sensor detail. Imports for one profile never match or mutate another profile.
 
 ## Reassigning an activity
 
-Changing an activity's profile is a coordinated transfer, not a merge. The target is preflighted for natural-fingerprint, Garmin/Strava ID, provider/hash, and provider/external-ID collisions; any collision blocks the transfer. Originals are copied to the target owner directory and SHA-256 verified before ownership changes commit. Provenance rows move to a completed target transfer batch so deleting the source profile cannot cascade-delete them.
+Changing an activity's profile is a coordinated transfer, not a merge. The target is preflighted for natural-fingerprint, Garmin/Strava ID, and activity-source provider/hash and provider/external-ID collisions; any collision blocks the transfer. A route source with the same file hash does not block the transfer. Originals are copied to the target owner directory and SHA-256 verified before ownership changes commit. Provenance rows move to a completed target transfer batch so deleting the source profile cannot cascade-delete them.
 
 User-created routes and segments remain with the source profile and are unlinked from the transferred activity. Statistics and segment efforts are recomputed for both profiles.
 

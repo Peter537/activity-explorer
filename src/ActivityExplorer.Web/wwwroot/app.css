@@ -196,7 +196,7 @@ textarea { min-height: 105px; resize: vertical; }
 .segment-range-input:focus-visible { box-shadow: none; }
 .segment-range-input:focus-visible::-webkit-slider-thumb { outline: 3px solid #9bc9b7; outline-offset: 2px; }
 .segment-range-input:focus-visible::-moz-range-thumb { outline: 3px solid #9bc9b7; outline-offset: 2px; }
-.segment-endpoint-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+.segment-endpoint-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin-bottom: 18px; }
 .segment-endpoint-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #fafcf9; }
 .segment-endpoint-card > div:first-child { min-width: 0; }
 .segment-endpoint-card span { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
