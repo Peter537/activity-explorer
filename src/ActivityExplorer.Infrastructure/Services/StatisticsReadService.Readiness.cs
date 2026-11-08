@@ -10,7 +10,8 @@ public sealed partial class StatisticsReadService
     public IReadOnlyList<RecordBenchmark> GetBenchmarks(SportKind sport)
     {
         if (!Enum.IsDefined(sport)) throw new ArgumentException("Choose a valid sport.");
-        return OverviewBenchmarks(sport);
+        return OverviewWholeBenchmarks(sport)
+            .Concat(RecordEffortReadModel.GroupsFor(sport).SelectMany(group => group)).ToArray();
     }
 
     public async Task<ReadRecordOverview> ReadOverviewAsync(RecordOverviewQuery query, CancellationToken cancellationToken = default)

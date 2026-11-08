@@ -193,7 +193,7 @@ public sealed class ImportProcessor(
             }
 
             batch.DuplicatesSkipped++;
-            await db.SaveChangesAsync(cancellationToken);
+            await SaveCandidateAsync(db, exactActivity, candidate.Parsed.Points, cancellationToken);
             return;
         }
 
@@ -244,7 +244,7 @@ public sealed class ImportProcessor(
             activity.ExplorationInputVersion++;
 
             ApplyExternalId(activity, candidate.Provider, candidate.ExternalId);
-            await db.SaveChangesAsync(cancellationToken);
+            await SaveCandidateAsync(db, activity, candidate.Parsed.Points, cancellationToken);
             await fileOperations.CommitAsync(fileOperation.OperationId, cancellationToken);
         }
         catch
@@ -253,6 +253,32 @@ public sealed class ImportProcessor(
                 await fileOperations.RollbackAsync(fileOperation.OperationId, CancellationToken.None);
             throw;
         }
+    }
+
+    private static async Task SaveCandidateAsync(ExplorerDbContext db, Activity? activity, IReadOnlyList<TrackPoint> points,
+        CancellationToken cancellationToken)
+    {
+        if (activity?.Stream is not { } stream)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        db.ChangeTracker.DetectChanges();
+        var entry = db.Entry(stream);
+        if (entry.State != EntityState.Added && !entry.Property(value => value.CompressedPayload).IsModified &&
+            !entry.Property(value => value.SchemaVersion).IsModified &&
+            !db.Entry(activity).Property(value => value.Sport).IsModified)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var values = RecordEffortReadModel.Build(points, activity.Sport, cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+        await RecordEffortReadModel.SaveAsync(db, activity.Id, activity.Sport, values, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static Activity CreateActivity(Guid ownerId, ParsedActivity parsed, string fingerprint, int parserVersion)

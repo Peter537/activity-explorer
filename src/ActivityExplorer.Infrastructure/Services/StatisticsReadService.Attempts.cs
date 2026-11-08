@@ -8,6 +8,9 @@ namespace ActivityExplorer.Infrastructure.Services;
 
 public sealed partial class StatisticsReadService
 {
+    private sealed record WholeAttemptActivity(Guid Id, Guid OwnerId, string Title, DateTimeOffset StartTimeUtc,
+        double DistanceMeters, double MovingTimeSeconds, double ElevationGainMeters);
+
     public async Task<RecordAttemptPage?> GetAttemptsAsync(RecordAttemptQuery query, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -83,30 +86,42 @@ public sealed partial class StatisticsReadService
         var activities = db.Activities.AsNoTracking().Where(activity => activity.Sport == query.Sport);
         activities = ReportingDateQuery.Apply(activities, periods);
         if (query.Scope != RecordScope.All) activities = activities.Where(activity => activity.IsIndoor == (query.Scope == RecordScope.Indoor));
-        // Only the requested category needs streams; whole-activity benchmarks never read payloads.
-        var withOwner = activities.Include(activity => activity.Owner).AsQueryable();
-        if (!benchmark.IsWholeActivity) withOwner = withOwner.Include(activity => activity.Stream);
-        for (var offset = 0; ; offset += 16)
+        if (benchmark.IsWholeActivity)
         {
-            var batch = await withOwner.OrderBy(activity => activity.Id).Skip(offset).Take(16).ToArrayAsync(cancellationToken);
-            if (batch.Length == 0) break;
+            var ownerNames = periods.ToDictionary(period => period.OwnerId, period => period.OwnerName);
+            // Whole-activity records need only scalar summaries, so read them once without payload batches.
+            var summaries = activities.Select(activity => new WholeAttemptActivity(activity.Id, activity.OwnerId,
+                activity.Title, activity.StartTimeUtc, activity.DistanceMeters, activity.MovingTimeSeconds, activity.ElevationGainMeters));
+            await foreach (var activity in summaries.AsAsyncEnumerable().WithCancellation(cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var value = query.Kind switch
+                {
+                    RecordKind.Distance => activity.DistanceMeters,
+                    RecordKind.Duration => activity.MovingTimeSeconds,
+                    RecordKind.Elevation => activity.ElevationGainMeters,
+                    RecordKind.AverageSpeed when activity.DistanceMeters >= 1_000 && activity.MovingTimeSeconds > 0
+                        => activity.DistanceMeters / activity.MovingTimeSeconds,
+                    _ => 0
+                };
+                if (double.IsFinite(value) && value > 0)
+                    add(new(activity.Id, activity.Title, activity.OwnerId, ownerNames[activity.OwnerId],
+                        activity.StartTimeUtc, value, 100, null, null, null, null));
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return periods;
+        }
+        // Resolve membership once; repeating filtered OFFSET queries rescans and sorts earlier rows.
+        var activityIds = await activities.OrderBy(activity => activity.Id).Select(activity => activity.Id).ToArrayAsync(cancellationToken);
+        var withOwner = db.Activities.AsNoTracking().Include(activity => activity.Owner).Include(activity => activity.Stream);
+        foreach (var ids in activityIds.Chunk(16))
+        {
+            var batch = await withOwner.Where(activity => ids.Contains(activity.Id))
+                .OrderBy(activity => activity.Id).Take(16).ToArrayAsync(cancellationToken);
             foreach (var activity in batch)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (benchmark.IsWholeActivity)
-                {
-                    var value = query.Kind switch
-                    {
-                        RecordKind.Distance => activity.DistanceMeters,
-                        RecordKind.Duration => activity.MovingTimeSeconds,
-                        RecordKind.Elevation => activity.ElevationGainMeters,
-                        RecordKind.AverageSpeed when activity.DistanceMeters >= 1_000 && activity.MovingTimeSeconds > 0
-                            => activity.DistanceMeters / activity.MovingTimeSeconds,
-                        _ => 0
-                    };
-                    if (double.IsFinite(value) && value > 0) Add(activity, value, 100, null);
-                }
-                else if (activity.Stream is not null)
+                if (activity.Stream is not null)
                 {
                     var fingerprint = TrackCodec.Fingerprint(activity.Stream);
                     // Stream evaluation is CPU-bound; let the Blazor circuit render progress and process cancellation.

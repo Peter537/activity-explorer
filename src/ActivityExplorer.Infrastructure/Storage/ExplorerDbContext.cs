@@ -17,6 +17,7 @@ public sealed class ExplorerDbContext : DbContext
     public DbSet<Activity> Activities => Set<Activity>();
     public DbSet<ActivityLap> ActivityLaps => Set<ActivityLap>();
     public DbSet<ActivityStream> ActivityStreams => Set<ActivityStream>();
+    internal DbSet<ActivityRecordEffortSummary> ActivityRecordEffortSummaries => Set<ActivityRecordEffortSummary>();
     public DbSet<ActivityMetric> ActivityMetrics => Set<ActivityMetric>();
     public DbSet<Gear> Gears => Set<Gear>();
     public DbSet<Route> Routes => Set<Route>();
@@ -65,6 +66,14 @@ public sealed class ExplorerDbContext : DbContext
         modelBuilder.Entity<McpOperation>().Property(x => x.Status).HasConversion(
             state => McpExecutionStates.ToValue(state), value => McpExecutionStates.Parse(value));
         modelBuilder.Entity<ActivityExplorationIndex>().HasKey(x => x.ActivityId);
+        modelBuilder.Entity<ActivityExplorationIndex>().HasIndex(x => new
+        {
+            x.ActivityId,
+            x.InputVersion,
+            x.ComputationVersion,
+            x.IsLimited,
+            x.CellCount
+        }).HasDatabaseName("IX_ActivityExplorationIndexes_ReadCover");
         modelBuilder.Entity<ActivityExplorationIndex>().HasOne(x => x.Activity).WithMany()
             .HasForeignKey(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<ActivityExplorationCell>().HasKey(x => new { x.ActivityId, x.CellId });
@@ -88,10 +97,46 @@ public sealed class ExplorerDbContext : DbContext
             .HasDatabaseName("IX_SourceFiles_ActivityOwnerProviderSha256")
             .IsUnique().HasFilter("\"ActivityId\" IS NOT NULL");
         modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.OwnerId, x.Provider, x.ExternalId });
+        modelBuilder.Entity<SourceFile>().HasIndex(x => new { x.ImportBatchId, x.OwnerId, x.ActivityId, x.RouteId })
+            .HasDatabaseName("IX_SourceFiles_ImportBatchOwnerTargets");
         modelBuilder.Entity<SourceFile>().HasIndex(x => x.RouteId).IsUnique().HasFilter("\"RouteId\" IS NOT NULL");
         modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.NaturalFingerprint }).IsUnique();
         modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.StartTimeUtc });
+        modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.StartTimeUtc, x.Id }, "ActivityPageKeys")
+            .IsDescending(false, true, false).HasDatabaseName("IX_Activities_PageKeys");
         modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.Sport, x.StartTimeUtc });
+        modelBuilder.Entity<Activity>().HasIndex(x => new
+        {
+            x.OwnerId,
+            x.Sport,
+            x.StartTimeUtc,
+            x.Id,
+            x.Title,
+            x.Description,
+            x.DistanceMeters,
+            x.MovingTimeSeconds,
+            x.ElevationGainMeters,
+            x.IsIndoor,
+            x.HasGps,
+            x.HasPower,
+            x.AveragePowerWatts,
+            x.DeviceName,
+            x.GearName,
+            x.MutationVersion,
+            x.ExplorationInputVersion
+        }).HasDatabaseName("IX_Activities_ScalarReadCover");
+        modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.StartTimeUtc, x.Id }, "ActivityMapCandidates")
+            .IsDescending(false, true, false).HasDatabaseName("IX_Activities_MapCandidates")
+            .HasFilter(""" "HasGps" AND "SimplifiedGeometryWkb" IS NOT NULL AND length("SimplifiedGeometryWkb") >= 41 """);
+        modelBuilder.Entity<Activity>().HasIndex(x => new
+        {
+            x.OwnerId,
+            x.Id,
+            x.Sport,
+            x.StartTimeUtc,
+            x.Title,
+            x.ExplorationInputVersion
+        }).HasDatabaseName("IX_Activities_ScopedKeysCover");
         modelBuilder.Entity<Activity>().HasIndex(x => new { x.OwnerId, x.GarminId })
             .IsUnique()
             .HasFilter("\"GarminId\" IS NOT NULL");
@@ -99,6 +144,9 @@ public sealed class ExplorerDbContext : DbContext
             .IsUnique()
             .HasFilter("\"StravaId\" IS NOT NULL");
         modelBuilder.Entity<ActivityStream>().HasKey(x => x.ActivityId);
+        modelBuilder.Entity<ActivityRecordEffortSummary>().ToTable(RecordEffortReadModel.TableName).HasKey(x => x.ActivityId);
+        modelBuilder.Entity<ActivityRecordEffortSummary>().HasOne<ActivityStream>().WithOne()
+            .HasForeignKey<ActivityRecordEffortSummary>(x => x.ActivityId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Activity>()
             .HasOne(x => x.Stream)
             .WithOne(x => x.Activity)
@@ -130,6 +178,15 @@ public sealed class ExplorerDbContext : DbContext
             .HasForeignKey(x => x.SourceActivityId)
             .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<Route>().HasIndex(x => new { x.OwnerId, x.MinLongitude, x.MaxLongitude, x.MinLatitude, x.MaxLatitude });
+        modelBuilder.Entity<Route>().HasIndex(x => new
+        {
+            x.OwnerId,
+            x.Name,
+            x.Id,
+            x.Sport,
+            x.DistanceMeters,
+            x.ElevationGainMeters
+        }).HasDatabaseName("IX_Routes_LibraryCover");
         modelBuilder.Entity<FileOperationJournal>().HasIndex(x => new { x.State, x.CreatedAtUtc });
         modelBuilder.Entity<Activity>()
             .HasMany(x => x.Metrics)

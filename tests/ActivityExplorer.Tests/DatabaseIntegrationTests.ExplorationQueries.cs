@@ -58,6 +58,18 @@ public sealed partial class DatabaseIntegrationTests
             command.Sql.Contains("CompressedPayload", StringComparison.Ordinal) || command.Sql.Contains("GeometryWkb", StringComparison.Ordinal));
         Assert.All(capture.Commands, command => Assert.NotNull(command.Transaction));
         Assert.Equal(4, capture.Commands.Select(command => command.Transaction).Distinct().Count());
+        Assert.Contains(capture.Commands, command => command.Sql.Contains("INDEXED BY \"IX_ActivityExplorationIndexes_ReadCover\"", StringComparison.Ordinal));
+        var membershipReads = capture.Commands.Where(command => command.Sql.Contains("\"ActivityExplorationCells\"", StringComparison.Ordinal) &&
+            command.Sql.Contains("\"CellId\"", StringComparison.Ordinal)).ToArray();
+        Assert.Contains(membershipReads, command => command.Sql.Contains("NOT INDEXED", StringComparison.Ordinal));
+        Assert.Contains(membershipReads, command => !command.Sql.Contains("NOT INDEXED", StringComparison.Ordinal));
+
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            await db.Database.ExecuteSqlRawAsync("DROP INDEX \"IX_ActivityExplorationIndexes_ReadCover\"");
+        capture.Commands.Clear();
+        var legacy = await service.GetAsync(query);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(result), System.Text.Json.JsonSerializer.Serialize(legacy));
+        Assert.DoesNotContain(capture.Commands, command => command.Sql.Contains("INDEXED BY \"IX_ActivityExplorationIndexes_ReadCover\"", StringComparison.Ordinal));
     }
 
     [Fact]

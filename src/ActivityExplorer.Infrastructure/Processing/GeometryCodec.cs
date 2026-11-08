@@ -46,6 +46,10 @@ public static class GeometryCodec
             .ToArray();
     }
 
+    internal static double[][] MapCoordinates(byte[] wkb) =>
+        new WKBReader(NtsGeometryServices.Instance).Read(wkb).Coordinates
+            .Select(point => new[] { point.X, point.Y }).ToArray();
+
     public static (double? MinLat, double? MinLon, double? MaxLat, double? MaxLon) Bounds(IReadOnlyList<TrackPoint> points)
     {
         var gps = points.Where(x => x.Latitude.HasValue && x.Longitude.HasValue).ToArray();

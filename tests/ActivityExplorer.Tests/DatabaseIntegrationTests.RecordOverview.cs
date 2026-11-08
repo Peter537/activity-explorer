@@ -68,7 +68,7 @@ public sealed partial class DatabaseIntegrationTests
     }
 
     [Fact]
-    public async Task Period_overview_reads_large_histories_in_bounded_batches_instead_of_per_benchmark()
+    public async Task Period_overview_streams_large_histories_in_one_query_instead_of_per_benchmark()
     {
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Measured overview");
@@ -98,13 +98,13 @@ public sealed partial class DatabaseIntegrationTests
             new(ReportingPreset.Custom, new(2026, 4, 1), new(2026, 4, 30))));
         stopwatch.Stop();
         allocated = GC.GetTotalAllocatedBytes() - allocated;
-        TestContext.Current.TestOutputHelper!.WriteLine($"Period overview: 128 eligible activities × 301 samples, 40 excluded corrupt streams; {stopwatch.Elapsed.TotalMilliseconds:N0} ms, {allocated:N0} process-wide allocated bytes; {capture.StreamReads.Count} bounded payload queries.");
+        TestContext.Current.TestOutputHelper!.WriteLine($"Period overview: 128 eligible activities × 301 samples, 40 excluded corrupt streams; {stopwatch.Elapsed.TotalMilliseconds:N0} ms, {allocated:N0} process-wide allocated bytes; {capture.StreamReads.Count} streaming payload queries.");
         Assert.NotEmpty(result.Records);
-        Assert.Equal(9, capture.StreamReads.Count);
+        Assert.Single(capture.StreamReads);
         Assert.All(capture.StreamReads, read =>
         {
-            Assert.Contains("LIMIT", read.Sql, StringComparison.Ordinal);
-            Assert.Contains(read.Values, value => value is int number && number == 16);
+            Assert.DoesNotContain("OFFSET", read.Sql, StringComparison.Ordinal);
+            Assert.DoesNotContain("LIMIT", read.Sql, StringComparison.Ordinal);
             Assert.DoesNotContain("GeometryWkb", read.Sql, StringComparison.Ordinal);
             Assert.NotNull(read.Transaction);
             Assert.Same(capture.StreamReads[0].Transaction, read.Transaction);
@@ -129,14 +129,14 @@ public sealed partial class DatabaseIntegrationTests
             await db.SaveChangesAsync();
         }
         using var cancellation = new CancellationTokenSource();
-        var capture = new OverviewReadCapture { CancelAt = 2, Cancellation = cancellation };
+        var capture = new OverviewReadCapture { CancelAfterRows = 17, Cancellation = cancellation };
         var factory = new TestDbFactory(new DbContextOptionsBuilder<Infrastructure.Storage.ExplorerDbContext>()
             .UseSqlite($"Data Source={Path.Combine(setup.DataDirectory, "test.db")}").AddInterceptors(capture).Options);
         var statistics = new StatisticsService(factory);
         var query = new RecordOverviewQuery(owner, SportKind.Running, Period: new(ReportingPreset.ThisMonth), AsOfUtc: start);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => statistics.GetOverviewAsync(query, cancellation.Token));
-        Assert.Equal(2, capture.StreamReads.Count);
-        capture.CancelAt = 0;
+        Assert.Single(capture.StreamReads);
+        capture.CancelAfterRows = 0;
         Assert.NotEmpty((await statistics.GetOverviewAsync(query)).Records);
         Assert.Equal(0, capture.Writes);
         await using var verification = await setup.Factory.CreateDbContextAsync();
@@ -167,19 +167,23 @@ public sealed partial class DatabaseIntegrationTests
     private sealed class OverviewReadCapture : DbCommandInterceptor
     {
         public List<(string Sql, DbTransaction? Transaction, object?[] Values)> StreamReads { get; } = [];
-        public int CancelAt { get; set; }
+        public int CancelAfterRows { get; set; }
         public CancellationTokenSource? Cancellation { get; set; }
         public int Writes { get; private set; }
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
-            if (command.CommandText.Contains("ActivityStreams", StringComparison.Ordinal))
+            if (command.CommandText.Contains("CompressedPayload", StringComparison.Ordinal))
             {
                 StreamReads.Add((command.CommandText, command.Transaction, command.Parameters.Cast<DbParameter>().Select(parameter => parameter.Value).ToArray()));
-                if (CancelAt > 0 && StreamReads.Count == CancelAt) Cancellation?.Cancel();
             }
             return ValueTask.FromResult(result);
         }
+        public override ValueTask<DbDataReader> ReaderExecutedAsync(DbCommand command, CommandExecutedEventData eventData,
+            DbDataReader result, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(command.CommandText.Contains("CompressedPayload", StringComparison.Ordinal) && CancelAfterRows > 0
+                ? (DbDataReader)new CancelAfterReader(result, CancelAfterRows, Cancellation!) : result);
+
         public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
         {
@@ -187,4 +191,50 @@ public sealed partial class DatabaseIntegrationTests
             return ValueTask.FromResult(result);
         }
     }
+    private sealed class CancelAfterReader(DbDataReader inner, int limit, CancellationTokenSource cancellation) : DbDataReader
+    {
+        private int rows;
+        public override async Task<bool> ReadAsync(CancellationToken cancellationToken)
+        {
+            var result = await inner.ReadAsync(cancellationToken);
+            if (result && ++rows == limit) cancellation.Cancel();
+            return result;
+        }
+        public override bool Read() => inner.Read();
+        public override int FieldCount => inner.FieldCount;
+        public override bool HasRows => inner.HasRows;
+        public override bool IsClosed => inner.IsClosed;
+        public override int RecordsAffected => inner.RecordsAffected;
+        public override int Depth => inner.Depth;
+        public override object this[int ordinal] => inner[ordinal];
+        public override object this[string name] => inner[name];
+        public override bool NextResult() => inner.NextResult();
+        public override Task<bool> NextResultAsync(CancellationToken cancellationToken) => inner.NextResultAsync(cancellationToken);
+        public override string GetName(int ordinal) => inner.GetName(ordinal);
+        public override int GetOrdinal(string name) => inner.GetOrdinal(name);
+        public override string GetDataTypeName(int ordinal) => inner.GetDataTypeName(ordinal);
+        public override Type GetFieldType(int ordinal) => inner.GetFieldType(ordinal);
+        public override object GetValue(int ordinal) => inner.GetValue(ordinal);
+        public override int GetValues(object[] values) => inner.GetValues(values);
+        public override bool IsDBNull(int ordinal) => inner.IsDBNull(ordinal);
+        public override bool GetBoolean(int ordinal) => inner.GetBoolean(ordinal);
+        public override byte GetByte(int ordinal) => inner.GetByte(ordinal);
+        public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length) => inner.GetBytes(ordinal, dataOffset, buffer, bufferOffset, length);
+        public override char GetChar(int ordinal) => inner.GetChar(ordinal);
+        public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length) => inner.GetChars(ordinal, dataOffset, buffer, bufferOffset, length);
+        public override Guid GetGuid(int ordinal) => inner.GetGuid(ordinal);
+        public override short GetInt16(int ordinal) => inner.GetInt16(ordinal);
+        public override int GetInt32(int ordinal) => inner.GetInt32(ordinal);
+        public override long GetInt64(int ordinal) => inner.GetInt64(ordinal);
+        public override float GetFloat(int ordinal) => inner.GetFloat(ordinal);
+        public override double GetDouble(int ordinal) => inner.GetDouble(ordinal);
+        public override string GetString(int ordinal) => inner.GetString(ordinal);
+        public override decimal GetDecimal(int ordinal) => inner.GetDecimal(ordinal);
+        public override DateTime GetDateTime(int ordinal) => inner.GetDateTime(ordinal);
+        public override System.Collections.IEnumerator GetEnumerator() => ((System.Collections.IEnumerable)inner).GetEnumerator();
+        public override void Close() => inner.Close();
+        protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
+        public override async ValueTask DisposeAsync() { await inner.DisposeAsync(); await base.DisposeAsync(); GC.SuppressFinalize(this); }
+    }
+
 }

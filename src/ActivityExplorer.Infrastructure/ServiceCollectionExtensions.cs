@@ -20,7 +20,7 @@ public static class ServiceCollectionExtensions
         {
             var paths = provider.GetRequiredService<AppDataPaths>();
             paths.EnsureCreated();
-            options.UseSqlite($"Data Source={paths.DatabasePath};Cache=Shared");
+            options.UseSqlite($"Data Source={paths.DatabasePath};Cache=Private");
         });
 
         services.AddSingleton<FitActivityImporter>();

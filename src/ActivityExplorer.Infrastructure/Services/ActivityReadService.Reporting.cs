@@ -151,7 +151,7 @@ public sealed partial class ActivityReadService
     }
 
     private static IQueryable<Activity> ReportingSource(ExplorerDbContext db, Guid? owner, ActivityCriteria criteria) =>
-        ActivityCriteriaQuery.Apply(db.Activities.AsNoTracking().Where(activity => !owner.HasValue || activity.OwnerId == owner), criteria);
+        ActivityCriteriaQuery.Apply(db, db.Activities.AsNoTracking().Where(activity => !owner.HasValue || activity.OwnerId == owner), criteria);
 
     private static async Task<LocalReportingActivity[]> ReadReportingActivitiesAsync(
         IQueryable<Activity> source, IReadOnlyList<ResolvedOwnerPeriod> periods, CancellationToken cancellationToken)

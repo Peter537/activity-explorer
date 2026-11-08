@@ -22,7 +22,7 @@ internal static class ActivityCriteriaQuery
         return normalized;
     }
 
-    public static IQueryable<Activity> Apply(IQueryable<Activity> query, ActivityCriteria criteria)
+    public static IQueryable<Activity> Apply(ExplorerDbContext db, IQueryable<Activity> query, ActivityCriteria criteria)
     {
         if (criteria.Sport.HasValue) query = query.Where(x => x.Sport == criteria.Sport);
         if (criteria.HasPower.HasValue) query = query.Where(x => x.HasPower == criteria.HasPower);
@@ -53,9 +53,11 @@ internal static class ActivityCriteriaQuery
         if (criteria.TagIds is { Count: > 0 })
         {
             var included = criteria.TagIds.ToArray();
-            query = criteria.TagMode == ActivityTagMode.All
-                ? query.Where(x => x.Tags.Count(tag => included.Contains(tag.TagId)) == included.Length)
-                : query.Where(x => x.Tags.Any(tag => included.Contains(tag.TagId)));
+            var links = db.ActivityTags.Where(tag => included.Contains(tag.TagId));
+            var matching = criteria.TagMode == ActivityTagMode.All && included.Length > 1
+                ? links.GroupBy(tag => tag.ActivityId).Where(group => group.Count() == included.Length).Select(group => group.Key)
+                : links.Select(tag => tag.ActivityId);
+            query = query.Where(activity => matching.Contains(activity.Id));
         }
         if (criteria.ExcludedTagIds is { Count: > 0 })
         {

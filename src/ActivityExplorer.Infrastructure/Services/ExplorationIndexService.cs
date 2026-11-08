@@ -161,6 +161,7 @@ public sealed class ExplorationIndexService(
         header.Diagnostic = evidence.Diagnostic;
         db.ActivityExplorationCells.AddRange(cells.Select(cellId => new ActivityExplorationCell { ActivityId = activity.Id, CellId = cellId }));
         await db.SaveChangesAsync(cancellationToken);
+        await ExplorationCellSetStore.PublishAsync(db, activity.Id, cells, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return true;
     }

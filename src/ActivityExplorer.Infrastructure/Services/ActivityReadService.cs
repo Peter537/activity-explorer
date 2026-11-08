@@ -25,30 +25,35 @@ public sealed partial class ActivityReadService(IDbContextFactory<ExplorerDbCont
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var effective = await ResolveFilterAsync(db, filter, cancellationToken);
-        var query = ApplyFilter(db.Activities.AsNoTracking(), effective);
+        var query = ApplyFilter(db, effective);
         var totals = await query.GroupBy(x => 1).Select(group => new ActivityTotals(
             group.Count(), group.Sum(x => x.DistanceMeters), group.Sum(x => x.MovingTimeSeconds), group.Sum(x => x.ElevationGainMeters)))
             .SingleOrDefaultAsync(cancellationToken) ?? new ActivityTotals(0, 0, 0, 0);
         var page = Math.Max(filter.Page, 1);
         var pageSize = Math.Clamp(filter.PageSize, 1, 100);
-        var activities = await ApplySort(query.Include(x => x.Owner), filter.Sort)
-            .Skip((page - 1) * pageSize).Take(pageSize)
+        // Apply the filter and ordering to keys before reading the fields displayed in the page.
+        var pageKeys = ApplySort(query, filter.Sort).Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(activity => activity.Id);
+        var pageRows = from key in pageKeys
+                       join activity in db.Activities.AsNoTracking() on key equals activity.Id
+                       select activity;
+        var activities = await ApplySort(pageRows, filter.Sort)
             .Select(activity => new ActivitySummary(activity.Id, activity.OwnerId, activity.Owner!.DisplayName,
                 activity.Title, activity.Sport, activity.StartTimeUtc, activity.DistanceMeters, activity.MovingTimeSeconds,
                 activity.ElevationGainMeters, activity.AveragePowerWatts, activity.DeviceName, activity.HasGps, activity.HasPower)
-            { MutationVersion = activity.MutationVersion }).ToListAsync(cancellationToken);
-        var activityIds = activities.Select(x => x.Id).ToArray();
+            { MutationVersion = activity.MutationVersion }).ToArrayAsync(cancellationToken);
+        var activityIds = activities.Select(activity => activity.Id).ToArray();
         var tags = await db.ActivityTags.AsNoTracking().Include(x => x.Tag)
             .Where(x => activityIds.Contains(x.ActivityId) && x.Tag!.OwnerId == x.Activity!.OwnerId).ToListAsync(cancellationToken);
         var tagsByActivity = tags.ToLookup(x => x.ActivityId);
-        for (var index = 0; index < activities.Count; index++)
+        for (var index = 0; index < activities.Length; index++)
             activities[index] = activities[index] with
             {
                 Tags = tagsByActivity[activities[index].Id].OrderBy(tag => tag.Tag!.Name).ThenBy(tag => tag.TagId)
                     .Select(tag => new TagSummary(tag.TagId, tag.Tag!.Name)).ToArray()
             };
         await transaction.CommitAsync(cancellationToken);
-        return new(activities.ToArray(), totals.ActivityCount, page, pageSize, totals,
+        return new(activities, totals.ActivityCount, page, pageSize, totals,
             effective with { Page = page, PageSize = pageSize });
     }
 
@@ -59,7 +64,7 @@ public sealed partial class ActivityReadService(IDbContextFactory<ExplorerDbCont
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var effective = await ResolveFilterAsync(db, filter, cancellationToken);
-        var ids = await ApplySort(ApplyFilter(db.Activities.AsNoTracking(), effective), filter.Sort)
+        var ids = await ApplySort(ApplyFilter(db, effective), filter.Sort)
             .Select(x => x.Id)
             .ToListAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -101,14 +106,18 @@ public sealed partial class ActivityReadService(IDbContextFactory<ExplorerDbCont
         };
     }
 
-    private static IQueryable<Activity> ApplyFilter(IQueryable<Activity> query, ActivityFilter filter)
+    private static IQueryable<Activity> ApplyFilter(ExplorerDbContext db, ActivityFilter filter)
     {
+        var query = db.Activities.AsNoTracking();
         if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
         if (filter.ImportBatchId.HasValue)
-            query = query.Where(activity => activity.SourceFiles.Any(source => source.ImportBatchId == filter.ImportBatchId &&
-                source.OwnerId == activity.OwnerId));
+        {
+            var linked = db.SourceFiles.Where(source => source.ImportBatchId == filter.ImportBatchId &&
+                source.OwnerId == filter.OwnerId && source.ActivityId.HasValue).Select(source => source.ActivityId!.Value);
+            query = query.Where(activity => linked.Contains(activity.Id));
+        }
         query = ReportingDateQuery.Apply(query, filter.ResolvedPeriods!);
-        return ActivityCriteriaQuery.Apply(query, filter.GetCriteria());
+        return ActivityCriteriaQuery.Apply(db, query, filter.GetCriteria());
     }
 
     private static IQueryable<Activity> ApplySort(IQueryable<Activity> query, string sort) => sort switch

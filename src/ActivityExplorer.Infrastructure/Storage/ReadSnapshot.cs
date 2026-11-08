@@ -9,6 +9,11 @@ internal sealed class ReadSnapshot(SqliteTransaction transaction, IDbContextTran
     public static async Task<ReadSnapshot> BeginAsync(ExplorerDbContext db, CancellationToken cancellationToken)
     {
         await db.Database.OpenConnectionAsync(cancellationToken);
+        return await BeginOnOpenConnectionAsync(db, cancellationToken);
+    }
+
+    internal static async Task<ReadSnapshot> BeginOnOpenConnectionAsync(ExplorerDbContext db, CancellationToken cancellationToken)
+    {
         var transaction = ((SqliteConnection)db.Database.GetDbConnection()).BeginTransaction(deferred: true);
         try
         {

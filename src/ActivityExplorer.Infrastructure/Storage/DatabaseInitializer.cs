@@ -23,6 +23,9 @@ public sealed class DatabaseInitializer(
         await EnsureOrganizationSchemaAsync(db, cancellationToken);
         await EnsureGoalsSchemaAsync(db, cancellationToken);
         await EnsureExplorationSchemaAsync(db, cancellationToken);
+        await ExplorationCellSetStore.EnsureAsync(db, cancellationToken);
+        await EnsureRecordEffortSummariesAsync(db, cancellationToken);
+        await EnsureReadIndexesAsync(db, cancellationToken);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "McpOperations" (
                 "Id" TEXT NOT NULL PRIMARY KEY, "Action" TEXT NOT NULL, "ProfileIdsJson" TEXT NOT NULL,
@@ -56,6 +59,57 @@ public sealed class DatabaseInitializer(
             DROP INDEX IF EXISTS "IX_SourceFiles_OwnerId_Provider_Sha256";
             """, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureReadIndexesAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS "IX_Activities_ScalarReadCover"
+                ON "Activities" ("OwnerId", "Sport", "StartTimeUtc", "Id", "Title", "Description",
+                    "DistanceMeters", "MovingTimeSeconds", "ElevationGainMeters", "IsIndoor", "HasGps",
+                    "HasPower", "AveragePowerWatts", "DeviceName", "GearName", "MutationVersion", "ExplorationInputVersion");
+            CREATE INDEX IF NOT EXISTS "IX_Activities_MapCandidates"
+                ON "Activities" ("OwnerId", "StartTimeUtc" DESC, "Id")
+                WHERE "HasGps" AND "SimplifiedGeometryWkb" IS NOT NULL AND length("SimplifiedGeometryWkb") >= 41;
+            CREATE INDEX IF NOT EXISTS "IX_Activities_PageKeys"
+                ON "Activities" ("OwnerId", "StartTimeUtc" DESC, "Id");
+            CREATE INDEX IF NOT EXISTS "IX_Activities_ScopedKeysCover"
+                ON "Activities" ("OwnerId", "Id", "Sport", "StartTimeUtc", "Title", "ExplorationInputVersion");
+            DROP INDEX IF EXISTS "IX_Activities_OwnerId_Id";
+            CREATE INDEX IF NOT EXISTS "IX_SourceFiles_ImportBatchOwnerTargets"
+                ON "SourceFiles" ("ImportBatchId", "OwnerId", "ActivityId", "RouteId");
+            CREATE INDEX IF NOT EXISTS "IX_ActivityExplorationIndexes_ReadCover"
+                ON "ActivityExplorationIndexes" ("ActivityId", "InputVersion", "ComputationVersion", "IsLimited", "CellCount");
+            CREATE INDEX IF NOT EXISTS "IX_Routes_LibraryCover"
+                ON "Routes" ("OwnerId", "Name", "Id", "Sport", "DistanceMeters", "ElevationGainMeters");
+            """, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    internal static async Task EnsureRecordEffortSummariesAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)
+    {
+        await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "ActivityRecordEffortSummaries" (
+                    "ActivityId" TEXT NOT NULL PRIMARY KEY REFERENCES "ActivityStreams" ("ActivityId") ON DELETE CASCADE,
+                    "Sport" INTEGER NOT NULL, "ComputationVersion" INTEGER NOT NULL, "ValuesBlob" BLOB NULL);
+                CREATE TRIGGER IF NOT EXISTS "TR_ActivityStreams_InvalidateRecordEfforts"
+                    AFTER UPDATE OF "ActivityId", "CompressedPayload", "SchemaVersion" ON "ActivityStreams"
+                    BEGIN DELETE FROM "ActivityRecordEffortSummaries" WHERE "ActivityId" IN (OLD."ActivityId", NEW."ActivityId"); END;
+                CREATE TRIGGER IF NOT EXISTS "TR_ActivityStreams_DeleteRecordEfforts" AFTER DELETE ON "ActivityStreams"
+                    BEGIN DELETE FROM "ActivityRecordEffortSummaries" WHERE "ActivityId" = OLD."ActivityId"; END;
+                CREATE TRIGGER IF NOT EXISTS "TR_ActivityStreams_ReplaceRecordEfforts" AFTER INSERT ON "ActivityStreams"
+                    BEGIN DELETE FROM "ActivityRecordEffortSummaries" WHERE "ActivityId" = NEW."ActivityId"; END;
+                CREATE TRIGGER IF NOT EXISTS "TR_Activities_InvalidateSportRecordEfforts" AFTER UPDATE OF "Sport" ON "Activities"
+                    WHEN OLD."Sport" <> NEW."Sport"
+                    BEGIN DELETE FROM "ActivityRecordEffortSummaries" WHERE "ActivityId" = OLD."Id"; END;
+                """, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        await RecordEffortReadModel.BackfillAsync(db, cancellationToken);
+        await PeriodRecordProjectionStore.EnsureAsync(db, cancellationToken);
     }
 
     internal static async Task EnsureSegmentProvenanceColumnsAsync(

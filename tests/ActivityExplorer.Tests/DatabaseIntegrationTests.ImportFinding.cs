@@ -118,7 +118,8 @@ public sealed partial class DatabaseIntegrationTests
             db.SourceFiles.AddRange(Source(owner, batch.Id, first.Id), Source(owner, batch.Id, first.Id), Source(owner, batch.Id, second.Id),
                 Source(other, batch.Id, wrongSourceOwner.Id), Source(owner, batch.Id, foreign.Id),
                 Source(owner, batch.Id, routeId: route.Id), Source(owner, batch.Id, routeId: foreignRoute.Id),
-                Source(other, batch.Id, routeId: wrongSourceRoute.Id));
+                Source(other, batch.Id, routeId: wrongSourceRoute.Id), Source(owner, batch.Id),
+                Source(owner, otherBatch.Id, first.Id));
             await db.SaveChangesAsync();
         }
         var history = new ImportHistoryService(setup.Factory);
@@ -126,6 +127,7 @@ public sealed partial class DatabaseIntegrationTests
         Assert.Equal(2, summary.LinkedActivityCount);
         Assert.Equal(1, summary.LinkedRouteCount);
         Assert.Equal(99, summary.Created);
+        Assert.Equal(0, Assert.Single((await history.ListAsync(other)).Items).LinkedActivityCount);
         var queries = ReportingService(setup);
         var filter = new ActivityFilter(OwnerId: owner, ImportBatchId: batch.Id);
         var activities = await queries.SearchAsync(filter);
@@ -151,6 +153,9 @@ public sealed partial class DatabaseIntegrationTests
         Assert.Equal(0, changed.LinkedActivityCount);
         Assert.Equal(1, changed.LinkedRouteCount);
         Assert.Empty((await queries.SearchAsync(filter)).Items);
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+            await db.Routes.Where(x => x.Id == route.Id).ExecuteUpdateAsync(setters => setters.SetProperty(x => x.OwnerId, other));
+        Assert.Equal(0, Assert.Single((await history.ListAsync(owner)).Items).LinkedRouteCount);
         await using (var db = await setup.Factory.CreateDbContextAsync())
             await db.ImportBatches.Where(x => x.Id == batch.Id).ExecuteDeleteAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() => queries.SearchAsync(filter));

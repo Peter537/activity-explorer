@@ -16,7 +16,7 @@ public sealed class ImportHistoryService(IDbContextFactory<ExplorerDbContext> co
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         filter = ImportHistoryFiltering.Normalize(filter);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var query = db.ImportBatches.AsNoTracking().Include(x => x.Owner).AsQueryable();
         if (filter.OwnerId.HasValue) query = query.Where(x => x.OwnerId == filter.OwnerId);
         if (filter.Search is { } search) query = query.Where(x => ActivitySearchFunctions.Contains(x.DisplayName, search));
@@ -41,10 +41,12 @@ public sealed class ImportHistoryService(IDbContextFactory<ExplorerDbContext> co
                 x.Id, x.OwnerId, x.Owner!.DisplayName, x.DisplayName, x.SourceKind, x.Kind, x.Status,
                 x.FilesDiscovered, x.ActivitiesCreated, x.ActivitiesUpdated, x.DuplicatesSkipped + x.UnsupportedSkipped,
                 x.Warnings, x.CreatedAtUtc, x.ErrorMessage ?? x.Summary,
-                db.Activities.Count(activity => activity.OwnerId == x.OwnerId && activity.SourceFiles.Any(source =>
-                    source.ImportBatchId == x.Id && source.OwnerId == x.OwnerId)),
-                db.Routes.Count(route => route.OwnerId == x.OwnerId && route.SourceFiles.Any(source =>
-                    source.ImportBatchId == x.Id && source.OwnerId == x.OwnerId))))
+                db.SourceFiles.Where(source => source.ImportBatchId == x.Id && source.OwnerId == x.OwnerId &&
+                    source.ActivityId != null && source.Activity!.OwnerId == x.OwnerId)
+                    .Select(source => source.ActivityId).Distinct().Count(),
+                db.SourceFiles.Where(source => source.ImportBatchId == x.Id && source.OwnerId == x.OwnerId &&
+                    source.RouteId != null && source.Route!.OwnerId == x.OwnerId)
+                    .Select(source => source.RouteId).Distinct().Count()))
             .ToListAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new ImportHistoryPage(items, total);

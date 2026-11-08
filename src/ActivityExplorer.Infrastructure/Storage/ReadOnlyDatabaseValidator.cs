@@ -19,6 +19,7 @@ public sealed class ReadOnlyDatabaseValidator(IDbContextFactory<ExplorerDbContex
             var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken)) columns.Add(reader.GetString(0));
+            if (columns.Count == 0 && table.Name == RecordEffortReadModel.TableName) continue;
             if (table.Columns.Any(column => !columns.Contains(column.Name)))
                 throw new InvalidDataException("The database schema is incompatible. Open it with the matching Activity Explorer web application to initialize or upgrade it.");
         }
