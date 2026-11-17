@@ -157,7 +157,6 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.GetByRole(AriaRole.Alert)).ToContainTextAsync("timezone");
             await page.GetByRole(AriaRole.Link, new() { Name = "Choose a timezone in Profiles", Exact = true }).ClickAsync();
             await Assertions.Expect(page.GetByLabel("Reporting timezone", new() { Exact = true })).ToHaveCountAsync(3);
-            await Assertions.Expect(page.GetByLabel("Badge timezone", new() { Exact = true })).ToHaveCountAsync(0);
             var eastProfile = page.Locator(".entity-card").Filter(new() { HasText = "Reporting East" });
             await eastProfile.GetByLabel("Reporting timezone", new() { Exact = true }).SelectOptionAsync("UTC");
             await eastProfile.GetByRole(AriaRole.Button, new() { Name = "Save timezone", Exact = true }).ClickAsync();

@@ -97,12 +97,14 @@ public sealed partial class PageRequestLifecycleTests
     [Fact]
     public async Task An_unknown_save_outcome_requires_an_authoritative_reload_before_retry()
     {
-        var updates = 0;
         var id = Guid.NewGuid();
+        var reads = new List<Guid>();
+        var updates = new List<UpdateActivityRequest>();
+        var reread = Pending<ActivityDetail?>();
         using var fixture = new PageFixture(activities: (method, args) => method.Name switch
         {
-            "GetAsync" => Task.FromResult<ActivityDetail?>(Activity((Guid)args[0]!, "Current activity")),
-            "UpdateAsync" => Unconfirmed(),
+            "GetAsync" => Read((Guid)args[0]!),
+            "UpdateAsync" => Unconfirmed((UpdateActivityRequest)args[1]!),
             _ => Unexpected(method)
         });
         await using var renderer = fixture.Renderer();
@@ -111,13 +113,44 @@ public sealed partial class PageRequestLifecycleTests
         await renderer.Dispatcher.InvokeAsync(() => SetField(page, "_editing", true));
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
-        Assert.Equal(1, updates);
+        Assert.Equal("Current activity", Assert.Single(updates).Title);
+        Assert.Equal(id, Assert.Single(reads));
         Assert.Contains("Reload activity before saving again", await renderer.Dispatcher.InvokeAsync(root.ToHtmlString), StringComparison.Ordinal);
-        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "LoadAsync"));
-        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
-        Assert.Equal(2, updates);
 
-        Task<ActivityUpdateResult> Unconfirmed() { updates++; return Task.FromException<ActivityUpdateResult>(new IOException("Synthetic unknown outcome")); }
+        Task reload = Task.CompletedTask;
+        await renderer.Dispatcher.InvokeAsync(() => { reload = InvokeTask(page, "LoadAsync"); });
+        try
+        {
+            Assert.Equal(new[] { id, id }, reads);
+            Assert.False(reload.IsCompleted);
+            await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
+            Assert.Single(updates);
+        }
+        finally
+        {
+            reread.SetResult(Activity(id, "Reloaded activity"));
+            await reload.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        var html = await renderer.Dispatcher.InvokeAsync(root.ToHtmlString);
+        Assert.Contains("Reloaded activity", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Reload activity before saving again", html, StringComparison.Ordinal);
+        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
+        Assert.Collection(updates,
+            update => Assert.Equal("Current activity", update.Title),
+            update => Assert.Equal("Reloaded activity", update.Title));
+
+        Task<ActivityDetail?> Read(Guid activityId)
+        {
+            reads.Add(activityId);
+            return reads.Count == 2 ? reread.Task : Task.FromResult<ActivityDetail?>(Activity(activityId, "Current activity"));
+        }
+
+        Task<ActivityUpdateResult> Unconfirmed(UpdateActivityRequest request)
+        {
+            updates.Add(request);
+            return Task.FromException<ActivityUpdateResult>(new IOException("Synthetic unknown outcome"));
+        }
     }
 
     private static Task InvokeTask(IComponent page, string name) =>

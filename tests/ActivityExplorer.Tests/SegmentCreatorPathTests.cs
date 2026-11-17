@@ -21,9 +21,7 @@ public sealed class SegmentCreatorPathTests
 
         Assert.Equal(3, result.Count);
         Assert.Equal([0, 2, 4], result.SourcePointIndices);
-        Assert.Same(points[0], result.Points[0]);
-        Assert.Same(points[2], result.Points[1]);
-        Assert.Same(points[4], result.Points[2]);
+        Assert.Equal<TrackPoint>([points[0], points[2], points[4]], result.Points);
         Assert.Equal(2, result.SourceIndexAt(1));
     }
 

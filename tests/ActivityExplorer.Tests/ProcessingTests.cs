@@ -8,17 +8,6 @@ namespace ActivityExplorer.Tests;
 public sealed class ProcessingTests
 {
     [Fact]
-    public void Brotli_stream_round_trip_preserves_samples()
-    {
-        var input = TestSupport.Track();
-        var payload = TrackCodec.Encode(input);
-        var output = TrackCodec.Decode(payload);
-        Assert.Equal(input.Count, output.Count);
-        Assert.Equal(input[8].PowerWatts, output[8].PowerWatts);
-        Assert.True(payload.Length < System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(input).Length);
-    }
-
-    [Fact]
     public void Wkb_round_trip_preserves_geometry_and_bounds()
     {
         var input = TestSupport.Track().ToArray();
@@ -35,10 +24,16 @@ public sealed class ProcessingTests
     }
 
     [Fact]
-    public void Natural_fingerprint_is_stable()
+    public void Natural_fingerprint_matches_equivalent_activities_and_distinguishes_start_times()
     {
-        var parsed = Parsed(TestSupport.Track());
-        Assert.Equal(Fingerprint.For(parsed), Fingerprint.For(parsed));
+        var original = Parsed(TestSupport.Track(), "Morning ride");
+        var equivalent = Parsed(TestSupport.Track(), "Morning ride (renamed)");
+        var later = Parsed(TestSupport.Track()
+            .Select(point => point with { Timestamp = point.Timestamp!.Value.AddDays(1) }).ToArray(), "Morning ride");
+
+        var originalFingerprint = Fingerprint.For(original);
+        Assert.Equal(originalFingerprint, Fingerprint.For(equivalent));
+        Assert.NotEqual(originalFingerprint, Fingerprint.For(later));
     }
 
     [Fact]
@@ -275,10 +270,10 @@ public sealed class ProcessingTests
     private static TrackPoint Point(DateTimeOffset timestamp, double latitude, double longitude) =>
         new(timestamp, latitude, longitude, null, 10, 4, 130, 85, 200, 15);
 
-    private static ParsedActivity Parsed(IReadOnlyList<TrackPoint> points) => new()
+    private static ParsedActivity Parsed(IReadOnlyList<TrackPoint> points, string title) => new()
     {
         Sport = SportKind.Cycling,
-        Title = "Test",
+        Title = title,
         StartTimeUtc = points[0].Timestamp!.Value,
         DistanceMeters = GeometryCodec.DistanceMeters(points),
         MovingTimeSeconds = 60,

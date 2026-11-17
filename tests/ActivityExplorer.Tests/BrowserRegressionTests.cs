@@ -570,11 +570,14 @@ public sealed partial class BrowserRegressionTests
 
             var activityUrl = origin + $"/activities/{seed.ActivityId}";
             var creatorUrl = activityUrl + "/segments/new";
+            var rawSourceIndexInputs = page.GetByRole(AriaRole.Spinbutton, new()
+            {
+                NameRegex = new Regex(@"\b(?:start|end)\s+(?:(?:source|sample|point)\s+)?(?:point|index|sample)\b", RegexOptions.IgnoreCase)
+            });
             await page.GotoAsync(activityUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
             var createLink = page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "Create segment", Exact = true });
             await Assertions.Expect(createLink).ToHaveAttributeAsync("href", $"/activities/{seed.ActivityId}/segments/new");
-            await Assertions.Expect(page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Create local segment" })).ToHaveCountAsync(0);
-            await Assertions.Expect(page.GetByLabel("Start point", new PageGetByLabelOptions { Exact = true })).ToHaveCountAsync(0);
+            await Assertions.Expect(rawSourceIndexInputs).ToHaveCountAsync(0);
             await createLink.ClickAsync();
 
             await Assertions.Expect(page).ToHaveURLAsync(creatorUrl);
@@ -584,7 +587,9 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.GetByLabel("Name", new PageGetByLabelOptions { Exact = true })).ToHaveValueAsync(string.Empty);
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Create segment", Exact = true })).ToBeDisabledAsync();
             await Assertions.Expect(page.GetByRole(AriaRole.Alert)).ToHaveCountAsync(0);
+            await Assertions.Expect(rawSourceIndexInputs).ToHaveCountAsync(0);
             await Assertions.Expect(page.GetByRole(AriaRole.Slider, new PageGetByRoleOptions { Name = "Segment start position" })).ToHaveAttributeAsync("aria-valuetext", new Regex("0 m.+10 m", RegexOptions.IgnoreCase));
+            await Assertions.Expect(page.GetByRole(AriaRole.Slider, new PageGetByRoleOptions { Name = "Segment end position" })).ToHaveAttributeAsync("aria-valuetext", new Regex(@"^\d+(?:[.,]\d+)? (?:m|km)\b"));
             await Assertions.Expect(page.GetByRole(AriaRole.Region, new PageGetByRoleOptions { Name = "Activity map with selected segment" })).ToBeVisibleAsync();
 
             foreach (var width in new[] { 375, 768, 1121, 1280, 1920 })

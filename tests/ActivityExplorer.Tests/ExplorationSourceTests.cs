@@ -196,18 +196,6 @@ public sealed class ExplorationSourceTests
     }
 
     [Fact]
-    public async Task Canonical_async_decode_preserves_samples_and_payload_bytes()
-    {
-        var points = TestSupport.Track(100);
-        var payload = TrackCodec.Encode(points);
-        var original = payload.ToArray();
-
-        Assert.Equal(points, await TrackCodec.DecodeAsync(payload));
-        Assert.Equal(original, payload);
-        Assert.Empty(await TrackCodec.DecodeAsync(Array.Empty<byte>()));
-    }
-
-    [Fact]
     public async Task Canonical_async_decode_cancels_after_decompression_has_started()
     {
         var payload = TrackCodec.Encode(TestSupport.Track(100));

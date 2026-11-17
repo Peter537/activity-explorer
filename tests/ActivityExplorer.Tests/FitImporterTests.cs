@@ -72,7 +72,9 @@ public sealed class FitImporterTests
             encoder.Close();
         }
 
-        var activity = Assert.Single(await new FitActivityImporter().ReadAsync(path, SourceKind.Fit)).Parsed;
+        var candidate = Assert.Single(await new FitActivityImporter().ReadAsync(path, SourceKind.Fit));
+        Assert.Equal(SourceProvider.Unknown, candidate.Provider);
+        var activity = candidate.Parsed;
         Assert.Equal(SportKind.Cycling, activity.Sport);
         Assert.Equal(300, activity.DistanceMeters);
         Assert.False(activity.IsIndoor);
@@ -103,10 +105,7 @@ public sealed class FitImporterTests
         Assert.Contains(activity.Metrics, metric =>
             metric.Key == "fit.threshold_power" && metric.NumericValue == 250 && metric.Unit == "W");
         Assert.Contains(activity.Metrics, metric => metric.Key == "fit.training_stress_score");
-        Assert.Equal(SourceProvider.Unknown, (await new FitActivityImporter().ReadAsync(path, SourceKind.Fit)).Single().Provider);
-        Assert.Equal("123456", FitActivityImporter.ExtractGarminActivityId("123456_ACTIVITY.fit"));
     }
-
 
     [Theory]
     [InlineData("123456_ACTIVITY.fit", "123456")]
@@ -188,6 +187,19 @@ public sealed class FitImporterTests
     }
     [Fact]
     public async Task Invalid_fit_crc_is_rejected()
+    {
+        var path = TestSupport.CyclingFit(TestSupport.NewDirectory());
+        var importer = new FitActivityImporter();
+        Assert.Single(await importer.ReadAsync(path, SourceKind.Fit));
+
+        var bytes = await System.IO.File.ReadAllBytesAsync(path);
+        bytes[^1] ^= 1;
+        await System.IO.File.WriteAllBytesAsync(path, bytes);
+        await Assert.ThrowsAsync<InvalidDataException>(() => importer.ReadAsync(path, SourceKind.Fit));
+    }
+
+    [Fact]
+    public async Task Plain_text_fit_is_rejected()
     {
         var directory = TestSupport.NewDirectory();
         var path = TestSupport.Write(directory, "bad.fit", "not a fit file");

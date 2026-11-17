@@ -191,10 +191,18 @@ public sealed class McpWriteTests
         crossOrigin.Headers.Add("Origin", "https://example.invalid");
         using var denied = await setup.Client.SendAsync(crossOrigin);
         Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
-        using var getApproval = await setup.Client.GetAsync("/internal/mcp/plans/" + Guid.NewGuid() + "/approve");
-        Assert.NotEqual(HttpStatusCode.OK, getApproval.StatusCode);
+
+        const string tagName = "Pending GET approval";
+        var preview = await setup.Writes.PrepareAsync(Request("create_tag", setup.Fixture.Owner, new { name = tagName }), CancellationToken.None);
+        setup.Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", setup.Writes.Token);
+        var planUrl = $"/internal/mcp/plans/{preview.PlanId}";
+        using var getApproval = await setup.Client.GetAsync(planUrl + "/approve");
+        Assert.Contains(getApproval.StatusCode, new[] { HttpStatusCode.NotFound, HttpStatusCode.MethodNotAllowed });
+        var stillPending = await setup.Client.GetFromJsonAsync<McpChangePreview>(planUrl, McpChangeJson.Options);
+        Assert.Equal(preview.PlanId, stillPending?.PlanId);
         await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
         Assert.Empty(await db.McpOperations.ToArrayAsync());
+        Assert.False(await db.Tags.AnyAsync(tag => tag.OwnerId == setup.Fixture.Owner && tag.Name == tagName));
     }
 
     [Fact]

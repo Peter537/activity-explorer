@@ -86,7 +86,7 @@ public sealed class RecordEffortSummaryTests
     }
 
     [Fact]
-    public void Summary_path_avoids_window_boundary_and_duplicate_distance_preparation_allocations()
+    public void Summary_results_allocate_less_than_materialized_effort_windows()
     {
         var points = Enumerable.Range(0, 100).Select(index => Point(Origin.AddSeconds(index), index * 3, 200)).ToArray();
         var groups = Groups(SportKind.Cycling);

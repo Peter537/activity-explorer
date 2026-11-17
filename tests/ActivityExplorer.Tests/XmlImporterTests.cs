@@ -1,3 +1,4 @@
+using System.Xml;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Infrastructure.Import;
 
@@ -77,15 +78,16 @@ public sealed class XmlImporterTests
     public async Task Corrupt_xml_is_rejected()
     {
         var directory = TestSupport.NewDirectory();
-        var path = TestSupport.Write(directory, "bad.gpx", "<gpx><trk>");
-        await Assert.ThrowsAnyAsync<Exception>(() => _importer.ReadAsync(path, SourceKind.Gpx));
+        var path = TestSupport.Write(directory, "bad.gpx", TestSupport.Gpx() + "</extra>");
+        await Assert.ThrowsAsync<XmlException>(() => _importer.ReadAsync(path, SourceKind.Gpx));
     }
 
     [Fact]
     public async Task Dtd_is_prohibited()
     {
         var directory = TestSupport.NewDirectory();
-        var path = TestSupport.Write(directory, "unsafe.gpx", "<!DOCTYPE gpx [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><gpx>&xxe;</gpx>");
-        await Assert.ThrowsAnyAsync<Exception>(() => _importer.ReadAsync(path, SourceKind.Gpx));
+        var gpx = TestSupport.Gpx().Replace("<gpx ", "<!DOCTYPE gpx>\n<gpx ");
+        var path = TestSupport.Write(directory, "doctype.gpx", gpx);
+        await Assert.ThrowsAsync<XmlException>(() => _importer.ReadAsync(path, SourceKind.Gpx));
     }
 }

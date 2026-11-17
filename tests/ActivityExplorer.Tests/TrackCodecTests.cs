@@ -10,6 +10,21 @@ public sealed class TrackCodecTests
 {
     private static readonly JsonSerializerOptions WebOptions = new(JsonSerializerDefaults.Web);
 
+    [Theory]
+    [InlineData(30)]
+    [InlineData(100)]
+    public async Task Brotli_round_trip_preserves_representative_samples_and_async_input_bytes(int sampleCount)
+    {
+        var points = TestSupport.Track(sampleCount);
+        var payload = TrackCodec.Encode(points);
+        var original = payload.ToArray();
+
+        Assert.True(payload.Length < JsonSerializer.SerializeToUtf8Bytes(points).Length);
+        Assert.Equal(points, await TrackCodec.DecodeAsync(payload));
+        Assert.Equal(original, payload);
+        Assert.Equal(points, TrackCodec.Decode(payload));
+    }
+
     [Fact]
     public async Task Every_sample_field_and_encoded_json_remain_compatible_with_the_web_contract()
     {
@@ -26,6 +41,32 @@ public sealed class TrackCodecTests
         Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(points, WebOptions), json.ToArray());
         Assert.Equal(points, TrackCodec.Decode(payload));
         Assert.Equal(points, await TrackCodec.DecodeAsync(payload));
+    }
+
+    [Fact]
+    public async Task Legacy_stream_without_respiration_preserves_heart_rate_and_defaults_respiration_to_null()
+    {
+        var payload = Compress("""
+            [{
+                "timestamp": "2026-01-01T10:00:00+00:00",
+                "latitude": 1,
+                "longitude": -30,
+                "distanceMeters": 0,
+                "elevationMeters": 10,
+                "speedMetersPerSecond": 4,
+                "heartRate": 130,
+                "cadence": 85,
+                "powerWatts": null,
+                "temperatureCelsius": 18
+            }]
+            """);
+
+        var sync = Assert.Single(TrackCodec.Decode(payload));
+        var asyncPoint = Assert.Single(await TrackCodec.DecodeAsync(payload));
+        Assert.Equal(130, sync.HeartRate);
+        Assert.Null(sync.RespirationRate);
+        Assert.Equal(130, asyncPoint.HeartRate);
+        Assert.Null(asyncPoint.RespirationRate);
     }
 
     [Theory]

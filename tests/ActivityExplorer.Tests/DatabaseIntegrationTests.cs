@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Xml.Linq;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Infrastructure.Import;
@@ -42,16 +43,32 @@ public sealed partial class DatabaseIntegrationTests
     }
 
     [Fact]
-    public async Task Ensure_created_builds_the_expected_schema_without_migration_history()
+    public async Task Initializer_builds_the_expected_schema_without_migration_history()
     {
-        var setup = await DatabaseSetup.CreateAsync();
-        await using var db = await setup.Factory.CreateDbContextAsync();
-        var tables = await db.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table'").ToListAsync();
-        Assert.Contains("Activities", tables);
-        Assert.Contains("SourceFiles", tables);
-        Assert.Contains("Segments", tables);
-        Assert.DoesNotContain("__EFMigrationsHistory", tables);
-        Assert.False(await db.Database.EnsureCreatedAsync());
+        var previousDataRoot = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA");
+        try
+        {
+            Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", TestSupport.NewDirectory());
+            var paths = new AppDataPaths();
+            var factory = new TestDbFactory(new DbContextOptionsBuilder<ExplorerDbContext>()
+                .UseSqlite($"Data Source={paths.DatabasePath};Pooling=False").Options);
+            var originals = new OriginalStore(paths);
+            var fileOperations = new FileOperationCoordinator(factory, paths, originals, NullLogger<FileOperationCoordinator>.Instance);
+            var initializer = new DatabaseInitializer(factory, paths, originals, fileOperations, NullLogger<DatabaseInitializer>.Instance);
+            await initializer.InitializeAsync();
+
+            await using var db = await factory.CreateDbContextAsync();
+            var tables = await db.Database.SqlQueryRaw<string>("SELECT name AS Value FROM sqlite_master WHERE type='table'").ToListAsync();
+            Assert.Contains("Activities", tables);
+            Assert.Contains("SourceFiles", tables);
+            Assert.Contains("Segments", tables);
+            Assert.DoesNotContain("__EFMigrationsHistory", tables);
+            Assert.False(await db.Database.EnsureCreatedAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", previousDataRoot);
+        }
     }
 
     [Fact]
@@ -469,13 +486,18 @@ public sealed partial class DatabaseIntegrationTests
     {
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Router");
-        var activity = await setup.SeedActivityAsync(owner, "Source", SportKind.Running);
+        var track = TestSupport.Track(5);
+        var activity = await setup.SeedActivityAsync(owner, "Source", SportKind.Running, track);
         var storage = CreateStorageServices(setup);
         var service = new RouteService(setup.Factory, storage.Originals, storage.FileOperations, storage.OwnerLock);
         var routeId = await service.CreateFromActivityAsync(new CreateRouteRequest(owner, activity, "Park loop", "Local"));
         var gpx = await service.ExportGpxAsync(routeId);
-        Assert.Contains("Park loop", gpx);
-        Assert.Contains("<rtept", gpx);
+        Assert.NotNull(gpx);
+        XNamespace ns = "http://www.topografix.com/GPX/1/1";
+        var route = Assert.Single(XDocument.Parse(gpx).Element(ns + "gpx")!.Elements(ns + "rte"));
+        Assert.Equal("Park loop", (string?)route.Element(ns + "name"));
+        Assert.Equal(track.Select(point => (point.Latitude, point.Longitude)),
+            route.Elements(ns + "rtept").Select(point => ((double?)point.Attribute("lat"), (double?)point.Attribute("lon"))));
     }
 
     [Fact]

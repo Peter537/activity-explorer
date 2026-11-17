@@ -41,8 +41,11 @@ public sealed class ImportUploadLifetimeTests
                 (Func<Task>)(() => InvokeAsync(page, "UploadMany", "synthetic-file-input", null))), null);
             var polling = (Task)typeof(ImportsPage).GetField("_pollingTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(page)!;
             await polling.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(2, data.ReportIds.Count);
-            Assert.Equal(2, data.ReportIds.Distinct().Count());
+            Assert.Equal(new[]
+            {
+                Guid.Parse("00000000-0000-0000-0000-000000000001"),
+                Guid.Parse("00000000-0000-0000-0000-000000000002")
+            }, data.ReportIds.Order());
             var html = root.ToHtmlString();
             Assert.Contains("Queued files finished processing successfully", html, StringComparison.Ordinal);
             Assert.Contains("Upload rejected", html, StringComparison.Ordinal);

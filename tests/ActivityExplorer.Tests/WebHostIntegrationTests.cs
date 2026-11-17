@@ -45,7 +45,7 @@ public sealed class WebHostIntegrationTests
                 Assert.Equal(HttpStatusCode.OK, frameworkResponse.StatusCode);
                 Assert.Contains("javascript", frameworkResponse.Content.Headers.ContentType?.MediaType ?? "", StringComparison.OrdinalIgnoreCase);
                 var frameworkScript = await frameworkResponse.Content.ReadAsStringAsync();
-                Assert.True(frameworkScript.Length > 100_000);
+                Assert.Contains("Blazor", frameworkScript, StringComparison.Ordinal);
                 Assert.DoesNotContain("<!DOCTYPE", frameworkScript, StringComparison.OrdinalIgnoreCase);
 
                 using var negotiateResponse = await client.PostAsync("/_blazor/negotiate?negotiateVersion=1", content: null);

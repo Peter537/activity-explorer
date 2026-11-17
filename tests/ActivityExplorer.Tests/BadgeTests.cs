@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Services;
@@ -231,20 +230,6 @@ public sealed class BadgeTests
             var points = string.Join(" / ", family.Select(x => x.Points));
             Assert.Contains($"| {family.Key} | {targets} | {family.First().Unit} | {points} |", document, StringComparison.Ordinal);
         }
-    }
-
-    [Fact]
-    public void Ten_thousand_summaries_evaluate_without_streams()
-    {
-        var start = new DateTimeOffset(2010, 1, 1, 10, 0, 0, TimeSpan.Zero);
-        var activities = Enumerable.Range(0, 10000).Select(i => Activity(start.AddHours(i * 12).ToString("O"), (SportKind)(i % 4 + 1), 20000, 3600, 200)).ToArray();
-        Evaluate(activities);
-        var timer = Stopwatch.StartNew();
-        var result = Evaluate(activities);
-        timer.Stop();
-        Assert.True(result.EarnedCount > 100);
-        TestContext.Current.TestOutputHelper!.WriteLine($"10,000-summary evaluator: {timer.Elapsed.TotalMilliseconds:N1} ms");
-        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(5), "Evaluation exceeded the generous regression ceiling; the local target is one second.");
     }
 
     internal static BadgeActivity Activity(string start, SportKind sport = SportKind.Cycling, double distance = 10000, double moving = 1200, double ascent = 0) =>

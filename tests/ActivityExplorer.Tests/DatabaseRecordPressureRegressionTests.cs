@@ -88,33 +88,27 @@ public sealed class DatabaseRecordPressureRegressionTests
         Assert.Equal(streamWinners[^1].Id, power.ActivityId);
         Assert.Equal(204, power.Value);
         var payloadRead = Assert.Single(capture.Commands, command => command.Contains("CompressedPayload", StringComparison.Ordinal));
-        Assert.DoesNotContain("NOT INDEXED", payloadRead, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(" IN (", payloadRead, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("SELECT", payloadRead, StringComparison.OrdinalIgnoreCase);
-        var physicalLookup = dense || manyStreamless;
-        Assert.Equal(physicalLookup, payloadRead.Contains("@physicalKeys", StringComparison.Ordinal));
-        if (physicalLookup)
+        await using var verification = factory.CreateDbContext();
+        await verification.Database.OpenConnectionAsync();
+        await using var explain = verification.Database.GetDbConnection().CreateCommand();
+        explain.CommandText = "EXPLAIN QUERY PLAN " + payloadRead;
+        foreach (var (name, value, type) in capture.PayloadParameters)
         {
-            Assert.Contains("rowid", payloadRead, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("json_each", payloadRead, StringComparison.OrdinalIgnoreCase);
-            await using var verification = factory.CreateDbContext();
-            await verification.Database.OpenConnectionAsync();
-            await using var explain = verification.Database.GetDbConnection().CreateCommand();
-            explain.CommandText = "EXPLAIN QUERY PLAN " + payloadRead;
-            foreach (var (name, value, type) in capture.PayloadParameters)
-            {
-                var parameter = explain.CreateParameter();
-                parameter.ParameterName = name;
-                parameter.DbType = type;
-                parameter.Value = value ?? DBNull.Value;
-                explain.Parameters.Add(parameter);
-            }
-            await using var reader = await explain.ExecuteReaderAsync();
-            var plan = new List<string>();
-            while (await reader.ReadAsync()) plan.Add(reader.GetString(3));
-            Assert.Contains(plan, step => step.Contains("SEARCH", StringComparison.OrdinalIgnoreCase) &&
-                step.Contains("USING INTEGER PRIMARY KEY", StringComparison.OrdinalIgnoreCase));
+            var parameter = explain.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.DbType = type;
+            parameter.Value = value ?? DBNull.Value;
+            explain.Parameters.Add(parameter);
         }
+        await using var reader = await explain.ExecuteReaderAsync();
+        var plan = new List<string>();
+        while (await reader.ReadAsync()) plan.Add(reader.GetString(3));
+        if (dense || manyStreamless)
+            Assert.Contains(plan, step => step.StartsWith("SEARCH ActivityStreams USING INTEGER PRIMARY KEY", StringComparison.OrdinalIgnoreCase));
+        else
+            Assert.Contains(plan, step => step.StartsWith("SEARCH ", StringComparison.OrdinalIgnoreCase) &&
+                step.Contains("sqlite_autoindex_ActivityStreams_", StringComparison.OrdinalIgnoreCase) &&
+                step.Contains("(ActivityId=?)", StringComparison.OrdinalIgnoreCase));
         Assert.All(capture.Commands, command =>
         {
             Assert.DoesNotContain("OFFSET", command, StringComparison.OrdinalIgnoreCase);

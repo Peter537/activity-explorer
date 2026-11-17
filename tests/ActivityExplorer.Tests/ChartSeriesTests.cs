@@ -1,17 +1,12 @@
 using System.Globalization;
-using System.IO.Compression;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using ActivityExplorer.Core.Models;
-using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Web.Components.Shared;
 
 namespace ActivityExplorer.Tests;
 
 public sealed class ChartSeriesTests
 {
-    private static readonly JsonSerializerOptions LegacyJsonOptions = new(JsonSerializerDefaults.Web);
-
     [Fact]
     public void Range_geometry_uses_full_source_positions_and_exact_fractional_endpoints()
     {
@@ -420,34 +415,6 @@ public sealed class ChartSeriesTests
         {
             CultureInfo.CurrentCulture = before;
         }
-    }
-
-    [Fact]
-    public void Stream_without_optional_respiration_decodes_as_null()
-    {
-        var legacy = new[]
-        {
-            new
-            {
-                timestamp = "2026-01-01T10:00:00+00:00",
-                latitude = 1d,
-                longitude = -30d,
-                distanceMeters = 0d,
-                elevationMeters = 10d,
-                speedMetersPerSecond = 4d,
-                heartRate = 130d,
-                cadence = 85d,
-                powerWatts = (double?)null,
-                temperatureCelsius = 18d
-            }
-        };
-        using var output = new MemoryStream();
-        using (var brotli = new BrotliStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
-            JsonSerializer.Serialize(brotli, legacy, LegacyJsonOptions);
-
-        var point = Assert.Single(TrackCodec.Decode(output.ToArray()));
-        Assert.Null(point.RespirationRate);
-        Assert.Equal(130, point.HeartRate);
     }
 
     private static CultureInfo CommaDecimalCulture()

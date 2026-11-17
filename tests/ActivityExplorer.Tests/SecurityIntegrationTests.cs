@@ -66,16 +66,21 @@ public sealed class SecurityIntegrationTests
     [Fact]
     public async Task Valid_antiforgery_token_allows_streamed_import_and_token_is_not_cached()
     {
+        var recorder = new RecordingLoggerProvider();
         await WithApplicationAsync(async (factory, client) =>
         {
             var ownerId = await factory.Services.GetRequiredService<IProfileService>().CreateAsync("Uploader");
+            recorder.Entries.Clear();
             var token = await GetTokenAsync(client);
+            Assert.DoesNotContain(recorder.Entries, entry =>
+                entry.Category == "Microsoft.AspNetCore.Antiforgery.DefaultAntiforgery" &&
+                entry.EventId == 8 && entry.Level >= LogLevel.Warning);
 
             using var request = ImportRequest("valid", ownerId);
             request.Headers.Add("X-CSRF-TOKEN", token);
             using var response = await client.SendAsync(request);
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        });
+        }, configureBuilder: builder => builder.ConfigureLogging(logging => logging.AddProvider(recorder)));
     }
 
     [Fact]
@@ -96,19 +101,6 @@ public sealed class SecurityIntegrationTests
                     StringComparison.OrdinalIgnoreCase);
             }
         });
-    }
-
-    [Fact]
-    public async Task Antiforgery_token_uses_framework_cache_headers_without_override_warning()
-    {
-        var recorder = new RecordingLoggerProvider();
-        await WithApplicationAsync(
-            async (_, client) => await GetTokenAsync(client),
-            configureBuilder: builder => builder.ConfigureLogging(logging => logging.AddProvider(recorder)));
-
-        Assert.DoesNotContain(recorder.Entries, entry =>
-            entry.Category == "Microsoft.AspNetCore.Antiforgery.DefaultAntiforgery" &&
-            entry.EventId == 8 && entry.Level >= LogLevel.Warning);
     }
 
     [Fact]
