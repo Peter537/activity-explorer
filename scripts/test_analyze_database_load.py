@@ -268,9 +268,8 @@ class DatabaseLoadAnalysisTests(unittest.TestCase):
                 else:
                     altered["samples"][0]["requests"][0]["diagnostics"] = []
                 raw_path.write_text(json.dumps(altered), encoding="utf-8")
-                result = subprocess.run(command, capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Diagnostic instrumentation", result.stderr)
+                with self.assertRaisesRegex(ValueError, "Diagnostic instrumentation"):
+                    audit.main(command[3:])
             raw_path.write_text(original, encoding="utf-8")
             summary = report / "summary.csv"
             import csv

@@ -244,7 +244,7 @@ public sealed partial class DatabaseIntegrationTests
         OrganizationLifecycleServices(DatabaseSetup setup)
     {
         var storage = CreateStorageServices(setup);
-        var paths = new AppDataPaths();
+        var paths = TestSupport.DataPaths(setup.DataDirectory);
         var activities = new ActivityQueryService(setup.Factory, new StatisticsService(setup.Factory),
             new SegmentService(setup.Factory, new SegmentMatcher(), storage.OwnerLock), storage.Originals,
             storage.FileOperations, storage.OwnerLock, NullLogger<ActivityQueryService>.Instance);

@@ -19,7 +19,7 @@ public sealed partial class DatabaseIntegrationTests
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Delete outcome");
         var storage = CreateStorageServices(setup);
-        var paths = new AppDataPaths();
+        var paths = TestSupport.DataPaths(setup.DataDirectory);
         File.WriteAllText(Path.Combine(paths.GetOwnerOriginalsPath(owner), "source.fit"), "synthetic");
         var files = new FailingCommitCoordinator(storage.FileOperations);
         var service = new ProfileService(setup.Factory, paths, files, storage.OwnerLock);
@@ -39,7 +39,7 @@ public sealed partial class DatabaseIntegrationTests
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Route outcome");
         var storage = CreateStorageServices(setup);
-        var paths = new AppDataPaths();
+        var paths = TestSupport.DataPaths(setup.DataDirectory);
         var staged = TestSupport.Write(paths.StagingPath, "outcome.gpx", TestSupport.Gpx());
         var points = await new GpxRouteReader().ReadAsync(staged);
         var hash = await Fingerprint.Sha256Async(staged, CancellationToken.None);
@@ -72,7 +72,7 @@ public sealed partial class DatabaseIntegrationTests
         var newOwner = await setup.SeedOwnerAsync("Transfer destination");
         var activityId = await setup.SeedActivityAsync(oldOwner, "Before", SportKind.Cycling);
         var storage = CreateStorageServices(setup);
-        var sourcePath = Path.Combine(new AppDataPaths().GetOwnerOriginalsPath(oldOwner), "source.fit");
+        var sourcePath = Path.Combine(TestSupport.DataPaths(setup.DataDirectory).GetOwnerOriginalsPath(oldOwner), "source.fit");
         await File.WriteAllTextAsync(sourcePath, "synthetic source");
         var hash = await Fingerprint.Sha256Async(sourcePath, CancellationToken.None);
         await using (var db = await setup.Factory.CreateDbContextAsync())

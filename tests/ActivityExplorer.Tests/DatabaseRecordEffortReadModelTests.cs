@@ -340,7 +340,7 @@ public sealed partial class DatabaseIntegrationTests
         {
             var owner = await setup.SeedOwnerAsync("Atomic effort import");
             var storage = CreateStorageServices(setup);
-            var paths = new AppDataPaths();
+            var paths = TestSupport.DataPaths(setup.DataDirectory);
             var importer = new ImportProcessor(setup.Factory, [new MetadataImporter()], paths, storage.Originals, storage.FileOperations,
                 storage.OwnerLock, new StatisticsService(setup.Factory),
                 new SegmentService(setup.Factory, new SegmentMatcher(), storage.OwnerLock), NullLogger<ImportProcessor>.Instance);

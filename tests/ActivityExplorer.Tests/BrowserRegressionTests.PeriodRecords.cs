@@ -16,8 +16,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Period_records_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The period-record preview fixture requires an empty directory.");
@@ -30,7 +29,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Period_records_calculate_period_winners_and_keep_attempts_scope_and_local_dates()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedPeriodRecordsBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -130,7 +129,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Period_records_refresh_relative_ranges_recover_errors_and_cancel_without_stale_results()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedPeriodRecordsBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

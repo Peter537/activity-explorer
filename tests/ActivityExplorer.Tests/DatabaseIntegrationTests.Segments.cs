@@ -171,7 +171,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Profile_deletion_cleans_nested_links_without_affecting_another_profile()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var owner = await setup.SeedOwnerAsync("Delete sections");

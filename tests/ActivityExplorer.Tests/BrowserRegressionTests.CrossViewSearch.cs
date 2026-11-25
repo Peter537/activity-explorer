@@ -16,8 +16,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Cross_view_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_CROSS_VIEW_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_CROSS_VIEW_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The cross-view preview fixture requires an empty directory.");
@@ -30,7 +29,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Cross_view_searches_reconcile_all_pages_map_reporting_calendar_and_exact_drilldowns()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedCrossViewBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -147,7 +146,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Cross_view_searches_keep_profile_repair_relative_periods_and_unassigned_gear_explicit()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedCrossViewBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

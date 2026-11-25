@@ -15,8 +15,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Comparison_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_COMPARISON_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_COMPARISON_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The comparison preview fixture requires an empty directory.");
@@ -29,7 +28,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Segment_comparison_preserves_pair_history_inspection_and_truthful_unavailable_states()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedComparisonBrowserDataAsync(dataRoot);

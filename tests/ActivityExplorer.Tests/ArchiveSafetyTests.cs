@@ -11,7 +11,7 @@ public sealed class ArchiveSafetyTests
     [Fact]
     public async Task Temporarily_unreadable_extracted_member_stays_retryable()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        TestSupport.RequireWindows();
         var directory = TestSupport.NewDirectory();
         var archivePath = TestSupport.Zip(directory, "recording.gpx", TestSupport.Gpx());
         var importer = CreateImporter(Path.Combine(directory, "data"));
@@ -185,7 +185,6 @@ public sealed class ArchiveSafetyTests
         string duplicateHeader, string duplicateValue, string expectedTitle)
     {
         var directory = TestSupport.NewDirectory();
-        var previousDataPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA");
         try
         {
             var path = Path.Combine(directory, "ambiguous-strava-export.zip");
@@ -211,7 +210,6 @@ public sealed class ArchiveSafetyTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", previousDataPath);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -321,9 +319,6 @@ public sealed class ArchiveSafetyTests
         writer.Write(content);
     }
 
-    private static ArchiveActivityImporter CreateImporter(string dataPath)
-    {
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", dataPath);
-        return new ArchiveActivityImporter(new AppDataPaths(), new FitActivityImporter(), new XmlActivityImporter());
-    }
+    private static ArchiveActivityImporter CreateImporter(string dataPath) =>
+        new(TestSupport.DataPaths(dataPath), new FitActivityImporter(), new XmlActivityImporter());
 }

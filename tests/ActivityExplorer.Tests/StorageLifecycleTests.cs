@@ -417,7 +417,7 @@ public sealed partial class StorageLifecycleTests
     [Fact]
     public async Task Staging_recovery_retries_when_a_file_cannot_be_deleted_during_the_first_pass()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        TestSupport.RequireWindows();
         await using var setup = await StorageSetup.CreateAsync();
         var staged = ManagedStagingDirectory.Create(setup.Paths.StagingPath);
         var file = TestSupport.Write(staged, "locked.gpx", "retained while in use");

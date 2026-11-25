@@ -20,8 +20,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Range_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_RANGE_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_RANGE_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The range preview fixture requires an empty directory.");
@@ -36,7 +35,7 @@ public sealed partial class BrowserRegressionTests
     [InlineData(true)]
     public async Task Exact_attempt_links_ranges_gestures_and_history_preserve_source_intervals(bool useLongPolling)
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedRangeBrowserDataAsync(dataRoot);
@@ -210,7 +209,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Range_sections_missing_data_and_stale_links_recover_without_losing_whole_activities()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedRangeBrowserDataAsync(dataRoot);

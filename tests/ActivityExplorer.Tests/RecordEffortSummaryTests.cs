@@ -107,16 +107,21 @@ public sealed class RecordEffortSummaryTests
     private static void AssertMatchesBinaryWinners(IReadOnlyList<TrackPoint> points, SportKind sport)
     {
         var groups = Groups(sport);
+        // The multiple-attempt path retains the binary-search candidates used as the independent reference.
+        var expected = groups.SelectMany(group => group).ToDictionary(
+            benchmark => benchmark,
+            benchmark =>
+            {
+                var attempts = BestEffortCalculator.Attempts(points, sport, benchmark.Kind, benchmark.Target!.Value, multiple: true);
+                return attempts.Count == 0 ? null : attempts[0];
+            });
         foreach (var order in new[] { groups, groups.Reverse().ToArray() })
         {
             var actual = BestEffortCalculator.BestValues(points, sport, order).ToDictionary(item => item.Benchmark, item => item.Value);
-            foreach (var benchmark in groups.SelectMany(group => group))
+            foreach (var (benchmark, winner) in expected)
             {
-                // Multiple attempts retains the binary-search candidate path, independent of the single-winner cursor.
-                var expected = BestEffortCalculator.Attempts(points, sport, benchmark.Kind, benchmark.Target!.Value, multiple: true);
-                Assert.Equal(expected.Count > 0, actual.TryGetValue(benchmark, out var summary));
-                if (expected.Count == 0) continue;
-                var winner = expected[0];
+                Assert.Equal(winner is not null, actual.TryGetValue(benchmark, out var summary));
+                if (winner is null) continue;
                 Assert.Equal(new EffortValue(winner.Value, winner.CoveragePercent, winner.StartPosition, winner.FinishPosition), summary);
             }
         }

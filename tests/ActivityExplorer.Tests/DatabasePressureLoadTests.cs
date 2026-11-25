@@ -32,10 +32,10 @@ public sealed class DatabasePressureLoadTests
     [Fact]
     public async Task Run_configured_pressure_workload()
     {
-        var configPath = Environment.GetEnvironmentVariable("AE_DATABASE_PRESSURE_CONFIG");
-        if (string.IsNullOrEmpty(configPath)) return;
+        var configPath = TestSupport.ConfiguredPath("AE_DATABASE_PRESSURE_CONFIG");
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("Configured pressure workloads require Windows CopyFileExW.");
         var config = JsonSerializer.Deserialize<PressureConfig>(await File.ReadAllTextAsync(configPath), Json)!;
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Pressure fixture copying requires Windows CopyFileExW.");
         ArgumentOutOfRangeException.ThrowIfLessThan(config.BudgetMs, 1);
         ArgumentOutOfRangeException.ThrowIfNegative(config.Warmups);
         if (!Enum.TryParse<SqliteCacheMode>(config.CacheMode, ignoreCase: true, out var cacheMode) || !Enum.IsDefined(cacheMode))
@@ -853,7 +853,7 @@ public sealed class DatabasePressureLoadTests
     [Fact]
     public void Cold_copy_refuses_to_replace_existing_file()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        TestSupport.RequireWindows();
         var directory = TestSupport.NewDirectory();
         var source = Path.Combine(directory, "copy-source.db");
         var target = Path.Combine(directory, "copy-target.db");

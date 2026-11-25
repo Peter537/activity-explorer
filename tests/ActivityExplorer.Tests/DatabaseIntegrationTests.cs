@@ -361,7 +361,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Activity_transfer_blocks_provenance_collision_then_rehomes_sources_and_unlinks_definitions()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var sourceOwner = await setup.SeedOwnerAsync("Source owner");
@@ -690,7 +690,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Route_gpx_import_records_atomic_local_provenance()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var owner = await setup.SeedOwnerAsync("Route provenance");
@@ -763,7 +763,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Profile_deletion_removes_rows_and_copied_originals()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var owner = await setup.SeedOwnerAsync("Delete Me");
@@ -782,7 +782,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Profile_management_lists_exports_and_blocks_active_import_deletion()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var storage = CreateStorageServices(setup, paths);
@@ -904,7 +904,7 @@ public sealed partial class DatabaseIntegrationTests
         var setup = await DatabaseSetup.CreateAsync();
         await using (var schema = await setup.Factory.CreateDbContextAsync())
             await ProjectionVersions.EnsureAsync(schema, CancellationToken.None);
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var owner = await setup.SeedOwnerAsync("Importer");
@@ -961,7 +961,7 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Real_Garmin_then_gzipped_Strava_archive_enriches_idempotently()
     {
         var setup = await DatabaseSetup.CreateAsync();
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
+        using var dataRoot = TestSupport.UseDataRoot(setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
         var owner = await setup.SeedOwnerAsync("Archive importer");
@@ -1050,8 +1050,7 @@ public sealed partial class DatabaseIntegrationTests
     private static (IOriginalStore Originals, IFileOperationCoordinator FileOperations, IOwnerMutationLock OwnerLock)
         CreateStorageServices(DatabaseSetup setup, AppDataPaths? existingPaths = null)
     {
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
-        var paths = existingPaths ?? new AppDataPaths();
+        var paths = existingPaths ?? TestSupport.DataPaths(setup.DataDirectory);
         paths.EnsureCreated();
         var originals = new OriginalStore(paths);
         return (

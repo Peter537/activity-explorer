@@ -11,7 +11,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Badges_preserve_history_profiles_filters_evidence_and_responsive_layout()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var owner = Guid.NewGuid();

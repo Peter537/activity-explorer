@@ -170,13 +170,13 @@ def verify_cold_stage(samples, metadata, plan):
             "Integrity reads preceded completion of measured waves")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--goldens", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     plan_bytes = (args.runs / "campaign-plan.json").read_bytes()
     plan = json.loads(plan_bytes.decode("utf-8-sig"))
     for path in plan.get("RuntimeMetadataFiles", ()):

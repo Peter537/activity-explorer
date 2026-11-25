@@ -17,7 +17,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Upload_workers_settle_delayed_rejected_and_unknown_responses_without_retrying()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
         var page = await browser.NewPageAsync();
@@ -62,7 +62,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Partial_uploads_poll_accepted_files_and_keep_unknown_outcomes_visible()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -142,7 +142,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Route_upload_preserves_committed_id_and_cleanup_notice_through_browser_interop()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         const string routeName = "Synthetic route upload contract";
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);

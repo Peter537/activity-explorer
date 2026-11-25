@@ -13,8 +13,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Organization_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_ORGANIZATION_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_ORGANIZATION_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The organization preview fixture requires an empty directory.");
@@ -27,7 +26,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Organization_tags_support_keyboard_editing_stale_recovery_and_owner_transfer()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

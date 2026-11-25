@@ -22,6 +22,15 @@ public sealed partial class DatabaseIntegrationTests
         var start = ReportingInstant("2026-10-09T08:00:00Z");
         var matches = Enumerable.Range(1, 36).Select(index => ReportingActivity(
             index <= 31 ? first : second, start.AddMinutes(index), index)).ToArray();
+        for (var index = 0; index < matches.Length; index++)
+        {
+            // Permute each owner's metrics independently and preserve their known totals.
+            var offset = index < 31 ? 0 : 31;
+            var size = index < 31 ? 31 : 5;
+            var withinOwner = index - offset;
+            matches[index].DistanceMeters = (offset + withinOwner * 7 % size + 1) * 1000;
+            matches[index].MovingTimeSeconds = (36 - offset - withinOwner * 11 % size) * 1000;
+        }
         var wrongSport = ReportingActivity(first, start, 100); wrongSport.Sport = SportKind.Running;
         var wrongText = ReportingActivity(first, start, 101); wrongText.Title = "Other title"; wrongText.Description = null;
         var wrongPower = ReportingActivity(first, start, 102); wrongPower.HasPower = false;
@@ -47,10 +56,12 @@ public sealed partial class DatabaseIntegrationTests
             ("elevation-desc", activity => activity.ElevationGainMeters, true)
         };
 
+        var distinctOrders = new HashSet<string>(StringComparer.Ordinal);
         foreach (var sort in sorts)
         {
             var expectedOrder = (sort.Descending ? matches.OrderByDescending(sort.Key) : matches.OrderBy(sort.Key))
                 .Select(activity => activity.Id).ToArray();
+            Assert.True(distinctOrders.Add(string.Join(',', expectedOrder)), $"The fixture needs a distinct order for {sort.Name}.");
             var pageOne = await service.SearchAsync(filter with { Sort = sort.Name });
             var pageTwo = await service.SearchAsync(pageOne.EffectiveFilter with { Page = 2 });
             Assert.Equal(expectedOrder[..25], pageOne.Items.Select(activity => activity.Id));
@@ -223,7 +234,7 @@ public sealed partial class DatabaseIntegrationTests
         var today = new ActivityFilter(OwnerId: firstOwner, From: new(2026, 10, 9), To: new(2026, 10, 9));
         Assert.Equal(1, (await service.SearchAsync(today)).Total);
         var storage = CreateStorageServices(setup);
-        var profiles = new ProfileService(setup.Factory, new AppDataPaths(), storage.FileOperations, storage.OwnerLock);
+        var profiles = new ProfileService(setup.Factory, TestSupport.DataPaths(setup.DataDirectory), storage.FileOperations, storage.OwnerLock);
         await profiles.UpdateTimeZoneAsync(firstOwner, "UTC");
         Assert.Equal(0, (await service.SearchAsync(today)).Total);
         await service.UpdateAsync(midnightActivity.Id, new UpdateActivityRequest(midnightActivity.Title, midnightActivity.Description, null, secondOwner));

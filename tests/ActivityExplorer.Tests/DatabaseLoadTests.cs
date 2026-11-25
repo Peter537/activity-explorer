@@ -23,8 +23,7 @@ public sealed class DatabaseLoadTests
     [Fact]
     public async Task Run_configured_database_workload()
     {
-        var configPath = Environment.GetEnvironmentVariable("AE_DATABASE_LOAD_CONFIG");
-        if (string.IsNullOrEmpty(configPath)) return;
+        var configPath = TestSupport.ConfiguredPath("AE_DATABASE_LOAD_CONFIG");
         var config = JsonSerializer.Deserialize<LoadConfig>(await File.ReadAllTextAsync(configPath), Json)!;
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(config.ReportFile))!);
         await using var fixture = config.Prepare

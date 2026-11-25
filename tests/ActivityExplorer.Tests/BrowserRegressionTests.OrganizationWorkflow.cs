@@ -13,7 +13,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Organization_cross_page_batches_saved_searches_and_bookmarks_recover_explicitly()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -130,7 +130,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Organization_stale_batches_reject_and_filtered_snapshots_exclude_later_imports()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

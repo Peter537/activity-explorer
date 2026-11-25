@@ -8,7 +8,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Route_upload_reports_unconfirmed_responses_without_retrying()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
         var page = await browser.NewPageAsync();

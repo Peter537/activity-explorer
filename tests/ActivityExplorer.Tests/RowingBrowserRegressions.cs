@@ -11,7 +11,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Rowing_import_charts_filters_and_indoor_records_work_in_the_browser()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var inputRoot = TestSupport.NewDirectory();

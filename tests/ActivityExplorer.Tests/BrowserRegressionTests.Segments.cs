@@ -14,7 +14,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Nested_segments_preserve_shared_history_pass_context_and_accessible_navigation()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var options = new DbContextOptionsBuilder<ExplorerDbContext>()

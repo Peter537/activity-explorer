@@ -10,7 +10,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Activity_map_keeps_source_identity_gap_runs_and_fractional_selection_without_refitting()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var origin = $"http://127.0.0.1:{ReservePort()}";

@@ -10,7 +10,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Todo_acceptance_journey_connects_saved_search_discovery_and_period_records()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var search = await SeedCrossViewBrowserDataAsync(dataRoot);
         var library = await SeedLibraryBrowserDataAsync(dataRoot);

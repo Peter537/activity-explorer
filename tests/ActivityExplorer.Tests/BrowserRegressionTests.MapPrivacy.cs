@@ -8,7 +8,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Online_map_renders_controlled_attribution_after_explicit_opt_in()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
 
         var dataRoot = TestSupport.NewDirectory();
         var origin = $"http://127.0.0.1:{ReservePort()}";

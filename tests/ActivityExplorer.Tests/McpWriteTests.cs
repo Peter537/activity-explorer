@@ -6,6 +6,7 @@ using System.Text.Json;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
+using ActivityExplorer.Infrastructure.Services;
 using ActivityExplorer.Infrastructure.Storage;
 using ActivityExplorer.Mcp;
 using ActivityExplorer.Mcp.Tools;
@@ -209,8 +210,45 @@ public sealed partial class McpWriteTests
     [Fact]
     public async Task Every_existing_action_family_can_be_previewed_and_executed()
     {
-        await using var setup = await Setup.CreateAsync();
+        var setup = await Setup.CreateAsync(useKestrel: true, configure: builder =>
+            builder.ConfigureServices(services =>
+            {
+                // Only the explicit MCP repair operation should restore the missing records.
+                var automaticRepair = services.Single(service => service.ImplementationType == typeof(StatisticsRepairWorker));
+                services.Remove(automaticRepair);
+            }));
+        await McpWriteRuntime.RunWithCleanupAsync(setup, current =>
+            McpWriteRuntime.RunWithCleanupAsync(new McpStdioProcess(current.Fixture),
+                protocol => VerifyWriteActionsAsync(current, protocol)));
+    }
+
+    private static async Task VerifyWriteActionsAsync(Setup setup, McpStdioProcess protocol)
+    {
         var owner = setup.Fixture.Owner;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var client = await protocol.ConnectAsync(cancellationToken: deadline.Token, serverOptions:
+        [
+            "--Mcp:AllowedWriteProfileIds:1", setup.Fixture.OtherOwner.ToString(),
+            "--Mcp:AllowDestructive", "true", "--Mcp:AllowAdministration", "true"
+        ]);
+        const string prefix = "prepare_";
+        var tools = await client.ListToolsAsync(cancellationToken: deadline.Token);
+        Assert.Equal(McpChangeCatalog.Actions.Select(action => prefix + action).Order(StringComparer.Ordinal),
+            tools.Where(tool => tool.Name.StartsWith(prefix, StringComparison.Ordinal)).Select(tool => tool.Name).Order(StringComparer.Ordinal));
+
+        async Task<McpChangePreview> Prepare(McpChangeRequest request)
+        {
+            var arguments = request.Arguments.EnumerateObject().ToDictionary(property => property.Name, property => (object?)property.Value);
+            if (request.ProfileId is { } profile) arguments.Add("profileId", profile);
+            if (request.Action is "edit_goal" or "archive_goal") arguments.Remove("goalId");
+            var result = await client.CallToolAsync(prefix + request.Action, arguments, cancellationToken: deadline.Token);
+            Assert.False(result.IsError, $"{request.Action}: {JsonSerializer.Serialize(result)}");
+            var preview = McpReadOnlyTests.Data(result).Deserialize<McpChangePreview>(McpChangeJson.Options);
+            Assert.NotNull(preview);
+            Assert.Equal(request.Action, preview.Action);
+            return preview;
+        }
+
         var org = setup.Services.GetRequiredService<IActivityOrganizationService>();
         var criteria = new SavedSearchCriteria(2, null, null, null, null, [], "start-desc", new(ReportingPreset.AllTime));
         var saved = await org.SaveSavedSearchAsync(owner, "Saved selection", criteria);
@@ -224,7 +262,10 @@ public sealed partial class McpWriteTests
         var folderPath = Path.Combine(setup.Fixture.DirectoryPath, "approved-source");
         Directory.CreateDirectory(folderPath);
         var folderAsset = await setup.Writes.ApproveFolderAsync(owner, folderPath, CancellationToken.None);
-        var folderId = await setup.Services.GetRequiredService<IWatchedFolderService>().AddAsync(owner, folderPath);
+        var existingFolder = Directory.CreateDirectory(Path.Combine(setup.Fixture.DirectoryPath, "existing-source"));
+        var folderId = await setup.Services.GetRequiredService<IWatchedFolderService>().AddAsync(owner, existingFolder.FullName);
+        var mapSettings = setup.Services.GetRequiredService<IMapSettingsService>();
+        await mapSettings.SetModeAsync(MapPrivacyMode.OpenFreeMap);
         var points = TestSupport.Track(30);
         var operations = new List<McpChangeRequest>
         {
@@ -241,7 +282,7 @@ public sealed partial class McpWriteTests
             Request("delete_activity_metric", owner, new { activityId = setup.Fixture.Activity, metricId = metric }),
             Request("create_tag", owner, new { name = "New tag" }),
             Request("rename_tag", owner, new { tagId = setup.Fixture.TagId, name = "Renamed training" }),
-            Request("set_activity_tags", owner, new { activityId = setup.Fixture.Activity, tagIds = new[] { setup.Fixture.TagId } }),
+            Request("set_activity_tags", owner, new { activityId = setup.Fixture.Activity, tagIds = Array.Empty<Guid>() }),
             Request("apply_activity_batch", owner, new { activityIds = new[] { setup.Fixture.Activity }, changes = new BatchChangeRequest([], [], GearEditMode.Set, "Reviewed gear") }),
             Request("save_saved_search", owner, new { name = "New search", criteria }),
             Request("rename_saved_search", owner, new { savedSearchId = saved, name = "Renamed selection" }),
@@ -264,12 +305,124 @@ public sealed partial class McpWriteTests
         };
         foreach (var request in operations)
         {
-            var preview = await setup.Writes.PrepareAsync(request, CancellationToken.None);
+            // Make repair operations restore missing derived data in the synthetic database.
+            await using (var stale = await setup.Fixture.Factory.CreateDbContextAsync())
+            {
+                if (request.Action == "recompute_segment")
+                    Assert.True(await stale.SegmentEfforts.Where(item => item.SegmentId == setup.Fixture.Segment).ExecuteDeleteAsync() > 0);
+                if (request.Action == "recompute_statistics")
+                    Assert.True(await stale.StatisticSnapshots.Where(item => item.OwnerId == owner).ExecuteDeleteAsync() > 0);
+                if (request.Action == "rebuild_exploration")
+                    Assert.False(await stale.ActivityExplorationIndexes.AnyAsync(item => item.ActivityId == setup.Fixture.Activity));
+            }
+            var preview = await Prepare(request);
             var accepted = await setup.Writes.ApproveAsync(preview.PlanId, preview.ConfirmationPhrase, CancellationToken.None);
             var completed = await WaitAsync(setup.Writes, accepted.OperationId);
             Assert.True(completed.Status == "completed", $"{request.Action}: {completed.Status}: {completed.Message}");
             if (request.Action == "create_profile")
                 await Assert.ThrowsAsync<UnauthorizedAccessException>(() => setup.Writes.ContextAsync(new(completed.EntityId!.Value, "tags"), CancellationToken.None));
+            await using (var effects = await setup.Fixture.Factory.CreateDbContextAsync())
+            {
+                switch (request.Action)
+                {
+                    case "create_segment_from_activity":
+                    case "create_segment_from_route":
+                    case "create_segment_path":
+                    case "create_subsegment":
+                    case "import_segment":
+                        var segment = await effects.Segments.FindAsync(completed.EntityId!.Value);
+                        Assert.NotNull(segment);
+                        Assert.Equal(owner, segment.OwnerId);
+                        Assert.Equal(request.Arguments.GetProperty("name").GetString(), segment.Name);
+                        if (request.Action == "create_subsegment")
+                            Assert.True(await effects.SegmentLinks.AnyAsync(link =>
+                                link.ParentSegmentId == setup.Fixture.Segment && link.ChildSegmentId == segment.Id));
+                        break;
+                    case "attach_segment":
+                    case "detach_segment":
+                        Assert.Equal(request.Action == "attach_segment",
+                            await effects.SegmentLinks.AnyAsync(link => link.ParentSegmentId == setup.Fixture.Segment && link.ChildSegmentId == child));
+                        break;
+                    case "recompute_segment":
+                        Assert.True(await effects.SegmentEfforts.AnyAsync(item => item.SegmentId == setup.Fixture.Segment));
+                        break;
+                    case "update_activity":
+                        Assert.Equal("Reviewed title", (await effects.Activities.FindAsync(setup.Fixture.Activity))!.Title);
+                        break;
+                    case "add_activity_metric":
+                        var added = await effects.ActivityMetrics.FindAsync(completed.EntityId!.Value);
+                        Assert.NotNull(added);
+                        Assert.Equal(setup.Fixture.Activity, added.ActivityId);
+                        Assert.Equal(2d, added.NumericValue);
+                        break;
+                    case "update_activity_metric":
+                        Assert.Equal(3d, (await effects.ActivityMetrics.FindAsync(metric))!.NumericValue);
+                        break;
+                    case "delete_activity_metric":
+                        Assert.Null(await effects.ActivityMetrics.FindAsync(metric));
+                        break;
+                    case "rename_tag":
+                        Assert.Equal("Renamed training", (await effects.Tags.FindAsync(setup.Fixture.TagId))!.Name);
+                        break;
+                    case "create_tag":
+                        Assert.Equal("New tag", (await effects.Tags.FindAsync(completed.EntityId!.Value))!.Name);
+                        break;
+                    case "set_activity_tags":
+                        Assert.False(await effects.ActivityTags.AnyAsync(tag => tag.ActivityId == setup.Fixture.Activity));
+                        break;
+                    case "apply_activity_batch":
+                        Assert.Equal("Reviewed gear", (await effects.Activities.FindAsync(setup.Fixture.Activity))!.GearName);
+                        break;
+                    case "delete_saved_search":
+                        Assert.Null(await effects.SavedSearches.FindAsync(saved));
+                        break;
+                    case "save_saved_search":
+                        Assert.Equal("New search", (await effects.SavedSearches.FindAsync(completed.EntityId!.Value))!.Name);
+                        break;
+                    case "rename_saved_search":
+                        Assert.Equal("Renamed selection", (await effects.SavedSearches.FindAsync(saved))!.Name);
+                        break;
+                    case "create_route_from_activity":
+                    case "create_route_path":
+                        var route = await effects.Routes.FindAsync(completed.EntityId!.Value);
+                        Assert.NotNull(route);
+                        Assert.Equal(owner, route.OwnerId);
+                        Assert.Equal(request.Arguments.GetProperty("name").GetString(), route.Name);
+                        break;
+                    case "create_goal":
+                        Assert.Equal("Weekly goal", (await setup.Services.GetRequiredService<IGoalService>()
+                            .GetDetailAsync(completed.EntityId!.Value))!.Goal.Definition.Name);
+                        break;
+                    case "edit_goal":
+                        Assert.Equal(2000, (await setup.Services.GetRequiredService<IGoalService>()
+                            .GetDetailAsync(goalId))!.Edition!.Definition.Target);
+                        break;
+                    case "create_profile":
+                        Assert.Equal("New profile without implicit access", (await effects.Owners.FindAsync(completed.EntityId!.Value))!.DisplayName);
+                        break;
+                    case "update_profile_timezone":
+                        Assert.Equal("UTC", (await effects.Owners.FindAsync(owner))!.TimeZoneId);
+                        break;
+                    case "add_watched_folder":
+                        Assert.True(await effects.WatchedFolders.AnyAsync(folder => folder.OwnerId == owner && folder.Path == folderPath));
+                        break;
+                    case "remove_watched_folder":
+                        Assert.Null(await effects.WatchedFolders.FindAsync(folderId));
+                        break;
+                    case "delete_tag":
+                        Assert.Null(await effects.Tags.FindAsync(setup.Fixture.TagId));
+                        break;
+                    case "recompute_statistics":
+                        Assert.True(await effects.StatisticSnapshots.AnyAsync(item => item.OwnerId == owner));
+                        break;
+                    case "rebuild_exploration":
+                        Assert.True(await effects.ActivityExplorationIndexes.AnyAsync(item => item.ActivityId == setup.Fixture.Activity));
+                        break;
+                    case "set_map_privacy":
+                        Assert.Equal(MapPrivacyMode.Blank, await mapSettings.GetModeAsync());
+                        break;
+                }
+            }
             if (request.Action.StartsWith("export_", StringComparison.Ordinal))
             {
                 using var download = await setup.Client.GetAsync("/mcp/download/" + completed.OperationId);
@@ -292,46 +445,55 @@ public sealed partial class McpWriteTests
         }
         await using var routeUpload = new MemoryStream(Encoding.UTF8.GetBytes(TestSupport.Gpx()));
         var routeAsset = await setup.Writes.ApproveFileAsync(owner, "route.gpx", routeUpload, 1024 * 1024, CancellationToken.None);
-        var routePreview = await setup.Writes.PrepareAsync(Request("import_route", owner, new { assetId = routeAsset.Id, name = "Retained GPX route", sport = SportKind.Cycling }), CancellationToken.None);
+        var routePreview = await Prepare(Request("import_route", owner, new { assetId = routeAsset.Id, name = "Retained GPX route", sport = SportKind.Cycling }));
         await setup.Writes.ApproveAsync(routePreview.PlanId, null, CancellationToken.None);
         var importedRoute = await WaitAsync(setup.Writes, routePreview.PlanId);
         Assert.Equal("completed", importedRoute.Status);
         await using (var db = await setup.Fixture.Factory.CreateDbContextAsync())
         {
             var source = await db.SourceFiles.SingleAsync(item => item.RouteId == importedRoute.EntityId);
-            var original = await setup.Writes.PrepareAsync(Request("download_original", owner, new { sourceFileId = source.Id }), CancellationToken.None);
+            var original = await Prepare(Request("download_original", owner, new { sourceFileId = source.Id }));
             await setup.Writes.ApproveAsync(original.PlanId, null, CancellationToken.None);
             Assert.Equal("completed", (await WaitAsync(setup.Writes, original.PlanId)).Status);
             using var download = await setup.Client.GetAsync("/mcp/download/" + original.PlanId);
             Assert.Equal(HttpStatusCode.OK, download.StatusCode);
             Assert.Contains("gpx", await download.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }
-        var importPreview = await setup.Writes.PrepareAsync(Request("import_activities", owner, new { assetId = asset.Id, sourceKind = SourceKind.Gpx }), CancellationToken.None);
+        var importPreview = await Prepare(Request("import_activities", owner, new { assetId = asset.Id, sourceKind = SourceKind.Gpx }));
         await setup.Writes.ApproveAsync(importPreview.PlanId, null, CancellationToken.None);
-        Assert.Equal("Completed", (await WaitAsync(setup.Writes, importPreview.PlanId)).Status);
+        var imported = await WaitAsync(setup.Writes, importPreview.PlanId);
+        Assert.Equal("Completed", imported.Status);
+        await using (var importedData = await setup.Fixture.Factory.CreateDbContextAsync())
+            Assert.True(await importedData.SourceFiles.AnyAsync(file => file.ImportBatchId == imported.EntityId && file.ActivityId != null));
         var latestGoal = (await setup.Services.GetRequiredService<IGoalService>().GetDetailAsync(goalId))!;
-        var archive = await setup.Writes.PrepareAsync(Request("archive_goal", owner, new
+        var archive = await Prepare(Request("archive_goal", owner, new
         {
             goalId,
             request = new ArchiveGoalRequest(owner, goalId, latestGoal.Goal.MutationVersion, latestGoal.Edition!.Key, latestGoal.Edition.State)
-        }), CancellationToken.None);
+        }));
         await setup.Writes.ApproveAsync(archive.PlanId, null, CancellationToken.None);
         Assert.Equal("completed", (await WaitAsync(setup.Writes, archive.PlanId)).Status);
-        var transfer = await setup.Writes.PrepareAsync(Request("transfer_activity", owner, new { activityId = setup.Fixture.Activity, destinationProfileId = setup.Fixture.OtherOwner }), CancellationToken.None);
+        Assert.True((await setup.Services.GetRequiredService<IGoalService>().GetDetailAsync(goalId))!.Goal.Archived);
+        var transfer = await Prepare(Request("transfer_activity", owner, new { activityId = setup.Fixture.Activity, destinationProfileId = setup.Fixture.OtherOwner }));
         await setup.Writes.ApproveAsync(transfer.PlanId, null, CancellationToken.None);
         Assert.Equal("completed", (await WaitAsync(setup.Writes, transfer.PlanId)).Status);
-        var deleteActivities = await setup.Writes.PrepareAsync(Request("delete_activities", setup.Fixture.OtherOwner, new { activityIds = new[] { setup.Fixture.Activity } }), CancellationToken.None);
+        await using (var transferred = await setup.Fixture.Factory.CreateDbContextAsync())
+            Assert.Equal(setup.Fixture.OtherOwner, (await transferred.Activities.FindAsync(setup.Fixture.Activity))!.OwnerId);
+        var deleteActivities = await Prepare(Request("delete_activities", setup.Fixture.OtherOwner, new { activityIds = new[] { setup.Fixture.Activity } }));
         await setup.Writes.ApproveAsync(deleteActivities.PlanId, deleteActivities.ConfirmationPhrase, CancellationToken.None);
         Assert.Equal("completed", (await WaitAsync(setup.Writes, deleteActivities.PlanId)).Status);
+        await using (var deleted = await setup.Fixture.Factory.CreateDbContextAsync())
+            Assert.Null(await deleted.Activities.FindAsync(setup.Fixture.Activity));
         await using var unimported = new MemoryStream(Encoding.UTF8.GetBytes(TestSupport.Gpx()));
         var unimportedAsset = await setup.Writes.ApproveFileAsync(owner, "not-imported.gpx", unimported, 1024 * 1024, CancellationToken.None);
-        var deleteProfile = await setup.Writes.PrepareAsync(Request("delete_profile", owner, new { }), CancellationToken.None);
+        var deleteProfile = await Prepare(Request("delete_profile", owner, new { }));
         await setup.Writes.ApproveAsync(deleteProfile.PlanId, deleteProfile.ConfirmationPhrase, CancellationToken.None);
         Assert.Equal("completed", (await WaitAsync(setup.Writes, deleteProfile.PlanId)).Status);
         Assert.Equal("completed", (await setup.Writes.StatusAsync(deleteProfile.PlanId, CancellationToken.None)).Status);
         Assert.False(Directory.Exists(Path.Combine(setup.Fixture.DirectoryPath, "staging", "mcp-assets", unimportedAsset.Id.ToString("N"))));
         await Assert.ThrowsAsync<ArgumentException>(() => setup.Writes.ContextAsync(new(owner, "assets"), CancellationToken.None));
         await using var receipts = await setup.Fixture.Factory.CreateDbContextAsync();
+        Assert.Null(await receipts.Owners.FindAsync(owner));
         Assert.Equal(McpChangeCatalog.Actions.Order(StringComparer.Ordinal), (await receipts.McpOperations.Select(item => item.Action).Distinct().ToArrayAsync()).Order(StringComparer.Ordinal));
     }
 
@@ -581,13 +743,13 @@ public sealed partial class McpWriteTests
         }
     }
 
-    private sealed class Setup(McpFixture fixture, WebApplicationFactory<Program> app, HttpClient client, string? previousRoot) : IAsyncDisposable
+    private sealed class Setup(McpFixture fixture, WebApplicationFactory<Program> app, HttpClient client, IDisposable dataRoot) : IAsyncDisposable
     {
         public McpFixture Fixture => fixture;
         public HttpClient Client => client;
         public IServiceProvider Services => app.Services;
         public McpWriteService Writes => Services.GetRequiredService<McpWriteService>();
-        public static async Task<Setup> CreateAsync(bool allowExtra = true, TimeProvider? clock = null, Action<IWebHostBuilder>? configure = null)
+        public static async Task<Setup> CreateAsync(bool allowExtra = true, TimeProvider? clock = null, Action<IWebHostBuilder>? configure = null, bool useKestrel = false)
         {
             var fixture = await McpFixture.CreateAsync();
             await using (var db = await fixture.Factory.CreateDbContextAsync())
@@ -595,8 +757,7 @@ public sealed partial class McpWriteTests
                 await db.ImportBatches.ExecuteDeleteAsync();
                 await db.FileOperations.ExecuteDeleteAsync();
             }
-            var previous = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA");
-            Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", fixture.DirectoryPath);
+            var dataRoot = TestSupport.UseDataRoot(fixture.DirectoryPath);
             var app = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Production");
@@ -605,17 +766,37 @@ public sealed partial class McpWriteTests
                 if (allowExtra) builder.UseSetting("McpWrites:ProfileIds:1", fixture.OtherOwner.ToString());
                 builder.UseSetting("McpWrites:AllowDestructive", allowExtra.ToString());
                 builder.UseSetting("McpWrites:AllowAdministration", allowExtra.ToString());
+                if (useKestrel) builder.UseSetting("Urls", "http://127.0.0.1:0");
                 if (clock is not null) builder.ConfigureServices(services => services.AddSingleton(clock));
                 configure?.Invoke(builder);
             });
-            try { return new(fixture, app, app.CreateClient(), previous); }
-            catch { await app.DisposeAsync(); Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", previous); await fixture.DisposeAsync(); throw; }
+            try
+            {
+                if (useKestrel) app.UseKestrel(0);
+                return new(fixture, app, app.CreateClient(), dataRoot);
+            }
+            catch (Exception failure)
+            {
+                try { await CloseAsync(fixture, app, dataRoot); }
+                catch (Exception cleanup) { throw new AggregateException(failure, cleanup); }
+                throw;
+            }
         }
         public async ValueTask DisposeAsync()
         {
             client.Dispose();
-            await app.DisposeAsync();
-            Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", previousRoot);
+            await CloseAsync(fixture, app, dataRoot);
+        }
+
+        private static async Task CloseAsync(McpFixture fixture, WebApplicationFactory<Program> app, IDisposable dataRoot)
+        {
+            try { await app.DisposeAsync(); }
+            catch
+            {
+                TestRunStorage.ShutdownUnconfirmed = true;
+                throw;
+            }
+            finally { dataRoot.Dispose(); }
             await fixture.DisposeAsync();
         }
     }

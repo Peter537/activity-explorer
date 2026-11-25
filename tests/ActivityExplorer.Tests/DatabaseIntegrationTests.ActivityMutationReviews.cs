@@ -20,7 +20,7 @@ public sealed partial class DatabaseIntegrationTests
         var firstOwner = await setup.SeedOwnerAsync("Reviewed source");
         var secondOwner = await setup.SeedOwnerAsync("Reviewed destination");
         var storage = CreateStorageServices(setup);
-        var paths = new AppDataPaths();
+        var paths = TestSupport.DataPaths(setup.DataDirectory);
         var statistics = new StatisticsService(setup.Factory);
         var segments = new SegmentService(setup.Factory, new SegmentMatcher(), storage.OwnerLock);
         var service = new ActivityQueryService(setup.Factory, statistics, segments, storage.Originals, storage.FileOperations,

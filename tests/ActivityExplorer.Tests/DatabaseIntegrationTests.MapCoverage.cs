@@ -17,6 +17,7 @@ public sealed partial class DatabaseIntegrationTests
         const int routeCount = 112;
         var setup = await DatabaseSetup.CreateAsync();
         var owner = await setup.SeedOwnerAsync("Wrapped map geometry");
+        var isolatedOwner = await setup.SeedOwnerAsync("Single dense route");
         var points = Enumerable.Range(0, vertices).Select(index =>
         {
             var fraction = (double)index / (vertices - 1);
@@ -35,6 +36,9 @@ public sealed partial class DatabaseIntegrationTests
                 db.Routes.Add(row);
             }
             db.Routes.Add(Route("Invalid geometry", new byte[64], routeCount));
+            var isolated = Route("Single dense route", fullGeometry, 0);
+            isolated.OwnerId = isolatedOwner;
+            db.Routes.Add(isolated);
             await db.SaveChangesAsync();
         }
 
@@ -46,6 +50,15 @@ public sealed partial class DatabaseIntegrationTests
         var wideBytes = JsonSerializer.SerializeToUtf8Bytes(wide, JsonSerializerOptions.Web).Length;
         TestContext.Current.TestOutputHelper!.WriteLine($"Dense map routes ({routeCount} × {vertices} vertices). WKB {routeCount * (long)fullGeometry.Length:N0} bytes; display {wideBytes:N0} bytes; elapsed {Stopwatch.GetElapsedTime(start).TotalMilliseconds:N1} ms; process allocation delta {GC.GetTotalAllocatedBytes(precise: true) - allocated:N0} bytes.");
         var close = await service.GetRoutesAsync(view with { Zoom = 14 });
+        foreach (var (zoom, limit) in new[] { (4, 96), (8, 256), (14, 512) })
+        {
+            // With only one eligible route, the layer budget cannot mask a missing per-route cap.
+            var single = await service.GetRoutesAsync(view with { OwnerId = isolatedOwner, Zoom = zoom });
+            var coordinates = Assert.Single(single.Features).Geometry.Coordinates;
+            Assert.InRange(coordinates.Count, 2, limit);
+            Assert.Equal([points[0].Longitude!.Value, points[0].Latitude!.Value], coordinates[0]);
+            Assert.Equal([points[^1].Longitude!.Value, points[^1].Latitude!.Value], coordinates[^1]);
+        }
         Assert.Equal(new MapLayerCoverage(routeCount, routeCount + 1, 1000), wide.Coverage);
         Assert.True(wide.Coverage!.Truncated);
         var wideVertices = wide.Features.Sum(feature => feature.Geometry.Coordinates.Count);

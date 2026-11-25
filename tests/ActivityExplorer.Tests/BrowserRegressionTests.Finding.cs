@@ -15,8 +15,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Finding_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_FINDING_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_FINDING_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The finding preview fixture requires an empty directory.");
@@ -29,7 +28,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Import_finding_searches_older_batches_and_preserves_linked_scope_and_hidden_upload_polling()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedFindingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -131,7 +130,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Goal_finding_distinguishes_progress_and_finds_historical_editions_without_substitution()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedFindingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

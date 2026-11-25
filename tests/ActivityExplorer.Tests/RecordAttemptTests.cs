@@ -14,6 +14,7 @@ namespace ActivityExplorer.Tests;
 public sealed class RecordAttemptTests
 {
     private static readonly DateTimeOffset Start = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+    private static readonly Lazy<byte[]> StandardTrackPayload = new(() => TrackCodec.Encode(Track(10_000, 10)));
 
     [Fact]
     public void Six_kilometres_has_only_one_five_kilometre_attempt()
@@ -200,8 +201,7 @@ public sealed class RecordAttemptTests
         await using (var db = factory.CreateDbContext())
         {
             db.Owners.Add(owner);
-            var activity = Activity(owner.Id, "Summary ride", false);
-            activity.Stream!.CompressedPayload = [0, 1, 2];
+            var activity = Activity(owner.Id, "Summary ride", false, [0, 1, 2]);
             db.Activities.Add(activity);
             var shortActivity = Activity(owner.Id, "Short ride", false);
             shortActivity.DistanceMeters = 500;
@@ -236,10 +236,9 @@ public sealed class RecordAttemptTests
             db.Owners.AddRange(owner, other);
             for (var index = 0; index < 61; index++)
             {
-                var activity = Activity(owner.Id, $"History {index:00}", index % 2 == 0);
+                var activity = Activity(owner.Id, $"History {index:00}", index % 2 == 0, [0, 1, 2]);
                 activity.StartTimeUtc = Start.AddDays(index);
                 activity.DistanceMeters = 100_000 - index * 1_000;
-                activity.Stream!.CompressedPayload = [0, 1, 2];
                 db.Add(activity);
             }
             var otherActivity = Activity(other.Id, "Other history", false);
@@ -415,7 +414,7 @@ public sealed class RecordAttemptTests
         var ordered = windows.OrderBy(window => window.StartPosition).ToArray();
         for (var index = 1; index < ordered.Length; index++) Assert.True(ordered[index - 1].FinishPosition <= ordered[index].StartPosition);
     }
-    private static Activity Activity(Guid owner, string title, bool indoor) => new()
+    private static Activity Activity(Guid owner, string title, bool indoor, byte[]? payload = null) => new()
     {
         OwnerId = owner,
         Title = title,
@@ -427,7 +426,7 @@ public sealed class RecordAttemptTests
         MovingTimeSeconds = 1_000,
         ElevationGainMeters = 50,
         NaturalFingerprint = Guid.NewGuid().ToString("N"),
-        Stream = new() { OwnerId = owner, PointCount = 1_001, CompressedPayload = TrackCodec.Encode(Track(10_000, 10)) }
+        Stream = new() { OwnerId = owner, PointCount = 1_001, CompressedPayload = (payload ?? StandardTrackPayload.Value).ToArray() }
     };
     private static async Task<TestDbFactory> Database(DbCommandInterceptor? counter = null, int commandTimeout = 30)
     {

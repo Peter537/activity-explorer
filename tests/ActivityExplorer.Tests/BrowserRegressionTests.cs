@@ -22,11 +22,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Blank_maps_mobile_imports_and_navigation_are_browser_safe()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);
@@ -178,11 +174,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Timed_distance_records_render_in_order_with_semantic_responsive_tables()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);
@@ -371,11 +363,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Route_segment_creator_links_distance_elevation_map_direction_and_creation()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);
@@ -530,11 +518,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Activity_segment_creator_hides_source_indices_and_persists_the_visual_selection()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);
@@ -792,11 +776,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Activity_navigation_inspection_deletion_and_card_spacing_are_browser_safe()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);
@@ -910,11 +890,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Dashboard_and_activity_charts_expose_axes_exact_values_and_synchronized_pointer_inspection()
     {
-        if (!string.Equals(
-                Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS"),
-                "1",
-                StringComparison.Ordinal))
-            return;
+        TestSupport.RequireBrowser();
 
         var root = FindRepositoryRoot();
         var webAssembly = FindWebAssembly(root);

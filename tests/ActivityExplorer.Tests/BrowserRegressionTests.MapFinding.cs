@@ -15,8 +15,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Map_finding_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_MAP_FINDING_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_MAP_FINDING_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The map finding preview fixture requires an empty directory.");
@@ -31,7 +30,7 @@ public sealed partial class BrowserRegressionTests
     [InlineData(4)]
     public async Task Map_finding_reports_limits_skips_disabled_layers_and_discards_stale_results(int browserCpuRate)
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         await SeedMapFindingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -187,7 +186,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Map_finding_filters_new_cells_without_changing_discovery_totals_and_restores_world_camera()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         await SeedMapFindingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

@@ -8,7 +8,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Bulk_tag_membership_and_activity_deletion_refresh_open_manager_counts()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         const string tagName = "Synthetic live tag count";
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedOrganizationBrowserDataAsync(dataRoot);

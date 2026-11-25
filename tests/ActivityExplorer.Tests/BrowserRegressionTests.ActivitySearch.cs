@@ -14,8 +14,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Search_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_SEARCH_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_SEARCH_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The search preview fixture requires an empty directory.");
@@ -28,7 +27,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Activity_search_combines_criteria_before_paging_and_preserves_exact_bulk_membership()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedSearchBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -118,7 +117,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Activity_search_distinguishes_legacy_literal_and_word_saved_searches()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedSearchBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

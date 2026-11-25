@@ -24,7 +24,7 @@ public sealed class StatisticsBestEffortTests
                 };
                 var ascending = targets.Select(target => target.Target).Order().ToArray();
                 Assert.Equal(ascending, targets.Select(target => target.Target));
-                Assert.Equal(ascending, targets.OrderBy(target => RecordCatalog.TargetOrder(sport, kind, target.Key))
+                Assert.Equal(ascending, targets.Reverse().OrderBy(target => RecordCatalog.TargetOrder(sport, kind, target.Key))
                     .Select(target => target.Target));
             }
         }

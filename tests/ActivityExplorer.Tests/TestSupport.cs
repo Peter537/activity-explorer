@@ -1,15 +1,43 @@
 using System.IO.Compression;
 using ActivityExplorer.Core.Domain;
+using ActivityExplorer.Infrastructure.Storage;
 
 namespace ActivityExplorer.Tests;
 
 internal static class TestSupport
 {
-    public static string NewDirectory()
+    public static string NewDirectory() => TestRunStorage.NewDirectory();
+
+    public static void RequireBrowser() =>
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") == "1",
+            "Set ACTIVITY_EXPLORER_BROWSER_TESTS=1 to run standalone browser regressions.");
+
+    public static void RequireWindows() =>
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "This case exercises Windows file-system behavior.");
+
+    public static string ConfiguredPath(string variable)
     {
-        var path = Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "runtime", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(path);
-        return path;
+        var path = Environment.GetEnvironmentVariable(variable);
+        Assert.SkipWhen(string.IsNullOrWhiteSpace(path), $"Set {variable} to enable this case.");
+        return path!;
+    }
+
+    public static IDisposable UseDataRoot(string root) => new DataRootScope(root);
+
+    public static AppDataPaths DataPaths(string root)
+    {
+        using var scope = UseDataRoot(root);
+        return new();
+    }
+
+    private sealed class DataRootScope : IDisposable
+    {
+        private const string Variable = "ACTIVITY_EXPLORER_DATA";
+        private readonly string? previous = Environment.GetEnvironmentVariable(Variable);
+
+        public DataRootScope(string root) => Environment.SetEnvironmentVariable(Variable, root);
+
+        public void Dispose() => Environment.SetEnvironmentVariable(Variable, previous);
     }
 
     public static string Write(string directory, string name, string content)

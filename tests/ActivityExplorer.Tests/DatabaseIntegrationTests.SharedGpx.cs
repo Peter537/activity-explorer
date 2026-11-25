@@ -90,7 +90,7 @@ public sealed partial class DatabaseIntegrationTests
         await using (var db = await setup.Factory.CreateDbContextAsync())
             owner = await db.Owners.Select(x => x.Id).SingleAsync();
         var storage = CreateStorageServices(setup);
-        var paths = new AppDataPaths();
+        var paths = TestSupport.DataPaths(setup.DataDirectory);
         var routes = new RouteService(setup.Factory, storage.Originals, storage.FileOperations, storage.OwnerLock);
         var content = TestSupport.Gpx();
 

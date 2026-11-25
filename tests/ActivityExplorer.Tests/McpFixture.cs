@@ -74,7 +74,12 @@ internal sealed class McpFixture : IAsyncDisposable
             await new StatisticsService(fixture.Factory).RecomputeAsync(fixture.Owner);
             return fixture;
         }
-        catch { await fixture.DisposeAsync(); throw; }
+        catch (Exception failure)
+        {
+            try { await fixture.DisposeAsync(); }
+            catch (Exception cleanup) { throw new AggregateException(failure, cleanup); }
+            throw;
+        }
     }
 
     private static Core.Domain.Activity MakeActivity(Guid owner, string title, double distance, double seconds, IReadOnlyList<TrackPoint> points)
@@ -105,20 +110,15 @@ internal sealed class McpFixture : IAsyncDisposable
 
     public IHost BuildHost(params string[] args)
     {
-        var previous = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA");
-        Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", DirectoryPath);
-        try { return McpHost.Build(args); }
-        finally { Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", previous); }
+        using var scope = TestSupport.UseDataRoot(DirectoryPath);
+        return McpHost.Build(args);
     }
 
     public ValueTask DisposeAsync()
     {
+        if (TestRunStorage.ShutdownUnconfirmed) return ValueTask.CompletedTask;
         SqliteConnection.ClearAllPools();
-        var expectedRoot = Path.GetFullPath(Path.Combine(System.IO.Directory.GetCurrentDirectory(), "TestResults", "runtime")) + Path.DirectorySeparatorChar;
-        if (!Path.GetFullPath(DirectoryPath).StartsWith(expectedRoot, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The fixture path escaped the test runtime directory.");
-        if (System.IO.Directory.Exists(DirectoryPath)) System.IO.Directory.Delete(DirectoryPath, recursive: true);
-        return ValueTask.CompletedTask;
+        return new(TestRunStorage.DeleteFixtureAsync(DirectoryPath));
     }
 
     private sealed class FactoryImpl(DbContextOptions<ExplorerDbContext> options) : IDbContextFactory<ExplorerDbContext>

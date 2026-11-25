@@ -15,8 +15,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Exploration_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_EXPLORATION_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_EXPLORATION_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The exploration preview fixture requires an empty directory.");
@@ -29,7 +28,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Exploration_map_indexes_all_history_and_preserves_views_dates_selection_and_blank_privacy()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedExplorationBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

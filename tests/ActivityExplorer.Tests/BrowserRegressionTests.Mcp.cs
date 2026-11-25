@@ -2,7 +2,6 @@ using System.Text;
 using ActivityExplorer.Mcp;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Playwright;
-using ModelContextProtocol.Client;
 using static Microsoft.Playwright.Assertions;
 
 namespace ActivityExplorer.Tests;
@@ -12,9 +11,9 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Mcp_web_review_file_selection_decline_and_stale_changes_are_browser_safe()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         await using var runtime = await McpWriteRuntime.StartAsync();
-        await using var client = await McpClient.CreateAsync(McpWriteStdioTests.Transport(runtime.Fixture));
+        var client = await runtime.CreateClientAsync();
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
         var context = await browser.NewContextAsync(new BrowserNewContextOptions { ViewportSize = new() { Width = 375, Height = 900 }, ReducedMotion = ReducedMotion.Reduce });

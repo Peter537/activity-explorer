@@ -1,6 +1,6 @@
 # Testing
 
-The default test suite is deterministic and uses synthetic, fictional data. It makes no live Garmin, Strava, OpenFreeMap, or OpenStreetMap request. Browser regressions run only when explicitly enabled.
+The default test suite uses synthetic data and makes no live Garmin, Strava, OpenFreeMap, or OpenStreetMap request. Browser regressions, preview generators, and database workloads report a skip until explicitly enabled. Individual Windows file-sharing and native-copy tests report a skip on other platforms. Configured pressure workloads require Windows. Run-owned runtime fixtures are created under the system temp directory and removed at assembly teardown. The test host logs its PID and run folder name when it creates the first fixture. After forced termination, locate that folder under the test host's temp directory and clean it up once the test host and its child processes have exited.
 
 For opt-in production-query profiling at 1×, 10×, 100× and 1000×, see [Database scale testing](database-load-testing.md). It includes isolated relationship-preserving fixtures, paired before/after measurements, query plans and visual reports.
 
@@ -132,8 +132,10 @@ The search/finding previews use the following opt-in fixture variables. Give eac
 | Route/segment/effort finding and organization pickers | `ACTIVITY_EXPLORER_LIBRARY_PREVIEW_DATA` | `*Library_preview_fixture*` |
 | Map limits, layers, and new-cell finding | `ACTIVITY_EXPLORER_MAP_FINDING_PREVIEW_DATA` | `*Map_finding_preview_fixture*` |
 | Shared searches on Lines, Dashboard, and Calendar | `ACTIVITY_EXPLORER_CROSS_VIEW_PREVIEW_DATA` | `*Cross_view_preview_fixture*` |
-| Import-history and goal finding | `ACTIVITY_EXPLORER_FINDING_PREVIEW_DATA` | `Finding_preview_fixture_is_created_only_when_explicitly_requested` |
+| Import-history and goal finding | `ACTIVITY_EXPLORER_FINDING_PREVIEW_DATA` | `ActivityExplorer.Tests.BrowserRegressionTests.Finding_preview_fixture_is_created_only_when_explicitly_requested` |
 | Period-specific Records | `ACTIVITY_EXPLORER_PERIOD_RECORDS_PREVIEW_DATA` | `*Period_records_preview_fixture*` |
+| Reporting totals, dates, and deletion | `ACTIVITY_EXPLORER_REPORTING_PREVIEW_DATA` | `*Reporting_preview_fixture*` |
+| Dashboard, calendar, and benchmark progress | `ACTIVITY_EXPLORER_PROGRESS_PREVIEW_DATA` | `*Progress_preview_fixture*` |
 
 For example, from the repository root after the Release build:
 

@@ -16,8 +16,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Goals_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_GOALS_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_GOALS_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The goals preview fixture requires an empty directory.");
@@ -30,7 +29,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Goals_create_all_metrics_and_preserve_current_and_scheduled_edits_with_stale_recovery()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedGoalsBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -146,7 +145,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Goals_history_contributors_profiles_dashboard_and_retry_preserve_truth_and_navigation()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedGoalsBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

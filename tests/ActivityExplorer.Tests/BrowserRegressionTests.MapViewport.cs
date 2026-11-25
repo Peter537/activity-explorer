@@ -13,7 +13,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Map_viewport_follows_accepted_pans_and_offers_keyboard_details_for_dense_results()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedMapFindingBrowserDataAsync(dataRoot);
         const int vertices = 200_000;

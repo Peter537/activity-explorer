@@ -14,8 +14,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Reporting_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_REPORTING_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_REPORTING_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The reporting preview fixture requires an empty directory.");
@@ -28,7 +27,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Reporting_totals_dates_and_deletion_follow_the_applied_filter()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedReportingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -176,7 +175,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Reporting_map_preserves_relative_dates_owner_membership_and_blank_privacy()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedReportingBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";

@@ -13,7 +13,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Benchmark_attempts_preserve_links_modes_context_and_responsive_tables()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var root = FindRepositoryRoot();
         var dataRoot = TestSupport.NewDirectory();
         var options = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite($"Data Source={Path.Combine(dataRoot, "activity-explorer.db")}").Options;

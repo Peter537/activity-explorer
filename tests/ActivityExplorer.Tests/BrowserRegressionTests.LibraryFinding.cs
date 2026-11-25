@@ -15,8 +15,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Library_preview_fixture_is_created_only_when_explicitly_requested()
     {
-        var requestedPath = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_LIBRARY_PREVIEW_DATA");
-        if (string.IsNullOrWhiteSpace(requestedPath)) return;
+        var requestedPath = TestSupport.ConfiguredPath("ACTIVITY_EXPLORER_LIBRARY_PREVIEW_DATA");
         var path = Path.GetFullPath(requestedPath);
         if (Directory.Exists(path) && Directory.EnumerateFileSystemEntries(path).Any())
             throw new InvalidOperationException("The library preview fixture requires an empty directory.");
@@ -29,7 +28,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Library_finding_preserves_route_order_selected_tags_and_recorded_power_summaries()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedLibraryBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
@@ -126,7 +125,7 @@ public sealed partial class BrowserRegressionTests
     [Fact]
     public async Task Library_finding_keeps_shared_ancestors_and_exact_repeated_pass_comparisons()
     {
-        if (Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_BROWSER_TESTS") != "1") return;
+        TestSupport.RequireBrowser();
         var dataRoot = TestSupport.NewDirectory();
         var seed = await SeedLibraryBrowserDataAsync(dataRoot);
         var origin = $"http://127.0.0.1:{ReservePort()}";
