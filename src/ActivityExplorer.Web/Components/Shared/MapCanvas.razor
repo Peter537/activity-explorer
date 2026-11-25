@@ -18,10 +18,10 @@
 }
 @if (ShowLoadStatus && !_cellsView)
 {
-    <div class="map-load-status map-line-coverage" role="status" aria-live="polite">
+    <div class="map-load-status map-line-coverage">
         @if (!EnabledLineLayers.Any()) { <p>All line layers are hidden.</p> }
         @if (LineStatuses.Any(layer => layer.Failed)) { <p class="notice error" role="alert">Some map lines could not be loaded. Retry to refresh this view.</p> }
-        @if (EnabledLineLayers.Any() && LineStatuses.All(layer => !layer.Loading && !layer.Failed && layer.ReturnedCount == 0)) { <p>No lines in this view. Adjust the filters or zoom out.</p> }
+        @if (EnabledLineLayers.Any() && LineStatuses.All(layer => !layer.Loading && !layer.Failed && layer.MatchingCount == 0)) { <p>No lines in this view. Adjust the filters or zoom out.</p> }
         @foreach (var layer in LineStatuses)
         {
             <p data-map-line-layer="@layer.Layer" class="@(layer.Failed ? "notice error" : null)">@LineDescription(layer)</p>
@@ -36,6 +36,10 @@
         @if (LineStatuses.Any(layer => layer.Failed)) { <button class="button" type="button" @onclick="RetryLayersAsync">Retry map lines</button> }
         @if (!string.IsNullOrWhiteSpace(ActivityUrl)) { <p class="muted">Activity lines include activities with usable GPS geometry.</p> }
     </div>
+}
+@if (ShowViewportResults)
+{
+    <section id="@($"{_id}-viewport")" class="map-viewport-results" aria-labelledby="@($"{_id}-viewport-heading")" hidden></section>
 }
 @if (Editable)
 {
@@ -73,7 +77,9 @@
     [Parameter] public bool ShowSelectionEndpoints { get; set; }
     [Parameter] public string? InspectionGroupId { get; set; }
     [Parameter] public bool ShowDisclosure { get; set; }
+    [Parameter] public bool ForceBlank { get; set; }
     [Parameter] public bool ShowLoadStatus { get; set; }
+    [Parameter] public bool ShowViewportResults { get; set; }
     [Parameter] public string? CameraStorageKey { get; set; }
     [Parameter] public bool Editable { get; set; }
     [Parameter] public EventCallback<IReadOnlyList<TrackPoint>> PointsChanged { get; set; }
@@ -109,7 +115,7 @@
     private (string?, string?, string?, string?, string?, string, int?) CurrentLayers =>
         (ActivityUrl, RouteUrl, SegmentUrl, ExplorationUrl, ExplorationView, Label, SelectedCellId);
 
-    protected override async Task OnInitializedAsync() => _mode = await MapSettings.GetModeAsync();
+    protected override async Task OnInitializedAsync() => _mode = ForceBlank ? MapPrivacyMode.Blank : await MapSettings.GetModeAsync();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -212,6 +218,7 @@
             editable = Editable,
             label = Label,
             reportLoadStatus = ShowLoadStatus,
+            viewportListId = ShowViewportResults ? $"{_id}-viewport" : null,
             cameraStorageKey = CameraStorageKey,
             describedBy = Editable ? $"{_id}-instructions" : null
         }, _reference);
@@ -270,8 +277,8 @@
         if (layer.Loading) return $"Loading {layer.Layer}...";
         if (layer.Failed) return $"{label} could not be loaded. Retry map lines to refresh this layer.";
         if (layer.Truncated)
-            return $"Showing newest {layer.ReturnedCount:N0} of {layer.MatchingCount:N0} matching {layer.Layer} in this viewport. " +
-                (layer.Layer == "activities" ? "Narrow the activity dates or zoom in to see older matches." : "Zoom in or select a sport to see older matches.");
+            return $"Showing {layer.ReturnedCount:N0} of {layer.MatchingCount:N0} matching {layer.Layer} in this viewport. " +
+                (layer.Layer == "activities" ? "Narrow the activity dates or zoom in to see more matches." : "Zoom in or select a sport to see more matches.");
         return layer.ReturnedCount == 0 ? $"No matching {layer.Layer} in this viewport." :
             $"{layer.ReturnedCount:N0} matching {layer.Layer} in this viewport.";
     }

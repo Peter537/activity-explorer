@@ -126,6 +126,8 @@ public sealed class FileOperationCoordinator(
     internal Func<Stream, Stream, CancellationToken, Task> CopyAsync { get; init; } =
         static (source, destination, token) => source.CopyToAsync(destination, token);
     internal Action<string> DeleteFile { get; init; } = File.Delete;
+    internal Action<string, string> MoveFile { get; init; } = File.Move;
+    internal Action<string, bool> DeleteDirectory { get; init; } = Directory.Delete;
 
     public async Task<PreparedFileOperation> PrepareCopyAsync(
         Guid ownerId,
@@ -200,7 +202,7 @@ public sealed class FileOperationCoordinator(
     public async Task<Guid?> QuarantineOwnerAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
         var source = ManagedPathGuard.ResolveUnder(paths.OriginalsPath, Path.Combine(paths.OriginalsPath, ownerId.ToString("N")));
-        if (!Directory.Exists(source)) return null;
+        if (!HasQuarantinePath(source, directory: true)) return null;
         var operation = new FileOperationJournal
         {
             Kind = FileOperationKind.OwnerQuarantine,
@@ -228,7 +230,7 @@ public sealed class FileOperationCoordinator(
     {
         var source = originals.ResolveStoredPath(storedPath);
         _ = ManagedPathGuard.ResolveUnder(paths.GetOwnerOriginalsPath(ownerId), source);
-        if (!File.Exists(source)) return null;
+        if (!HasQuarantinePath(source, directory: false)) return null;
 
         var operation = new FileOperationJournal
         {
@@ -272,26 +274,22 @@ public sealed class FileOperationCoordinator(
                 if (File.Exists(source)) File.Delete(source);
             }
         }
-        else if (operation.Kind == FileOperationKind.OwnerQuarantine && operation.TargetRelativePath is not null)
+        else if (operation.Kind == FileOperationKind.OwnerQuarantine)
         {
-            var quarantine = ManagedPathGuard.ResolveUnder(paths.QuarantinePath,
-                Path.Combine(paths.Root, operation.TargetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            if (Directory.Exists(quarantine)) Directory.Delete(quarantine, true);
+            var (_, quarantine) = ResolveQuarantinePaths(operation);
+            if (await db.Owners.AsNoTracking().AnyAsync(x => x.Id == operation.OwnerId, cancellationToken))
+                throw new InvalidOperationException("The quarantined profile still exists and its originals cannot be deleted.");
+            if (HasQuarantinePath(quarantine, directory: true)) DeleteDirectory(quarantine, true);
         }
-        else if (operation.Kind == FileOperationKind.FileQuarantine &&
-                 operation.SourceRelativePath is not null && operation.TargetRelativePath is not null)
+        else if (operation.Kind == FileOperationKind.FileQuarantine)
         {
+            var (_, quarantine) = ResolveQuarantinePaths(operation);
             var referenced = await db.SourceFiles.AsNoTracking()
                 .AnyAsync(x => x.StoredPath == operation.SourceRelativePath, cancellationToken);
             if (referenced)
                 throw new InvalidOperationException("The quarantined original is still referenced and cannot be deleted.");
-            var quarantine = ManagedPathGuard.ResolveUnder(paths.QuarantinePath,
-                Path.Combine(paths.Root, operation.TargetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            if (File.Exists(quarantine)) File.Delete(quarantine);
-            var quarantineDirectory = Path.GetDirectoryName(quarantine);
-            if (quarantineDirectory is not null && Directory.Exists(quarantineDirectory) &&
-                !Directory.EnumerateFileSystemEntries(quarantineDirectory).Any())
-                Directory.Delete(quarantineDirectory);
+            if (HasQuarantinePath(quarantine, directory: false)) DeleteFile(quarantine);
+            RemoveEmptyFileQuarantineDirectory(quarantine);
         }
 
         operation.State = FileOperationState.Completed;
@@ -314,35 +312,68 @@ public sealed class FileOperationCoordinator(
                 if (File.Exists(target)) DeleteFile(target);
             }
         }
-        else if (operation.Kind == FileOperationKind.OwnerQuarantine &&
-                 operation.SourceRelativePath is not null && operation.TargetRelativePath is not null)
+        else if (operation.Kind is FileOperationKind.OwnerQuarantine or FileOperationKind.FileQuarantine)
         {
-            var source = ManagedPathGuard.ResolveUnder(paths.OriginalsPath,
-                Path.Combine(paths.Root, operation.SourceRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            var target = ManagedPathGuard.ResolveUnder(paths.QuarantinePath,
-                Path.Combine(paths.Root, operation.TargetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            if (Directory.Exists(target) && !Directory.Exists(source)) Directory.Move(target, source);
-        }
-        else if (operation.Kind == FileOperationKind.FileQuarantine &&
-                 operation.SourceRelativePath is not null && operation.TargetRelativePath is not null)
-        {
-            var source = ManagedPathGuard.ResolveUnder(paths.OriginalsPath,
-                Path.Combine(paths.Root, operation.SourceRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            var target = ManagedPathGuard.ResolveUnder(paths.QuarantinePath,
-                Path.Combine(paths.Root, operation.TargetRelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            if (File.Exists(target) && !File.Exists(source))
+            var (source, target) = ResolveQuarantinePaths(operation);
+            var directory = operation.Kind == FileOperationKind.OwnerQuarantine;
+            var hasSource = HasQuarantinePath(source, directory);
+            var hasTarget = HasQuarantinePath(target, directory);
+            if (hasSource && hasTarget)
+                throw new InvalidDataException("The original and quarantine both exist. Recovery cannot choose between them.");
+            if (!hasSource && !hasTarget)
+                throw new InvalidDataException("The original and quarantine are both missing. Recovery cannot restore the original.");
+            if (hasTarget)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(source)!);
-                File.Move(target, source);
+                if (directory) Directory.Move(target, source);
+                else
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+                    MoveFile(target, source);
+                }
             }
-            var quarantineDirectory = Path.GetDirectoryName(target);
-            if (quarantineDirectory is not null && Directory.Exists(quarantineDirectory) &&
-                !Directory.EnumerateFileSystemEntries(quarantineDirectory).Any())
-                Directory.Delete(quarantineDirectory);
+            if (!directory) RemoveEmptyFileQuarantineDirectory(target);
         }
         operation.State = FileOperationState.RolledBack;
+        operation.ErrorMessage = null;
         operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private (string Source, string Target) ResolveQuarantinePaths(FileOperationJournal operation)
+    {
+        if (operation.OwnerId is not Guid ownerId ||
+            string.IsNullOrWhiteSpace(operation.SourceRelativePath) ||
+            string.IsNullOrWhiteSpace(operation.TargetRelativePath))
+            throw new InvalidDataException("The quarantine journal is missing its owner or paths.");
+
+        var ownerDirectory = ManagedPathGuard.ResolveUnder(paths.OriginalsPath, ownerId.ToString("N"));
+        var source = ManagedPathGuard.ResolveUnder(ownerDirectory, Path.Combine(paths.Root, operation.SourceRelativePath));
+        var operationDirectory = ManagedPathGuard.ResolveUnder(paths.QuarantinePath, operation.Id.ToString("N"));
+        var target = ManagedPathGuard.ResolveUnder(operationDirectory, Path.Combine(paths.Root, operation.TargetRelativePath));
+        var directory = operation.Kind == FileOperationKind.OwnerQuarantine;
+        var expectedTarget = directory ? operationDirectory : Path.Combine(operationDirectory, Path.GetFileName(source));
+        if ((Path.GetRelativePath(ownerDirectory, source) == ".") != directory ||
+            Path.GetRelativePath(expectedTarget, target) != ".")
+            throw new InvalidDataException("The quarantine paths do not match the journal owner and operation.");
+        return (source, target);
+    }
+
+    private static bool HasQuarantinePath(string path, bool directory)
+    {
+        FileAttributes attributes;
+        try { attributes = File.GetAttributes(path); }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        if (attributes.HasFlag(FileAttributes.Directory) != directory || attributes.HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidDataException("A quarantine operation path has an unexpected type.");
+        return true;
+    }
+
+    private void RemoveEmptyFileQuarantineDirectory(string quarantine)
+    {
+        var directory = Path.GetDirectoryName(quarantine)!;
+        if (HasQuarantinePath(directory, directory: true) && !Directory.EnumerateFileSystemEntries(directory).Any())
+            DeleteDirectory(directory, false);
     }
 
     public async Task RecoverAsync(CancellationToken cancellationToken = default)
@@ -384,7 +415,7 @@ public sealed class FileOperationCoordinator(
                 }
                 else
                 {
-                    throw new InvalidOperationException($"Unsupported file operation kind {operation.Kind}.");
+                    throw new InvalidDataException($"Unsupported file operation kind {operation.Kind}.");
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -393,29 +424,22 @@ public sealed class FileOperationCoordinator(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Could not recover file operation {OperationId}.", operation.Id);
-                if (operation.Kind == FileOperationKind.Copy && exception is IOException or UnauthorizedAccessException)
-                    await RecordRecoveryErrorAsync(operation.Id, exception.Message);
+                var terminal = exception is InvalidDataException ||
+                    (operation.Kind == FileOperationKind.Copy && exception is not (IOException or UnauthorizedAccessException));
+                if (terminal)
+                    logger.LogError(exception, "File operation {OperationId} cannot be recovered automatically.", operation.Id);
                 else
-                    await MarkFailedAsync(operation.Id, exception.Message);
+                    logger.LogWarning(exception, "Could not recover file operation {OperationId}; recovery will retry.", operation.Id);
+                await RecordRecoveryErrorAsync(operation.Id, exception.Message, terminal);
             }
         }
     }
 
-    private async Task MarkFailedAsync(Guid operationId, string message)
+    private async Task RecordRecoveryErrorAsync(Guid operationId, string message, bool terminal)
     {
         await using var db = await contextFactory.CreateDbContextAsync();
         var operation = await db.FileOperations.SingleAsync(x => x.Id == operationId);
-        operation.State = FileOperationState.Failed;
-        operation.ErrorMessage = SafeMessage(message);
-        operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
-    }
-
-    private async Task RecordRecoveryErrorAsync(Guid operationId, string message)
-    {
-        await using var db = await contextFactory.CreateDbContextAsync();
-        var operation = await db.FileOperations.SingleAsync(x => x.Id == operationId);
+        if (terminal) operation.State = FileOperationState.Failed;
         operation.ErrorMessage = SafeMessage(message);
         operation.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();

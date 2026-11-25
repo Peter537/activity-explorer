@@ -95,7 +95,7 @@
             _deleting = null;
             _confirmation = "";
             _message = deleted.FileCleanupPending
-                ? "Profile data was permanently deleted. Copied-file cleanup is pending and will be retried at startup."
+                ? "Profile data was permanently deleted. The app will retry pending file cleanup."
                 : "Profile data and copied originals were permanently deleted.";
             await ProfileState.RefreshAsync();
         }

@@ -22,6 +22,8 @@ Activity Explorer supports five local creation workflows:
 
 Text path formats must contain exactly one directional line. FIT activity files are not accepted by the segment-path workflow; use the normal activity importer and select the required portion instead. MultiLineString or multi-track files must be reduced to one path before import.
 
+GPX uploads for either routes or segments require one route or one track with a single track segment and at least two valid points. Split tracks and files containing both a route and a track must be separated before import. Standalone waypoints and extension data are omitted. Activity imports use their own recording parser.
+
 The resulting record stores owner and sport, ordered WKB geometry and bounds, distance, elevation summary, tolerance, and limited provenance. Imported-file provenance is only the safe base file name and normalized format. The staged upload is deleted after parsing and is not placed in managed originals. Provider UUIDs and IDs, leader times, leaderboards, popularity, and other-athlete fields are neither exposed by the parser nor persisted.
 
 The shared visual creator starts with the complete GPS path selected. On route detail it remains embedded; on activity detail a focused page keeps the long activity screen compact. Its linked start/end range controls snap to recorded GPS points and provide keyboard-operable backward/forward nudges. The full path remains visible while the selected portion, directional endpoints, distance axis, available elevation samples, and resulting metrics update together. Activity selections retain their original stream positions internally so the saved segment uses the exact inclusive source slice without showing implementation indices. Missing elevation is reported as not recorded and never prevents creating a GPS segment; no synthetic elevation is added. The matching tips are advisory and do not add a minimum distance beyond the requirement for two usable GPS points.
@@ -48,7 +50,7 @@ Relationships store no duplicate tracks or efforts. Creating a child saves its d
 
 The implementation follows these stages:
 
-1. Use bounding boxes expanded by tolerance to remove impossible activities.
+1. Use bounding boxes expanded by tolerance to remove impossible activities. Longitude overlap follows the stored circular intervals across the antimeridian and accounts for how longitude distances shrink near the poles.
 2. Retain original stream indices while rejecting candidates without enough usable GPS points.
 3. Group chronological samples near the segment's start and end into proximity runs and consider ordered start-to-end slices, including finishes after a return to the start.
 4. Resample the segment and each continuous candidate slice at shared distance-relative positions, approximately every 10 metres. Alignment is capped at 50,001 samples; definitions longer than 500 km use evenly spaced normalized samples within that fixed analysis budget.

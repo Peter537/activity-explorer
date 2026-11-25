@@ -41,15 +41,8 @@ public sealed record BadgeLevel(long Points, long Level, long LevelStartPoints, 
     private static long Threshold(long index) => checked(5 * index * index);
 }
 
-public sealed record BadgeSnapshot(
-    Guid OwnerId, string OwnerName, string TimeZoneId, int FirstYear, DateOnly Month,
-    DateOnly AsOf, DateOnly Today, IReadOnlyList<BadgeEdition> Editions)
-{
-    public BadgeLevel Level => BadgeLevel.FromPoints(Editions.Where(x => x.Status == BadgeStatus.Completed).Sum(x => (long)x.Definition.Points));
-    public int EarnedCount => Editions.Count(x => x.Status == BadgeStatus.Completed);
-    public IReadOnlyList<BadgeEdition> ForMonth => Editions.Where(x => x.StartsOn is null ||
-        x.StartsOn <= Month.AddMonths(1).AddDays(-1) && x.EndsOn >= Month).ToArray();
-}
-
 public sealed record BadgeProfileOverview(Guid OwnerId, string Name, BadgeLevel? Level, int EarnedCount, DateOnly? AsOf, string? Error);
-public sealed record BadgeDetail(BadgeSnapshot Snapshot, BadgeEdition Selected, IReadOnlyList<BadgeEdition> Related);
+public sealed record BadgeDetail(BadgeSnapshot Snapshot, BadgeEdition Selected)
+{
+    public IEnumerable<BadgeEdition> Related => Snapshot.EnumerateFamily(Selected.Definition.FamilyId);
+}

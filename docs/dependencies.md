@@ -6,9 +6,8 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 
 | Dependency | Pinned version | Purpose | License / terms |
 | --- | ---: | --- | --- |
-| .NET SDK (local baseline) | 10.0.303 | Local build toolchain | MIT |
-| .NET SDK (Docker build) | 10.0.400 | Container build toolchain | MIT |
-| ASP.NET Core runtime/container | 10.0.11 | Blazor web runtime | MIT |
+| .NET SDK (local and Docker build) | 10.0.404 | Build toolchain | MIT |
+| ASP.NET Core runtime/container | 10.0.15 | Blazor web runtime | MIT |
 | Microsoft.AspNetCore.Mvc.Testing | 10.0.11 | Web integration testing | MIT |
 | Entity Framework Core SQLite | 10.0.11 | ORM and schema creation | MIT |
 | Microsoft.Extensions.Hosting.Abstractions | 10.0.11 | Hosted-service contracts | MIT |
@@ -18,7 +17,7 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 | Garmin.FIT.Sdk | 21.212.0 | FIT decoding | Garmin FIT Protocol License |
 | NetTopologySuite | 2.6.0 | WKB geometry | BSD-3-Clause |
 | SQLitePCLRaw.bundle_e_sqlite3 | 3.0.5 | Native SQLite bundle | Apache-2.0; SQLite is public domain |
-| MapLibre GL JS | 6.2.0 | Locally served ESM map renderer | BSD-3-Clause |
+| MapLibre GL JS | 6.4.1 | Locally served ESM map renderer | BSD-3-Clause |
 | Microsoft.Testing.Platform | 2.5.1 | .NET 10 test runner | MIT |
 | Microsoft.Testing.Platform.MSBuild | 2.5.1 | Test entry point and build integration; explicit pin replaces the deprecated transitive version | MIT |
 | xunit.v3.mtp-v2 | 3.2.2 | Test framework with MTP v2 integration | Apache-2.0 |
@@ -31,12 +30,12 @@ Activity Explorer source is MIT licensed. Dependencies and data providers retain
 
 The Docker build uses these multi-architecture image digests:
 
-- `mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c`
-- `mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94`
+- `mcr.microsoft.com/dotnet/sdk:10.0.404@sha256:8c6edfb26c85153f236d26efebd9ad349aec403583f343f201ee67838b23658d`
+- `mcr.microsoft.com/dotnet/aspnet:10.0.15@sha256:aac50ceef10391e78a899e3d2ccd00bbafa2dcb56ccf4586cbccf00edb84fc21`
 
 ## MapLibre provenance
 
-The vendored ESM bundle, worker, shared module, source maps, CSS, and license came from the official `maplibre-gl@6.2.0` npm tarball. `src/ActivityExplorer.Web/wwwroot/vendor/MAPLIBRE-PROVENANCE.json` records the source URL, retrieval time, npm SHA-512 integrity value, tarball SHA-512, and a SHA-256 for each retained file. Do not replace these files without regenerating and reviewing that metadata.
+The vendored ESM bundle, worker, shared module, source maps, CSS, and license came from the official `maplibre-gl@6.4.1` npm tarball. `src/ActivityExplorer.Web/wwwroot/vendor/MAPLIBRE-PROVENANCE.json` records the source URL, retrieval time, npm SHA-512 integrity value, tarball SHA-512, and a SHA-256 for each retained runtime asset. Regenerate and review that metadata when replacing the assets.
 
 Blank map mode is the default and makes no OpenFreeMap request. When online maps are enabled, visible OpenStreetMap attribution must remain. Changing the configured style requires a fresh privacy, attribution, CSP, and provider-terms review.
 

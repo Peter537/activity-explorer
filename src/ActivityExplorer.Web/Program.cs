@@ -42,6 +42,8 @@ builder.Services.AddScoped<ProfileState>();
 builder.Services.AddSingleton<MultipartUploadReader>();
 builder.Services.AddSingleton(McpWriteOptions.Read(builder.Configuration));
 builder.Services.AddSingleton<McpWriteService>();
+builder.Services.AddSingleton<ActivityExplorer.Infrastructure.Services.IProfileDeletionCleanup>(
+    provider => provider.GetRequiredService<McpWriteService>());
 builder.Services.AddHostedService<McpOperationWorker>();
 builder.Services.AddSingleton<WebWriterLease>();
 
@@ -76,15 +78,6 @@ app.UseStaticFiles();
 app.UseAntiforgery();
 app.MapStaticAssets();
 app.MapMcpWrites();
-var mcpWrites = app.Services.GetRequiredService<McpWriteService>();
-app.Lifetime.ApplicationStarted.Register(() =>
-{
-    if (!mcpWrites.Enabled) return;
-    if (app.Urls.Any(url => !Uri.TryCreate(url, UriKind.Absolute, out var address) || !address.IsLoopback))
-        throw new InvalidOperationException("All Web listeners must be loopback-only when MCP writes are enabled.");
-    mcpWrites.PublishConnectionAsync(app.Urls.FirstOrDefault() ?? "http://localhost", CancellationToken.None).GetAwaiter().GetResult();
-});
-app.Lifetime.ApplicationStopped.Register(mcpWrites.RemoveConnection);
 
 var internalApi = app.MapGroup("/internal");
 internalApi.MapGet("/antiforgery/token", (HttpContext context, IAntiforgery antiforgery) =>
@@ -335,6 +328,7 @@ internalApi.MapPost("/routes/import", async (
         var imported = await routes.ImportGpxAsync(
             new CreateRoutePathRequest(ownerId, name, "Imported GPX path", sport, points),
             upload.FilePath, upload.FileName, hash, upload.Length, token);
+        if (imported.FileCleanupPending) upload = null; // Startup recovery owns the journaled staging input.
         return Results.Ok(new { id = imported.RouteId, imported.FileCleanupPending });
     }
     catch (UploadTooLargeException exception)
@@ -343,7 +337,7 @@ internalApi.MapPost("/routes/import", async (
     }
     catch (Exception exception) when (exception is InvalidDataException or System.Xml.XmlException or ArgumentException or InvalidOperationException)
     {
-        return Results.BadRequest(new { error = "The GPX path could not be read safely. Check that it contains route or track points and belongs to the selected profile." });
+        return Results.BadRequest(new { error = "The GPX upload requires one route or one track with a single track segment and at least two valid points. Check the selected profile." });
     }
     finally
     {

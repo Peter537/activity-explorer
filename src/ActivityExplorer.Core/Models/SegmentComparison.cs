@@ -13,7 +13,8 @@ public enum SegmentComparisonUnavailableReason
     DurationMismatch,
     InsufficientAlignment,
     AmbiguousAlignment,
-    AnalysisLimit
+    AnalysisLimit,
+    ProjectionPending
 }
 
 public sealed record SegmentAlignedPoint(

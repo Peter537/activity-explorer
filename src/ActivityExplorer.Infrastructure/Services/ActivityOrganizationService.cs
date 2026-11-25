@@ -16,15 +16,15 @@ public sealed class ActivityOrganizationService(
     public async Task<IReadOnlyList<TagSummary>> ListTagsAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         await RequireOwnerAsync(db, ownerId, cancellationToken);
         var tags = await db.Tags.AsNoTracking().Where(x => x.OwnerId == ownerId).OrderBy(x => x.Name)
             .Select(x => new TagSummary(x.Id, x.Name, db.ActivityTags.Count(a => a.TagId == x.Id), 0)).ToListAsync(cancellationToken);
         var searches = await db.SavedSearches.AsNoTracking().Where(x => x.OwnerId == ownerId).Select(x => x.CriteriaJson).ToListAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         var references = searches.Select(SavedSearchCriteriaJson.TryRead).Where(x => x is not null)
             .SelectMany(x => SavedSearchCriteriaJson.References(x!).Select(tag => tag.Id).Distinct())
             .GroupBy(x => x).ToDictionary(x => x.Key, x => x.Count());
-        await transaction.CommitAsync(cancellationToken);
         return tags.Select(tag => tag with { SavedSearchCount = references.GetValueOrDefault(tag.Id) }).ToArray();
     }
 
@@ -106,10 +106,11 @@ public sealed class ActivityOrganizationService(
     public async Task<IReadOnlyList<SavedSearchSummary>> ListSavedSearchesAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         await RequireOwnerAsync(db, ownerId, cancellationToken);
         var searches = await db.SavedSearches.AsNoTracking().Where(x => x.OwnerId == ownerId).OrderBy(x => x.Name).ToListAsync(cancellationToken);
         var tags = await db.Tags.AsNoTracking().Where(x => x.OwnerId == ownerId).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         var result = searches.Select(search =>
         {
             var criteria = SavedSearchCriteriaJson.TryRead(search.CriteriaJson);
@@ -122,7 +123,6 @@ public sealed class ActivityOrganizationService(
             };
             return new SavedSearchSummary(search.Id, search.Name, criteria, null, missing);
         }).ToArray();
-        await transaction.CommitAsync(cancellationToken);
         return result;
     }
 

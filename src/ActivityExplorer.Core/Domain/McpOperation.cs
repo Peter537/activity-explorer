@@ -34,7 +34,7 @@ public sealed class McpOperation
     public string Action { get; set; } = "";
     public string ProfileIdsJson { get; set; } = "[]";
     public string RequestJson { get; set; } = "";
-    public string Fingerprint { get; set; } = "";
+    public string RevisionToken { get; set; } = "";
     public McpExecutionState Status { get; private set; } = McpExecutionState.Queued;
     public Guid? EntityId { get; set; }
     public string? ResultJson { get; set; }

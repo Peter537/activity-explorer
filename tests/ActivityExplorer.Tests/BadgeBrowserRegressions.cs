@@ -21,7 +21,7 @@ public sealed partial class BrowserRegressionTests
         {
             await db.Database.EnsureCreatedAsync();
             db.Owners.AddRange(new OwnerProfile { Id = owner, DisplayName = "Badge Example", TimeZoneId = "UTC" }, new OwnerProfile { Id = emptyOwner, DisplayName = "Empty Example" });
-            db.Activities.Add(new Activity { OwnerId = owner, Title = "Fictional historic ride", Sport = SportKind.Cycling, NaturalFingerprint = "badge-2018", StartTimeUtc = new(2018, 4, 2, 10, 0, 0, TimeSpan.Zero), DistanceMeters = 50000, MovingTimeSeconds = 3600 });
+            db.Activities.Add(new Activity { OwnerId = owner, Title = "Fictional historic ride", Sport = SportKind.Cycling, NaturalFingerprint = "badge-2004", StartTimeUtc = new(2004, 4, 2, 10, 0, 0, TimeSpan.Zero), DistanceMeters = 50000, MovingTimeSeconds = 3600 });
             for (var day = 2; day <= 5; day++)
                 db.Activities.Add(new Activity { OwnerId = owner, Title = $"Fictional April ride {day}", Sport = SportKind.Cycling, NaturalFingerprint = $"badge-april-{day}", StartTimeUtc = new(2026, 4, day, 10, 0, 0, TimeSpan.Zero), DistanceMeters = 100000, MovingTimeSeconds = 7200 });
             db.Activities.Add(new Activity { OwnerId = owner, Title = "Later activity excluded from April", Sport = SportKind.Cycling, NaturalFingerprint = "badge-may", StartTimeUtc = new(2026, 5, 1, 10, 0, 0, TimeSpan.Zero), DistanceMeters = 1000000, MovingTimeSeconds = 7200 });
@@ -66,8 +66,14 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.Locator(".badge-evidence li")).ToHaveCountAsync(4);
             Assert.DoesNotContain("Later activity", await page.Locator(".badge-evidence").InnerTextAsync(), StringComparison.Ordinal);
             await Assertions.Expect(page.GetByRole(AriaRole.Heading, new() { Name = "Related tiers and editions" })).ToBeVisibleAsync();
-            await Assertions.Expect(page.Locator(".edition-year")).ToHaveCountAsync(DateTimeOffset.UtcNow.Year - 2018 + 1);
+            await Assertions.Expect(page.Locator(".edition-year")).ToHaveCountAsync(10);
             var detailUrl = page.Url;
+            await page.GetByRole(AriaRole.Link, new() { Name = "Older years" }).ClickAsync();
+            await Assertions.Expect(page).ToHaveURLAsync(new System.Text.RegularExpressions.Regex("historyPage=2"));
+            await Assertions.Expect(page.Locator(".edition-year")).ToHaveCountAsync(10);
+            await Assertions.Expect(page.GetByRole(AriaRole.Navigation, new() { Name = "Badge history pages" })).ToContainTextAsync("Page 2");
+            await page.GoBackAsync(new() { WaitUntil = WaitUntilState.NetworkIdle });
+            await Assertions.Expect(page).ToHaveURLAsync(detailUrl);
             foreach (var width in new[] { 320, 360, 375, 768, 1121, 1280, 1920 })
             {
                 await AssertNoHorizontalOverflowAsync(page, all, width);

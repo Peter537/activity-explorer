@@ -28,6 +28,17 @@ public sealed record ActivitySearchResult(
     public int TotalPages => Total == 0 ? 1 : (int)Math.Ceiling(Total / (double)PageSize);
 }
 
+public sealed record ActivityMutationTarget(Guid Id, Guid OwnerId, long MutationVersion)
+{
+    public static ActivityMutationTarget FromSummary(ActivitySummary activity) =>
+        new(activity.Id, activity.OwnerId, activity.MutationVersion);
+}
+
+public sealed class ActivityDeletionReview(IEnumerable<ActivityMutationTarget> members)
+{
+    public IReadOnlyList<ActivityMutationTarget> Members { get; } = Array.AsReadOnly(members.ToArray());
+}
+
 public sealed record ActivityDeletionResult(
     int DeletedCount, bool FileCleanupPending, bool StatisticsRefreshPending);
 public sealed record ProfileDeletionResult(Guid OwnerId, bool FileCleanupPending);
@@ -51,7 +62,10 @@ public sealed record ActivityDetail(
     IReadOnlyList<TrackPoint> Points, IReadOnlyList<LapCandidate> Laps,
     IReadOnlyList<SourceFileSummary> Sources, IReadOnlyList<SegmentEffortSummary> SegmentEfforts,
     ActivityRichSummary Rich, IReadOnlyList<ActivityMetricSummary> Metrics, string? StreamFingerprint = null,
-    double? NormalizedPower = null);
+    double? NormalizedPower = null)
+{
+    public bool SegmentEffortsPending { get; init; }
+}
 
 public sealed record ActivityRichSummary(
     double? TimerSeconds, MovingTimeSource MovingTimeSource,
@@ -93,7 +107,7 @@ public sealed record MapQuery(
 
 public sealed record MapLayerCoverage(int ReturnedCount, int MatchingCount, int Limit)
 {
-    public bool Truncated => MatchingCount > Limit;
+    public bool Truncated => ReturnedCount < MatchingCount;
 }
 
 public sealed record MapLineLayerStatus(string Layer, bool Loading, bool Failed, int ReturnedCount,
@@ -119,7 +133,10 @@ public sealed record SegmentSummary(
     Guid Id, Guid OwnerId, string OwnerName, string Name, SportKind Sport,
     double DistanceMeters, double ToleranceMeters, int EffortCount, double? BestElapsedSeconds,
     double? AverageGrade, double? ElevationGain, double? ElevationLoss,
-    SegmentSourceKind SourceKind = SegmentSourceKind.Unknown, string? SourceName = null, string? SourceFormat = null);
+    SegmentSourceKind SourceKind = SegmentSourceKind.Unknown, string? SourceName = null, string? SourceFormat = null)
+{
+    public bool EffortsPending { get; init; }
+}
 
 public sealed record SegmentDetail(
     SegmentSummary Summary, IReadOnlyList<TrackPoint> Points, IReadOnlyList<SegmentEffortSummary> Efforts,
@@ -132,7 +149,10 @@ public sealed record SubsegmentDetail(
     SegmentSummary Summary, IReadOnlyList<SegmentPlacement> Placements, IReadOnlyList<SegmentEffortSummary> Efforts);
 public sealed record SegmentAttachmentPreview(SegmentSummary Child, IReadOnlyList<SegmentPlacement> Placements);
 public sealed record CreateSubsegmentRequest(
-    Guid ParentSegmentId, string Name, int StartPointIndex, int EndPointIndex, double ToleranceMeters = 30);
+    Guid ParentSegmentId, string Name, int StartPointIndex, int EndPointIndex, double ToleranceMeters = 30)
+{
+    public string? ReviewedGeometrySha256 { get; init; }
+}
 public sealed record CreateRouteRequest(Guid OwnerId, Guid ActivityId, string Name, string? Description);
 public sealed record CreateRoutePathRequest(
     Guid OwnerId, string Name, string? Description, SportKind Sport,

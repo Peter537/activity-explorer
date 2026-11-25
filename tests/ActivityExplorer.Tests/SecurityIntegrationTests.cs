@@ -160,6 +160,41 @@ public sealed class SecurityIntegrationTests
     }
 
     [Fact]
+    public async Task Gpx_uploads_reject_disconnected_paths_without_persisting_geometry_or_sources()
+    {
+        await WithApplicationAsync(async (factory, client) =>
+        {
+            var ownerId = await factory.Services.GetRequiredService<IProfileService>().CreateAsync("Path importer");
+            var token = await GetTokenAsync(client);
+            var splitPath = Encoding.UTF8.GetBytes("""
+                <gpx><trk><trkseg><trkpt lat="1" lon="-30"/><trkpt lat="2" lon="-29"/></trkseg>
+                <trkseg><trkpt lat="10" lon="-20"/><trkpt lat="11" lon="-19"/></trkseg></trk></gpx>
+                """);
+
+            foreach (var resource in (string[])["routes", "segments"])
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post,
+                    $"/internal/{resource}/import?ownerId={ownerId}&sport=Running&name=Disconnected&toleranceMeters=30");
+                request.Headers.Add("X-Activity-Explorer", "1");
+                request.Headers.Add("X-CSRF-TOKEN", token);
+                request.Content = FileContent("disconnected.gpx", splitPath);
+
+                using var response = await client.SendAsync(request);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.Contains("one route or one track", document.RootElement.GetProperty("error").GetString(),
+                    StringComparison.Ordinal);
+            }
+
+            Assert.Empty(await factory.Services.GetRequiredService<IRouteService>().ListAsync(ownerId));
+            Assert.Empty(await factory.Services.GetRequiredService<ISegmentService>().ListAsync(ownerId));
+            var root = Environment.GetEnvironmentVariable("ACTIVITY_EXPLORER_DATA")!;
+            Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "staging")));
+            Assert.Empty(Directory.EnumerateFiles(Path.Combine(root, "originals"), "*", SearchOption.AllDirectories));
+        });
+    }
+
+    [Fact]
     public async Task Streamed_segment_path_upload_returns_413_and_cleans_partial_staging()
     {
         await WithApplicationAsync(async (factory, client) =>

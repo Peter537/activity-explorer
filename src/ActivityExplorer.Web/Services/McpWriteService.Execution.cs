@@ -28,41 +28,85 @@ public sealed partial class McpWriteService
         await db.SaveChangesAsync(token);
     }
 
-    public Task ExecuteAsync(Guid id, CancellationToken token) => mutations.RunAsync(async () =>
+    public async Task ExecuteAsync(Guid id, CancellationToken token)
+    {
+        var rebuild = await mutations.RunAsync(() => ExecuteQueuedAsync(id, token), token);
+        if (rebuild is null) return;
+
+        // The receipt is already running. Exploration validates and checkpoints each activity under its own write lease.
+        await using var db = await factory.CreateDbContextAsync(CancellationToken.None);
+        var operation = await db.McpOperations.SingleAsync(item => item.Id == id && item.Status == McpExecutionState.Running, CancellationToken.None);
+        await ApplyAndRecordAsync(db, operation, rebuild, token);
+    }
+
+    private async Task<McpChangeRequest?> ExecuteQueuedAsync(Guid id, CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var operation = await db.McpOperations.SingleAsync(item => item.Id == id, token);
-        if (operation.Status != McpExecutionState.Queued) return false;
-        var outcome = McpExecutionState.Completed;
+        if (operation.Status != McpExecutionState.Queued) return null;
+        McpChangeRequest request;
         try
         {
-            var request = JsonSerializer.Deserialize<McpChangeRequest>(operation.RequestJson, McpChangeJson.Options)!;
+            request = JsonSerializer.Deserialize<McpChangeRequest>(operation.RequestJson, McpChangeJson.Options)!;
             Authorize(request);
-            if (operation.Fingerprint != await FingerprintAsync(token))
+            await using var transaction = await db.Database.BeginTransactionAsync(token);
+            if (operation.RevisionToken != RevisionToken(await McpLibraryRevision.ReadAsync(db, token)))
                 throw new InvalidOperationException("The application data changed while this operation was queued. Prepare and review it again.");
             operation.StartExecution();
             await db.SaveChangesAsync(token);
-            using (var scope = new McpOperationScope(id, EffectType(request.Action)))
+            await transaction.CommitAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            operation.Finish(await CaptureExecutionFailureAsync(db, operation, exception), clock.GetUtcNow());
+            await db.SaveChangesAsync(CancellationToken.None);
+            return null;
+        }
+
+        if (request.Action == "rebuild_exploration") return request;
+        await ApplyAndRecordAsync(db, operation, request, token);
+        return null;
+    }
+
+    private async Task ApplyAndRecordAsync(ExplorerDbContext db, McpOperation operation, McpChangeRequest request, CancellationToken token)
+    {
+        var id = operation.Id;
+        var downloadPublished = false;
+        try
+        {
+            var outcome = McpExecutionState.Completed;
+            try
             {
+                using var scope = new McpOperationScope(id, EffectType(request.Action));
                 var (entityId, result, warning) = await ApplyAsync(request, id, token);
                 operation.EntityId = entityId;
                 operation.ResultJson = JsonSerializer.Serialize(result, McpChangeJson.Options);
                 operation.Message = warning;
                 if (warning is not null) outcome = McpExecutionState.CommittedWithWarnings;
             }
+            catch (Exception exception)
+            {
+                outcome = await CaptureExecutionFailureAsync(db, operation, exception);
+            }
+            operation.Finish(outcome, clock.GetUtcNow());
+            await db.SaveChangesAsync(CancellationToken.None);
+            downloadPublished = outcome == McpExecutionState.Completed;
         }
-        catch (Exception exception)
+        finally
         {
-            var effect = await db.McpEffects.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, CancellationToken.None);
-            outcome = effect is null ? McpExecutionState.Failed : McpExecutionState.CommittedWithWarnings;
-            operation.EntityId = effect?.EntityId;
-            operation.Message = exception is ArgumentException or InvalidOperationException or UnauthorizedAccessException or InvalidDataException
-                ? exception.Message : exception is OperationCanceledException ? "The operation was interrupted. Check status before preparing another change." : "The operation could not finish. Inspect its entity and Web logs before preparing another change.";
+            if (!downloadPublished && IsDownloadAction(operation.Action)) CleanupUnpublishedDownload(id);
         }
-        operation.Finish(outcome, clock.GetUtcNow());
-        await db.SaveChangesAsync(CancellationToken.None);
-        return true;
-    }, token);
+    }
+
+    private static async Task<McpExecutionState> CaptureExecutionFailureAsync(ExplorerDbContext db, McpOperation operation, Exception exception)
+    {
+        var effect = await db.McpEffects.AsNoTracking().SingleOrDefaultAsync(item => item.Id == operation.Id, CancellationToken.None);
+        operation.EntityId = effect?.EntityId;
+        operation.Message = exception is ArgumentException or InvalidOperationException or UnauthorizedAccessException or InvalidDataException
+            ? exception.Message : exception is OperationCanceledException ? "The operation was interrupted. Check status before preparing another change." : "The operation could not finish. Inspect its entity and Web logs before preparing another change.";
+        return effect is not null ? McpExecutionState.CommittedWithWarnings :
+            exception is OperationCanceledException ? McpExecutionState.Interrupted : McpExecutionState.Failed;
+    }
 
     private static Type? EffectType(string action) => action switch
     {
@@ -100,9 +144,11 @@ public sealed partial class McpWriteService
             case "create_segment_from_route":
             case "create_segment_path":
             case "import_segment":
-                entityId = await Service<ISegmentService>().CreateAsync(await SegmentRequestAsync(change, token), token); break;
+                entityId = await Service<ISegmentService>().CreateAsync(await VerifiedSegmentRequestAsync(change, token), token); break;
             case "create_subsegment":
-                entityId = await Service<ISegmentService>().CreateSubsegmentAsync(new(Id("segmentId"), Text("name"), Read<int>(args, "startPointIndex"), Read<int>(args, "endPointIndex"), Read<double>(args, "toleranceMeters")), token); break;
+                entityId = await Service<ISegmentService>().CreateSubsegmentAsync(new(Id("segmentId"), Text("name"),
+                    Read<int>(args, "startPointIndex"), Read<int>(args, "endPointIndex"), Read<double>(args, "toleranceMeters"))
+                { ReviewedGeometrySha256 = change.ReviewedGeometrySha256 }, token); break;
             case "attach_segment": await Service<ISegmentService>().AttachAsync(Id("parentSegmentId"), Id("childSegmentId"), token); break;
             case "detach_segment": await Service<ISegmentService>().DetachAsync(Id("parentSegmentId"), Id("childSegmentId"), token); break;
             case "recompute_segment": await Service<ISegmentService>().RecomputeAsync(Id("segmentId"), token); break;
@@ -143,9 +189,9 @@ public sealed partial class McpWriteService
             case "save_saved_search": entityId = await Service<IActivityOrganizationService>().SaveSavedSearchAsync(profile, Text("name"), Read<SavedSearchCriteria>(args, "criteria"), Optional<Guid?>(args, "id"), token); break;
             case "rename_saved_search": await Service<IActivityOrganizationService>().RenameSavedSearchAsync(profile, Id("savedSearchId"), Text("name"), token); break;
             case "delete_saved_search": await Service<IActivityOrganizationService>().DeleteSavedSearchAsync(profile, Id("savedSearchId"), token); break;
-            case "create_route_from_activity": case "create_route_path": entityId = await Service<IRouteService>().CreateAsync(await RouteRequestAsync(change, token), token); break;
+            case "create_route_from_activity": case "create_route_path": entityId = await Service<IRouteService>().CreateAsync(await VerifiedRouteRequestAsync(change, token), token); break;
             case "import_route":
-                var route = await RouteRequestAsync(change, token);
+                var route = await VerifiedRouteRequestAsync(change, token);
                 var routeAsset = RequireAsset(Id("assetId"), profile, "file");
                 _assets.TryRemove(routeAsset.Summary.Id, out _);
                 var importedRoute = await Service<IRouteService>().ImportGpxAsync(route, routeAsset.Path, routeAsset.Summary.Name, routeAsset.Hash, routeAsset.Summary.Length, token);
@@ -174,25 +220,27 @@ public sealed partial class McpWriteService
                     var deletedProfile = await Service<IProfileService>().DeleteAsync(profile, "DELETE " + name, token);
                     if (deletedProfile.FileCleanupPending)
                     {
-                        warning = "The profile was deleted. File cleanup remains pending and will be retried at startup; do not repeat the deletion.";
+                        warning = "The profile was deleted. File cleanup remains pending and will be retried.";
                         result = deletedProfile;
                     }
-                    CleanupAssets(all: true, profileId: profile);
-                    var profileText = profile.ToString();
-                    var downloads = await db.McpOperations.AsNoTracking().Where(item => (item.Action == "export_profile" || item.Action == "export_route" || item.Action == "download_original") && item.ProfileIdsJson.Contains(profileText)).Select(item => item.Id).ToArrayAsync(token);
-                    foreach (var download in downloads) if (File.Exists(DownloadPath(download))) File.Delete(DownloadPath(download));
                 }
                 break;
             case "add_watched_folder": entityId = await Service<IWatchedFolderService>().AddAsync(profile, RequireAsset(Id("assetId"), profile, "folder").Path, token); break;
             case "remove_watched_folder": await Service<IWatchedFolderService>().RemoveAsync(Id("folderId"), token); break;
             case "recompute_statistics": await Service<IStatisticsService>().RecomputeAsync(profile, token); break;
-            case "rebuild_exploration": result = await Service<IExplorationIndexService>().BuildAsync(new(profile), recheckLimited: Read<bool>(args, "recheckLimited"), cancellationToken: token); break;
+            case "rebuild_exploration":
+                var exploration = await Service<IExplorationIndexService>().BuildAsync(new(profile),
+                    recheckLimited: Read<bool>(args, "recheckLimited"), cancellationToken: token);
+                result = exploration;
+                if (!exploration.IsComplete || exploration.RemainingLimitedRechecks > 0)
+                    warning = "The history changed during calculation. Completed checkpoints were saved. Prepare a new rebuild to continue.";
+                break;
             case "set_map_privacy": await Service<IMapSettingsService>().SetModeAsync(Read<MapPrivacyMode>(args, "mode"), token); break;
             case "export_profile":
             case "export_route":
             case "download_original":
-                var target = DownloadPath(operationId);
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                var directory = ManagedStagingDirectory.Create(DownloadRoot, operationId);
+                var target = Path.Combine(directory, "content");
                 string fileName;
                 string contentType;
                 if (change.Action == "export_profile")
@@ -217,15 +265,9 @@ public sealed partial class McpWriteService
                     await input.CopyToAsync(output, token);
                     fileName = original.OriginalName; contentType = "application/octet-stream";
                 }
-                result = new
-                {
-                    downloadUrl = Endpoint + "/mcp/download/" + operationId,
-                    profileId = profile,
-                    fileName,
-                    contentType,
-                    expiresAt = clock.GetUtcNow().AddHours(1),
-                    message = "Immutable download, available for one hour or until the Web app stops. Contents are not returned to the model."
-                }; break;
+                result = new DownloadResult(Endpoint + "/mcp/download/" + operationId, profile, fileName, contentType,
+                    clock.GetUtcNow().AddHours(1), "Immutable download, available for one hour or until the Web app stops. Contents are not returned to the model.");
+                break;
             default: throw new ArgumentException("Unsupported change.");
         }
         if (entityId.HasValue && change.Action != "import_activities" && warning is null) result = new { entityId };
@@ -239,46 +281,46 @@ public sealed partial class McpWriteService
 
     private async Task<object> DescribeImportAsync(Asset asset, SourceKind source, Guid profile, CancellationToken token)
     {
-        var directory = Path.GetDirectoryName(asset.Path)!;
-        var existing = Directory.GetDirectories(directory).ToHashSet(StringComparer.Ordinal);
-        try
+        var importer = services.GetServices<IActivityImporter>().FirstOrDefault(item => item.CanImport(asset.Path))
+            ?? throw new InvalidDataException("Unsupported import file.");
+        await using var db = await factory.CreateDbContextAsync(token);
+        var hashes = (await db.SourceFiles.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => item.Sha256).ToArrayAsync(token)).ToHashSet(StringComparer.Ordinal);
+        var fingerprints = (await db.Activities.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => item.NaturalFingerprint).ToArrayAsync(token)).ToHashSet(StringComparer.Ordinal);
+        var providerIds = await db.Activities.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => new { item.GarminId, item.StravaId }).ToArrayAsync(token);
+        var total = 0;
+        var created = 0;
+        var enriched = 0;
+        var duplicates = 0;
+        void CountCandidate(ImportCandidate candidate)
         {
-            var importer = services.GetServices<IActivityImporter>().FirstOrDefault(item => item.CanImport(asset.Path)) ?? throw new InvalidDataException("Unsupported import file.");
-            var candidates = await importer.ReadAsync(asset.Path, source, token);
-            await using var db = await factory.CreateDbContextAsync(token);
-            var hashes = (await db.SourceFiles.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => item.Sha256).ToArrayAsync(token)).ToHashSet(StringComparer.Ordinal);
-            var fingerprints = (await db.Activities.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => item.NaturalFingerprint).ToArrayAsync(token)).ToHashSet(StringComparer.Ordinal);
-            var providerIds = await db.Activities.AsNoTracking().Where(item => item.OwnerId == profile).Select(item => new { item.GarminId, item.StravaId }).ToArrayAsync(token);
-            var created = 0; var enriched = 0; var duplicates = 0;
-            foreach (var candidate in candidates)
-            {
-                var fingerprint = Fingerprint.For(candidate.Parsed);
-                var providerMatch = providerIds.Any(item => candidate.ExternalId is not null && (candidate.Provider == SourceProvider.Garmin && item.GarminId == candidate.ExternalId || candidate.Provider == SourceProvider.Strava && item.StravaId == candidate.ExternalId));
-                if (!hashes.Add(candidate.Sha256)) duplicates++;
-                else if (providerMatch || !fingerprints.Add(fingerprint)) enriched++;
-                else created++;
-            }
-            return new
-            {
-                asset.Summary.Name,
-                asset.Summary.Length,
-                asset.Hash,
-                candidates = candidates.Count,
-                expectedCreates = created,
-                expectedEnrichments = enriched,
-                duplicateSources = duplicates,
-                warnings = (importer as IImporterDiagnosticsSource)?.ConsumeDiagnostics(),
-                note = "Duplicate sources may also enrich metadata or upgrade parsed technical data. Import commits are incremental; interruption can leave completed activities. Preview extraction uses temporary scratch files, without enqueuing an import."
-            };
+            total++;
+            var fingerprint = Fingerprint.For(candidate.Parsed);
+            var providerMatch = providerIds.Any(item => candidate.ExternalId is not null && (candidate.Provider == SourceProvider.Garmin && item.GarminId == candidate.ExternalId || candidate.Provider == SourceProvider.Strava && item.StravaId == candidate.ExternalId));
+            if (!hashes.Add(candidate.Sha256)) duplicates++;
+            else if (providerMatch || !fingerprints.Add(fingerprint)) enriched++;
+            else created++;
         }
-        finally
+
+        ImporterDiagnostics? warnings = null;
+        if (importer is ArchiveActivityImporter archive)
+            warnings = await archive.VisitAsync(asset.Path, source, CountCandidate, recoverableExtraction: true, token);
+        else
         {
-            foreach (var scratch in Directory.GetDirectories(directory).Where(path => !existing.Contains(path)))
-            {
-                var fullPath = ManagedPathGuard.ResolveUnder(directory, scratch);
-                Directory.Delete(fullPath, recursive: true);
-            }
+            foreach (var candidate in await importer.ReadAsync(asset.Path, source, token)) CountCandidate(candidate);
         }
+
+        return new
+        {
+            asset.Summary.Name,
+            asset.Summary.Length,
+            asset.Hash,
+            candidates = total,
+            expectedCreates = created,
+            expectedEnrichments = enriched,
+            duplicateSources = duplicates,
+            warnings,
+            note = "Duplicate sources may also enrich metadata or upgrade parsed technical data. Import commits are incremental; interruption can leave completed activities. Preview extraction uses temporary scratch files, without enqueuing an import."
+        };
     }
 
     public async Task<McpWriteContext> ContextAsync(McpReadContextRequest request, CancellationToken token)

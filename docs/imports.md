@@ -2,6 +2,8 @@
 
 Activity Explorer accepts user-supplied exports and files. It never requests account credentials and never automates Garmin or Strava.
 
+Files interrupted before durable entry tracking was introduced resume when saved provenance proves which members committed. If earlier counts cannot identify the committed entries, import history shows **Review required** and keeps the staged archive and saved activities. Review those results before submitting the original as a deliberate new import.
+
 ## First import
 
 1. Create a profile under **Profiles**.
@@ -110,6 +112,8 @@ Choose several files in one selection. Browser uploads are streamed separately w
 - **GPX** is useful for position and elevation, with optional extension sensors.
 - A single activity file may be wrapped in GZ or ZIP.
 
+The importer expects a single FIT session or TCX activity per recording file. Export multiple sessions as separate files. An archive can contain many single-activity files. Unsupported entries are counted and valid siblings still import.
+
 A Garmin identifier is accepted only from export filenames such as `123456_ACTIVITY.fit`; a FIT device serial number is never treated as an activity ID. Missing sensors remain missing rather than being inferred.
 
 Activity detail's **Recorded power and work** section shows imported average power, maximum power, normalized power, and work in kJ when recorded. Recorded zeroes remain valid; missing fields stay unavailable. FIT normalized power is labelled separately from provider-specific weighted power and is not inferred from the stream or summary average.
@@ -119,6 +123,10 @@ Only Cycling, Running, Walking, and Rowing are supported in 0.1.0, including ind
 Rowing FIT files may identify the sport as Rowing or as Fitness Equipment with the Indoor Rowing subtype. Both import as Rowing. FIT parser version 2 preserves recorded stroke counts as Total strokes and cadence as stroke rate. GPS is not required for indoor rowing. Use the normal Multi-file import workflow to select several recordings at once.
 
 GPX/TCX files need an explicit supported sport label. In a Strava archive, matched rowing metadata can supply the sport when the XML sport is missing or Other. A standalone Other activity remains unsupported; the importer does not guess its sport.
+
+GPX and TCX derive moving time from recorded speed, distance or position on consecutive timed samples. Intervals over 30 seconds and breaks between tracks, segments and laps contribute no moving time. Elapsed time still spans the recording. The activity marks the moving estimate unavailable if no interval has usable evidence. TCX lap distance uses the declared distance when present and otherwise uses recorded deltas within the lap, so both activity-wide and per-lap distance counters work.
+
+These measurements apply when creating or replacing canonical technical data. A historical correction requires a separate authorized repair that verifies managed originals, selects activities whose canonical source is GPX or TCX, preserves activities with canonical FIT data, and refreshes affected derived records and segment efforts.
 
 ## Deduplication
 

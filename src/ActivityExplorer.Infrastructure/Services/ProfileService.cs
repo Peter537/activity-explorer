@@ -7,12 +7,19 @@ using Microsoft.Extensions.Logging;
 
 namespace ActivityExplorer.Infrastructure.Services;
 
+public interface IProfileDeletionCleanup
+{
+    // Called after the database commit while the caller still holds mutation exclusion.
+    Task<bool> TryCleanupAsync(Guid ownerId, CancellationToken cancellationToken);
+}
+
 public sealed class ProfileService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     AppDataPaths paths,
     IFileOperationCoordinator fileOperations,
     IOwnerMutationLock ownerMutationLock,
-    ILogger<ProfileService>? logger = null) : IProfileService
+    ILogger<ProfileService>? logger = null,
+    IProfileDeletionCleanup? deletionCleanup = null) : IProfileService
 {
     private static readonly JsonSerializerOptions ExportJsonOptions = new() { WriteIndented = true };
     public Task<IReadOnlyList<ProfileSummary>> ListAsync(CancellationToken cancellationToken = default) => new ProfileReadService(contextFactory).ListAsync(cancellationToken);
@@ -90,6 +97,7 @@ public sealed class ProfileService(
             throw;
         }
 
+        var fileCleanupPending = false;
         if (quarantineOperation.HasValue)
         {
             try
@@ -100,17 +108,18 @@ public sealed class ProfileService(
             {
                 logger?.LogError("Profile deletion file cleanup {OperationId} is pending recovery ({ErrorType}).",
                     quarantineOperation.Value, exception.GetType().Name);
-                return new ProfileDeletionResult(ownerId, FileCleanupPending: true);
+                fileCleanupPending = true;
             }
         }
-        return new ProfileDeletionResult(ownerId, FileCleanupPending: false);
+        if (deletionCleanup is not null && !await deletionCleanup.TryCleanupAsync(ownerId, CancellationToken.None))
+            fileCleanupPending = true;
+        return new ProfileDeletionResult(ownerId, fileCleanupPending);
     }
 
     public async Task<ProfileExport> ExportAsync(Guid ownerId, CancellationToken cancellationToken = default)
     {
-        await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var owner = await db.Owners.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ownerId, cancellationToken)
             ?? throw new InvalidOperationException("Profile was not found.");
         var activities = await db.Activities.AsNoTracking().Where(x => x.OwnerId == ownerId)
@@ -141,12 +150,6 @@ public sealed class ProfileService(
             .Select(x => new { x.ActivityId, x.TagId }).ToListAsync(cancellationToken);
         var savedRows = await db.SavedSearches.AsNoTracking().Where(x => x.OwnerId == ownerId)
             .OrderBy(x => x.Name).ToListAsync(cancellationToken);
-        var savedSearches = savedRows.Select(x => new
-        {
-            x.Id,
-            x.Name,
-            criteria = ReadExportCriteria(x.CriteriaJson, x.Name)
-        }).ToArray();
         var goals = await db.Goals.AsNoTracking().Where(x => x.OwnerId == ownerId)
             .OrderBy(x => x.Id).Select(x => new
             {
@@ -166,6 +169,12 @@ public sealed class ProfileService(
                 }).ToArray()
             }).ToArrayAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        var savedSearches = savedRows.Select(x => new
+        {
+            x.Id,
+            x.Name,
+            criteria = ReadExportCriteria(x.CriteriaJson, x.Name)
+        }).ToArray();
         var payload = JsonSerializer.Serialize(new
         {
             schemaVersion = 1,

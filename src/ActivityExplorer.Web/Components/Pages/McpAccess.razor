@@ -59,9 +59,11 @@ else
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException) { _message = exception.Message; }
         finally { _busy = false; }
     }
-    private void ApproveFolder()
+    private async Task ApproveFolder()
     {
-        try { var asset = Writes.ApproveFolder(_profileId, _folder); _message = $"Selected folder {asset.Name}. Asset ID: {asset.Id}. Watching has not started."; }
+        _busy = true;
+        try { var asset = await Writes.ApproveFolderAsync(_profileId, _folder, CancellationToken.None); _message = $"Selected folder {asset.Name}. Asset ID: {asset.Id}. Watching has not started."; }
         catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException) { _message = exception.Message; }
+        finally { _busy = false; }
     }
 }

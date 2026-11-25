@@ -11,7 +11,7 @@ namespace ActivityExplorer.Web.Services;
 
 public sealed partial class McpWriteService
 {
-    private async Task<JsonElement> DescribeAsync(McpChangeRequest request, CancellationToken token)
+    private async Task<(JsonElement Details, LocalReviewPath? Path)> DescribeAsync(McpChangeRequest request, CancellationToken token)
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var profile = request.ProfileId;
@@ -19,6 +19,7 @@ public sealed partial class McpWriteService
         var args = request.Arguments;
         object? before = null;
         object? effects = null;
+        LocalReviewPath? path = null;
         if (args.TryGetProperty("name", out var name))
         {
             var maximum = request.Action.Contains("tag", StringComparison.Ordinal) ? 80 : request.Action is "create_profile" or "save_saved_search" or "rename_saved_search" ? 120 : 240;
@@ -91,11 +92,12 @@ public sealed partial class McpWriteService
                 if (!Enum.IsDefined(segment.Sport)) throw new ArgumentException("Select a supported sport.");
                 SegmentService.ValidateNameAndTolerance(segment.Name, segment.ToleranceMeters, "request");
                 var validPoints = SegmentService.ValidatePoints(segment.Points, "points");
+                path = CreateLocalReviewPath(validPoints);
                 effects = new
                 {
                     pointCount = validPoints.Length,
                     distanceMeters = new TrackPathAnalysis(validPoints).Slice(0, validPoints.Length - 1).DistanceMeters,
-                    geometrySha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(GeometryCodec.ToWkb(validPoints)!)),
+                    geometrySha256 = path.Digest,
                     historicalEfforts = "Recomputed against current history; count is determined during execution."
                 };
                 break;
@@ -114,7 +116,8 @@ public sealed partial class McpWriteService
                 var route = await RouteRequestAsync(request, token);
                 RouteService.ValidateRequest(route);
                 var routePoints = RouteService.ValidPoints(route.Points);
-                effects = new { pointCount = routePoints.Length, distanceMeters = GeometryCodec.DistanceMeters(routePoints) };
+                path = CreateLocalReviewPath(routePoints);
+                effects = new { pointCount = routePoints.Length, distanceMeters = GeometryCodec.DistanceMeters(routePoints), geometrySha256 = path.Digest };
                 break;
             case "update_activity":
                 var update = Read<UpdateActivityRequest>(args, "request");
@@ -129,7 +132,9 @@ public sealed partial class McpWriteService
                 break;
             case "add_activity_metric":
             case "update_activity_metric":
-                ActivityQueryService.ValidateMetric(Read<ActivityMetricRequest>(args, "request"));
+                await ActivityQueryService.ValidateManualMetricAsync(db, Read<Guid>(args, "activityId"),
+                    request.Action == "update_activity_metric" ? Read<Guid>(args, "metricId") : null,
+                    Read<ActivityMetricRequest>(args, "request"), token);
                 break;
             case "set_activity_tags":
                 var tags = Read<Guid[]>(args, "tagIds");
@@ -230,7 +235,7 @@ public sealed partial class McpWriteService
             default: throw new ArgumentException("Unsupported change.");
         }
         var requested = args.EnumerateObject().Where(property => property.Name != "points").ToDictionary(property => property.Name, property => property.Value);
-        return McpChangeJson.Element(new { requested, before, effects, dryRun = true });
+        return (McpChangeJson.Element(new { requested, before, effects, dryRun = true }), path);
     }
 
     private async Task<CreateSegmentPathRequest> SegmentRequestAsync(McpChangeRequest request, CancellationToken token)
@@ -280,7 +285,11 @@ public sealed partial class McpWriteService
         if (start < 0 || end >= points.Count || end <= start || request.Action == "create_subsegment" && start == 0 && end == points.Count - 1)
             throw new ArgumentException("Select a valid range of at least two points; a subsegment must be smaller than its parent.");
         IEnumerable<TrackPoint> selected = points.Skip(start).Take(end - start + 1);
-        if (Optional<bool>(args, "reverseDirection")) selected = selected.Reverse();
+        if (Optional<bool>(args, "reverseDirection"))
+        {
+            if (request.Action == "create_subsegment") throw new ArgumentException("A subsegment must follow its parent’s direction.");
+            selected = selected.Reverse();
+        }
         return new(profile, name, sport, selected.ToArray(), tolerance, sourceActivity,
             request.Action == "create_segment_from_activity" ? SegmentSourceKind.Activity : request.Action == "create_segment_from_route" ? SegmentSourceKind.Route : SegmentSourceKind.Segment, sourceName);
     }

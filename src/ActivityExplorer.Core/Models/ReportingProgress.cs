@@ -24,7 +24,10 @@ public sealed record DashboardSummary(
     IReadOnlyList<ResolvedOwnerPeriod> Periods, IReadOnlyList<ResolvedOwnerPeriod> ComparisonPeriods,
     IReadOnlyList<ReportingBucket> Trend, IReadOnlyList<SportTotal> Sports,
     IReadOnlyList<ActivitySummary> Recent, IReadOnlyList<PersonalRecord> Highlights,
-    IReadOnlyList<NamedTotal> Devices, IReadOnlyList<NamedTotal> Gear, bool HasAnyActivities);
+    IReadOnlyList<NamedTotal> Devices, IReadOnlyList<NamedTotal> Gear, bool HasAnyActivities)
+{
+    public bool HighlightsPending { get; init; }
+}
 
 public sealed record TrainingCalendarQuery(
     Guid? OwnerId = null, SportKind? Sport = null, DateOnly? Month = null, DateTimeOffset? AsOfUtc = null,

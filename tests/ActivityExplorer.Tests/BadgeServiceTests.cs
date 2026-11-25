@@ -106,6 +106,66 @@ public sealed class BadgeServiceTests
     }
 
     [Fact]
+    public async Task Badge_read_holds_one_snapshot_without_reserving_the_database_writer()
+    {
+        await using var setup = await Setup.CreateAsync();
+        var owner = await setup.Services.GetRequiredService<IProfileService>().CreateAsync("Snapshot athlete");
+        var activity = new Activity
+        {
+            OwnerId = owner,
+            Sport = SportKind.Cycling,
+            Title = "Previous summary",
+            NaturalFingerprint = "badge-reader",
+            StartTimeUtc = new(2018, 12, 31, 23, 30, 0, TimeSpan.Zero),
+            DistanceMeters = 100000,
+            MovingTimeSeconds = 3600
+        };
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL");
+            db.Activities.Add(activity);
+            await db.SaveChangesAsync();
+        }
+
+        var pause = new PauseActivityRead();
+        var path = setup.Services.GetRequiredService<AppDataPaths>().DatabasePath;
+        var reader = new Factory(new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite($"Data Source={path};Pooling=False")
+            .AddInterceptors(pause).Options);
+        var service = new BadgeService(reader, new FixedTime());
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var reading = service.GetCatalogueAsync(owner, new(2019, 1, 1), cancellation.Token);
+        Task? writing = null;
+        try
+        {
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            writing = Task.Run(async () =>
+            {
+                await using var db = await setup.Factory.CreateDbContextAsync(cancellation.Token);
+                (await db.Owners.SingleAsync(cancellation.Token)).TimeZoneId = "UTC";
+                (await db.Activities.SingleAsync(cancellation.Token)).Title = "New summary";
+                await db.SaveChangesAsync(cancellation.Token);
+            }, cancellation.Token);
+            await writing.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(reading.IsCompleted);
+        }
+        finally
+        {
+            pause.Release.TrySetResult();
+            await Task.WhenAll(reading, writing ?? Task.CompletedTask).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        var before = await reading;
+        Assert.Equal(ReportingTimeZone.DefaultId, before.TimeZoneId);
+        Assert.Equal("Previous summary", Assert.Single(before.FindEdition("new-year", "2019")!.Evidence).Title);
+        var after = await service.GetCatalogueAsync(owner, new(2019, 1, 1), cancellation.Token);
+        Assert.Equal("UTC", after.TimeZoneId);
+        Assert.Equal("New summary", Assert.Single(after.FindEdition("year-end", "2018")!.Evidence).Title);
+        var overview = Assert.Single(await service.GetOverviewAsync(new(2019, 1, 1), cancellation.Token));
+        Assert.Equal(after.Level, overview.Level);
+        Assert.Equal(after.EarnedCount, overview.EarnedCount);
+    }
+
+    [Fact]
     public async Task Warm_ten_thousand_activity_query_is_bounded_and_does_not_read_streams()
     {
         await using var setup = await Setup.CreateAsync();
@@ -147,6 +207,20 @@ public sealed class BadgeServiceTests
         {
             Commands.Add(command.CommandText);
             return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class PauseActivityRead : DbCommandInterceptor
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Activities\"", StringComparison.Ordinal) && Entered.TrySetResult())
+                await Release.Task.WaitAsync(cancellationToken);
+            return result;
         }
     }
     private sealed class Factory(DbContextOptions<ExplorerDbContext> options) : IDbContextFactory<ExplorerDbContext>

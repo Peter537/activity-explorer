@@ -10,40 +10,40 @@ namespace ActivityExplorer.Infrastructure.Services;
 public sealed class StatisticsRepairWorker(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     IStatisticsService statistics,
-    ILogger<StatisticsRepairWorker> logger) : BackgroundService
+    ILogger<StatisticsRepairWorker> logger,
+    ISegmentService? segments = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
-            await RunOnceAsync(stoppingToken);
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try { await RunOnceAsync(stoppingToken); }
+                catch (Exception exception) when (exception is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
+                {
+                    logger.LogError(exception, "Automatic projection repair will retry after a failed scan.");
+                }
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-        }
-        catch (Exception exception)
-        {
-            logger.LogError(exception, "Automatic statistics repair stopped unexpectedly.");
         }
     }
 
     internal async Task RunOnceAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        var pendingRecords = ProjectionVersions.PendingRecords(db);
         var ownerIds = await db.Owners.AsNoTracking()
-            .Where(owner => db.Activities.Any(activity => activity.OwnerId == owner.Id) &&
-                            !db.StatisticSnapshots.Any(snapshot =>
+            .Where(owner => !db.StatisticSnapshots.Any(snapshot =>
                                 snapshot.OwnerId == owner.Id &&
                                 snapshot.ComputationVersion > RecordCatalog.ComputationVersion) &&
-                            (!db.StatisticSnapshots.Any(snapshot =>
-                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.All) ||
-                             db.Activities.Any(activity => activity.OwnerId == owner.Id && !activity.IsIndoor) &&
-                             !db.StatisticSnapshots.Any(snapshot =>
-                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Outdoor) ||
-                             db.Activities.Any(activity => activity.OwnerId == owner.Id && activity.IsIndoor) &&
-                             !db.StatisticSnapshots.Any(snapshot =>
-                                 snapshot.OwnerId == owner.Id && snapshot.Scope == RecordScope.Indoor) ||
+                            (pendingRecords.Any(state => state.OwnerId == owner.Id) ||
+                             !db.OwnerProjectionVersions.Any(state => state.OwnerId == owner.Id) &&
+                             db.Activities.Any(activity => activity.OwnerId == owner.Id) ||
                              db.StatisticSnapshots.Any(snapshot =>
                                  snapshot.OwnerId == owner.Id &&
                                  snapshot.ComputationVersion < RecordCatalog.ComputationVersion)))
@@ -53,8 +53,24 @@ public sealed class StatisticsRepairWorker(
 
         foreach (var ownerId in ownerIds)
         {
-            logger.LogInformation("Repairing missing or stale record snapshots for owner {OwnerId}.", ownerId);
-            await statistics.RecomputeAsync(ownerId, cancellationToken);
+            try { await statistics.RecomputeAsync(ownerId, cancellationToken); }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(exception, "Record repair for profile {OwnerId} will retry.", ownerId);
+            }
+        }
+
+        if (segments is null) return;
+        var segmentIds = await ProjectionVersions.PendingSegments(db)
+            .OrderBy(segment => segment.OwnerId).ThenBy(segment => segment.Id)
+            .Select(segment => segment.Id).ToArrayAsync(cancellationToken);
+        foreach (var segmentId in segmentIds)
+        {
+            try { await segments.RecomputeAsync(segmentId, cancellationToken); }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(exception, "Effort repair for segment {SegmentId} will retry.", segmentId);
+            }
         }
     }
 }

@@ -55,7 +55,8 @@ public sealed partial class DatabaseIntegrationTests
                 Sport = SportKind.Cycling,
                 Kind = RecordKind.Distance,
                 Key = "longest",
-                Value = wrongPower.DistanceMeters
+                Value = wrongPower.DistanceMeters,
+                ComputationVersion = RecordCatalog.ComputationVersion
             });
             await db.SaveChangesAsync();
         }

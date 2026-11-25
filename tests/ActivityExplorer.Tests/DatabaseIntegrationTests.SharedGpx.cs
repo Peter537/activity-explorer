@@ -1,4 +1,3 @@
-using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Import;
@@ -51,16 +50,18 @@ public sealed partial class DatabaseIntegrationTests
             });
             await db.SaveChangesAsync();
         }
-        var queue = new RecordingWatchedQueue();
-        var service = new WatchedFolderService(setup.Factory, queue, paths);
+        using var mutations = new OwnerMutationLock();
+        var queue = new ImportQueue(setup.Factory, paths, mutations);
+        var service = new WatchedFolderService(setup.Factory, queue, paths, mutations);
         await service.AddAsync(owner, watched);
         await service.ReconcileAsync();
-        Assert.Single(queue.Requests);
-
         var activity = await setup.SeedActivityAsync(owner, "Imported", SportKind.Running);
         await using (var db = await setup.Factory.CreateDbContextAsync())
         {
-            var batchId = await db.ImportBatches.Select(x => x.Id).SingleAsync();
+            var watchedBatch = await db.ImportBatches.SingleAsync(x => x.SourceKind == SourceKind.WatchedFolder);
+            db.Remove(await db.Set<WatchedImportAdmission>().SingleAsync(x => x.BatchId == watchedBatch.Id));
+            db.Remove(watchedBatch);
+            var batchId = await db.ImportBatches.Where(x => x.SourceKind == SourceKind.Gpx).Select(x => x.Id).SingleAsync();
             db.SourceFiles.Add(new SourceFile
             {
                 OwnerId = owner,
@@ -74,7 +75,8 @@ public sealed partial class DatabaseIntegrationTests
             await db.SaveChangesAsync();
         }
         await service.ReconcileAsync();
-        Assert.Single(queue.Requests);
+        await using var verification = await setup.Factory.CreateDbContextAsync();
+        Assert.False(await verification.ImportBatches.AnyAsync(x => x.SourceKind == SourceKind.WatchedFolder));
     }
 
     [Theory]
@@ -159,15 +161,4 @@ public sealed partial class DatabaseIntegrationTests
         else Assert.False(await verification.Activities.AnyAsync(x => x.Id == activity));
     }
 
-    private sealed class RecordingWatchedQueue : IImportQueue
-    {
-        public List<ImportRequest> Requests { get; } = [];
-        public ValueTask<Guid> EnqueueAsync(ImportRequest request, CancellationToken cancellationToken = default)
-        {
-            Requests.Add(request);
-            return ValueTask.FromResult(Guid.NewGuid());
-        }
-        public IAsyncEnumerable<ImportProgress> WatchAsync(Guid importId, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-    }
 }

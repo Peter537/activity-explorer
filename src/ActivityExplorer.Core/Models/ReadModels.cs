@@ -17,7 +17,11 @@ public sealed record FilterValue(Guid? Id, string Value);
 public sealed record ActivityReadDetail(ActivitySummary Summary, string? Description, string? GearName,
     double ElapsedSeconds, double? Calories, double? AverageSpeedMetersPerSecond, double? MaxSpeedMetersPerSecond,
     double? AverageHeartRate, double? MaxHeartRate, double? AverageCadence, double? MaxPowerWatts,
-    double? NormalizedPowerWatts, int LapCount, int SourceCount, int SegmentEffortCount, int MetricCount);
+    double? NormalizedPowerWatts, int LapCount, int SourceCount, int SegmentEffortCount, int MetricCount)
+{
+    public bool SegmentEffortsPending { get; init; }
+}
+public sealed class ProjectionPendingException() : InvalidOperationException("Segment efforts are being recalculated. Try again shortly.");
 public sealed record RouteReadDetail(RouteSummary Summary, string? Description);
 public sealed record SegmentReadDetail(SegmentSummary Summary, int ParentCount, int ChildCount, bool MetricsCurrent);
 public sealed record SegmentTimingSample(double DistanceMeters, double BaselineElapsedSeconds, double ComparisonElapsedSeconds, double DeltaSeconds);

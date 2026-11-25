@@ -207,13 +207,16 @@
                 await InvokeAsync(async () => { if (_disposed || token.IsCancellationRequested || revision != _pollingRevision) return; await LoadHistory(); if (!_disposed) StateHasChanged(); });
                 var reports = await Task.WhenAll(ids.Select(id => History.GetReportAsync(id, token)));
                 if (_disposed || token.IsCancellationRequested || revision != _pollingRevision) return;
-                if (reports.All(report => report?.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or ImportStatus.Interrupted))
+                if (reports.All(report => report?.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or
+                    ImportStatus.Interrupted or ImportStatus.ReviewRequired))
                 {
                     var warnings = reports.Sum(report => report?.Warnings ?? 0);
                     var failed = reports.Count(report => report?.Status == ImportStatus.Failed);
                     var interrupted = reports.Count(report => report?.Status == ImportStatus.Interrupted);
-                    _statusIsError = !allQueued || failed > 0 || interrupted > 0;
-                    _status = failed > 0 || interrupted > 0
+                    var reviewRequired = reports.Count(report => report?.Status == ImportStatus.ReviewRequired);
+                    _statusIsError = !allQueued || failed > 0 || interrupted > 0 || reviewRequired > 0;
+                    _status = reviewRequired > 0 ? "An earlier import needs review. See import history for its saved results and next steps."
+                        : failed > 0 || interrupted > 0
                         ? $"Processing stopped with {failed} failed and {interrupted} interrupted import{(failed + interrupted == 1 ? string.Empty : "s")}. Review import history for details."
                         : warnings == 0
                             ? allQueued ? "All selected files finished processing successfully." : "Queued files finished processing successfully. Other upload outcomes still need review below."
@@ -302,12 +305,14 @@
     private static string StatusText(ImportStatus status) => status switch
     {
         ImportStatus.CompletedWithWarnings => "Completed with warnings",
+        ImportStatus.ReviewRequired => "Review required",
         _ => status.ToString()
     };
 
     private static string StatusClass(ImportStatus status) => status switch
     {
         ImportStatus.CompletedWithWarnings => "warning",
+        ImportStatus.ReviewRequired => "warning",
         _ => status.ToString().ToLowerInvariant()
     };
 

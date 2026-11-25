@@ -23,12 +23,14 @@ public sealed partial class ActivityQueryService(
     public Task<ActivityFilterOptions> GetFilterOptionsAsync(Guid? ownerId, CancellationToken cancellationToken = default) => _reader.GetFilterOptionsAsync(ownerId, cancellationToken);
     public Task<ActivitySearchResult> SearchAsync(ActivityFilter filter, CancellationToken cancellationToken = default) => _reader.SearchAsync(filter, cancellationToken);
     public Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(ActivityFilter filter, CancellationToken cancellationToken = default) => _reader.GetMatchingActivityIdsAsync(filter, cancellationToken);
+    public Task<ActivityDeletionReview> PrepareDeletionAsync(ActivityFilter filter, CancellationToken cancellationToken = default) => _reader.PrepareDeletionAsync(filter, cancellationToken);
     public Task<DashboardSummary> GetDashboardAsync(DashboardQuery query, CancellationToken cancellationToken = default) => _reader.GetDashboardAsync(query, cancellationToken);
     public Task<TrainingCalendarSummary> GetTrainingCalendarAsync(TrainingCalendarQuery query, CancellationToken cancellationToken = default) => _reader.GetTrainingCalendarAsync(query, cancellationToken);
 
     public async Task<ActivityDetail?> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var activity = await db.Activities.AsNoTracking()
             .Include(x => x.Owner)
             .Include(x => x.Stream)
@@ -40,8 +42,9 @@ public sealed partial class ActivityQueryService(
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (activity is null) return null;
 
-        var efforts = await db.SegmentEfforts.AsNoTracking()
-            .Include(x => x.Segment)
+        var effortsPending = await ProjectionVersions.PendingSegments(db)
+            .AnyAsync(segment => segment.OwnerId == activity.OwnerId && segment.Sport == activity.Sport, cancellationToken);
+        var efforts = await ProjectionVersions.CurrentEfforts(db)
             .Where(x => x.ActivityId == id)
             .OrderBy(x => x.StartTimeUtc)
             .Select(x => new SegmentEffortSummary(
@@ -52,6 +55,7 @@ public sealed partial class ActivityQueryService(
                 x.ElevationGainMeters, x.ElevationLossMeters, x.AverageGradePercent, x.CoveragePercent,
                 x.MetricComputationVersion >= SegmentEffortMetricVersions.Current))
             .ToListAsync(cancellationToken);
+        await snapshot.CommitAsync(cancellationToken);
 
         return new ActivityDetail(
             ToSummary(activity),
@@ -66,7 +70,7 @@ public sealed partial class ActivityQueryService(
             activity.AverageCadence,
             activity.MaxPowerWatts,
             activity.Kilojoules,
-            activity.Stream is null ? [] : TrackCodec.Decode(activity.Stream.CompressedPayload),
+            activity.Stream is null ? [] : await TrackCodec.DecodeAsync(activity.Stream.CompressedPayload, cancellationToken),
             activity.Laps.OrderBy(x => x.Sequence)
                 .Select(x => new LapCandidate(x.Sequence, x.DistanceMeters, x.ElapsedSeconds, x.MovingSeconds, x.AverageHeartRate, x.AveragePowerWatts))
                 .ToArray(),
@@ -86,30 +90,46 @@ public sealed partial class ActivityQueryService(
             activity.Metrics.OrderBy(x => x.Label)
                 .Select(x => new ActivityMetricSummary(x.Id, x.Key, x.Label, x.NumericValue, x.TextValue, x.Unit, x.Origin, x.UpdatedAtUtc))
                 .ToArray(),
-            activity.Stream is null ? null : TrackCodec.Fingerprint(activity.Stream), activity.NormalizedPowerWatts);
+            activity.Stream is null ? null : TrackCodec.Fingerprint(activity.Stream), activity.NormalizedPowerWatts)
+        { SegmentEffortsPending = effortsPending };
     }
 
     public Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(Guid? ownerId, CancellationToken cancellationToken = default) => _reader.GetSportActivityCountsAsync(ownerId, cancellationToken);
 
-    public Task<ActivityDeletionResult> DeleteAsync(IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default) =>
-        ownerMutationLock.RunAsync(() => DeleteCoreAsync(activityIds, cancellationToken), cancellationToken);
+    public Task<ActivityDeletionResult> DeleteReviewedAsync(ActivityDeletionReview review, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => DeleteCoreAsync(review, cancellationToken), cancellationToken);
 
-    private async Task<ActivityDeletionResult> DeleteCoreAsync(
-        IReadOnlyCollection<Guid> activityIds,
-        CancellationToken cancellationToken = default)
+    // Callers that authorize changes within the mutation lock can operate on current IDs.
+    public Task<ActivityDeletionResult> DeleteAsync(IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => DeleteCurrentAsync(activityIds, cancellationToken), cancellationToken);
+
+    private async Task<ActivityDeletionResult> DeleteCurrentAsync(IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(activityIds);
         var ids = activityIds.Where(id => id != Guid.Empty).Distinct().ToArray();
         if (ids.Length == 0) throw new ArgumentException("Select at least one activity to delete.", nameof(activityIds));
 
         await using var probe = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var probedActivities = await probe.Activities.AsNoTracking()
+        var members = await probe.Activities.AsNoTracking()
             .Where(x => ids.Contains(x.Id))
-            .Select(x => new { x.Id, x.OwnerId })
-            .ToListAsync(cancellationToken);
-        if (probedActivities.Count != ids.Length)
+            .Select(x => new ActivityMutationTarget(x.Id, x.OwnerId, x.MutationVersion))
+            .ToArrayAsync(cancellationToken);
+        if (members.Length != ids.Length)
             throw new InvalidOperationException("One or more selected activities no longer exist. Refresh the selection and try again.");
-        var lockedOwnerIds = probedActivities.Select(x => x.OwnerId).Distinct().Order().ToArray();
+        return await DeleteCoreAsync(new(members), cancellationToken);
+    }
+
+    private async Task<ActivityDeletionResult> DeleteCoreAsync(ActivityDeletionReview review, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(review);
+        if (review.Members.Count == 0) throw new ArgumentException("Select at least one activity to delete.", nameof(review));
+        if (review.Members.Any(member => member is null || member.Id == Guid.Empty || member.OwnerId == Guid.Empty || member.MutationVersion < 0) ||
+            review.Members.Select(member => member.Id).Distinct().Count() != review.Members.Count)
+            throw new ArgumentException("The deletion review contains invalid or repeated activities.", nameof(review));
+
+        var reviewed = review.Members.ToDictionary(member => member.Id);
+        var ids = reviewed.Keys.ToArray();
+        var lockedOwnerIds = review.Members.Select(member => member.OwnerId).Distinct().Order().ToArray();
 
         await using var ownerLock = await ownerMutationLock.AcquireAsync(lockedOwnerIds, cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
@@ -118,8 +138,10 @@ public sealed partial class ActivityQueryService(
             .AsSplitQuery()
             .Where(x => ids.Contains(x.Id))
             .ToListAsync(cancellationToken);
-        if (activities.Count != ids.Length || activities.Any(x => !lockedOwnerIds.Contains(x.OwnerId)))
-            throw new InvalidOperationException("One or more selected activities changed. Refresh the selection and try again.");
+        if (activities.Count != ids.Length)
+            throw new InvalidOperationException("One or more reviewed activities no longer exist. Refresh the selection and try again.");
+        if (activities.Any(activity => !Matches(activity, reviewed[activity.Id])))
+            throw new InvalidOperationException("One or more reviewed activities changed. Refresh the selection and try again.");
 
         var ownerIds = activities.Select(x => x.OwnerId).Distinct().Order().ToArray();
         var sourceRows = activities.SelectMany(x => x.SourceFiles).ToArray();
@@ -218,7 +240,6 @@ public sealed partial class ActivityQueryService(
 
     public async Task<Guid> AddMetricAsync(Guid activityId, ActivityMetricRequest request, CancellationToken cancellationToken = default)
     {
-        ValidateMetric(request);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var oldOwner = await db.Activities.AsNoTracking().Where(x => x.Id == activityId)
             .Select(x => (Guid?)x.OwnerId).SingleOrDefaultAsync(cancellationToken)
@@ -227,9 +248,7 @@ public sealed partial class ActivityQueryService(
         var activity = await db.Activities.SingleOrDefaultAsync(x => x.Id == activityId, cancellationToken);
         if (activity is null || activity.OwnerId != oldOwner)
             throw new InvalidOperationException("The activity changed. Refresh it and try again.");
-        var key = NormalizeMetricKey(request.Key, request.Label);
-        if (await db.ActivityMetrics.AnyAsync(x => x.ActivityId == activityId && x.Key == key && x.Origin == ActivityMetricOrigin.Manual, cancellationToken))
-            throw new InvalidOperationException("A custom metric with this key already exists.");
+        var key = await ValidateManualMetricAsync(db, activityId, null, request, cancellationToken);
         var metric = new ActivityMetric
         {
             OwnerId = activity.OwnerId,
@@ -250,7 +269,6 @@ public sealed partial class ActivityQueryService(
 
     public async Task UpdateMetricAsync(Guid activityId, Guid metricId, ActivityMetricRequest request, CancellationToken cancellationToken = default)
     {
-        ValidateMetric(request);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var oldOwner = await db.Activities.AsNoTracking().Where(x => x.Id == activityId)
             .Select(x => (Guid?)x.OwnerId).SingleOrDefaultAsync(cancellationToken)
@@ -262,9 +280,7 @@ public sealed partial class ActivityQueryService(
         var metric = await db.ActivityMetrics
             .SingleOrDefaultAsync(x => x.Id == metricId && x.ActivityId == activityId && x.Origin == ActivityMetricOrigin.Manual, cancellationToken)
             ?? throw new InvalidOperationException("The editable custom metric was not found.");
-        var key = NormalizeMetricKey(request.Key, request.Label);
-        if (await db.ActivityMetrics.AnyAsync(x => x.ActivityId == activityId && x.Key == key && x.Origin == ActivityMetricOrigin.Manual && x.Id != metricId, cancellationToken))
-            throw new InvalidOperationException("A custom metric with this key already exists.");
+        var key = await ValidateManualMetricAsync(db, activityId, metricId, request, cancellationToken);
         metric.Key = key;
         metric.Label = request.Label.Trim();
         metric.NumericValue = request.NumericValue;
@@ -296,9 +312,15 @@ public sealed partial class ActivityQueryService(
     }
 
     public Task<ActivityUpdateResult> UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default) =>
-        ownerMutationLock.RunAsync(() => UpdateCoreAsync(id, request, cancellationToken), cancellationToken);
+        ownerMutationLock.RunAsync(() => UpdateCoreAsync(id, request, null, cancellationToken), cancellationToken);
 
-    private async Task<ActivityUpdateResult> UpdateCoreAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken)
+    public Task<ActivityUpdateResult> UpdateReviewedAsync(ActivityMutationTarget target, UpdateActivityRequest request, CancellationToken cancellationToken = default) =>
+        ownerMutationLock.RunAsync(() => UpdateCoreAsync(target.Id, request, target, cancellationToken), cancellationToken);
+
+    private static bool Matches(Activity activity, ActivityMutationTarget target) =>
+        activity.OwnerId == target.OwnerId && activity.MutationVersion == target.MutationVersion;
+
+    private async Task<ActivityUpdateResult> UpdateCoreAsync(Guid id, UpdateActivityRequest request, ActivityMutationTarget? target, CancellationToken cancellationToken)
     {
         var title = request.Title.Trim();
         if (title.Length is < 1 or > 240)
@@ -309,7 +331,7 @@ public sealed partial class ActivityQueryService(
             throw new ArgumentException("Gear name cannot exceed 160 characters.", nameof(request));
 
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var oldOwner = await db.Activities.AsNoTracking()
+        var oldOwner = target?.OwnerId ?? await db.Activities.AsNoTracking()
             .Where(x => x.Id == id)
             .Select(x => (Guid?)x.OwnerId)
             .SingleOrDefaultAsync(cancellationToken)
@@ -321,7 +343,7 @@ public sealed partial class ActivityQueryService(
             .Include(x => x.Tags).ThenInclude(x => x.Tag)
             .AsSplitQuery()
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
-        if (activity is null || activity.OwnerId != oldOwner)
+        if (activity is null || activity.OwnerId != oldOwner || target is not null && !Matches(activity, target))
             throw new InvalidOperationException("The activity changed. Refresh it and try again.");
         if (!await db.Owners.AnyAsync(x => x.Id == request.OwnerId, cancellationToken))
             throw new InvalidOperationException("The selected profile was not found.");
@@ -485,12 +507,18 @@ public sealed partial class ActivityQueryService(
         return new ActivityUpdateResult(id, request.OwnerId, fileCleanupPending, statisticsRefreshPending, segmentRefreshPending);
     }
 
-    public static void ValidateMetric(ActivityMetricRequest request)
+    public static async Task<string> ValidateManualMetricAsync(ExplorerDbContext db, Guid activityId, Guid? editedMetricId,
+        ActivityMetricRequest request, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Label))
             throw new ArgumentException("Metric label is required.", nameof(request));
         if (!request.NumericValue.HasValue && string.IsNullOrWhiteSpace(request.TextValue))
             throw new ArgumentException("Enter either a numeric or text value.", nameof(request));
+        var key = NormalizeMetricKey(request.Key, request.Label);
+        if (await db.ActivityMetrics.AnyAsync(x => x.ActivityId == activityId && x.Key == key &&
+                x.Origin == ActivityMetricOrigin.Manual && x.Id != editedMetricId, cancellationToken))
+            throw new InvalidOperationException("A custom metric with this key already exists.");
+        return key;
     }
 
     private static string NormalizeMetricKey(string key, string label)

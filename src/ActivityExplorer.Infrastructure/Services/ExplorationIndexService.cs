@@ -14,6 +14,7 @@ public sealed class ExplorationIndexService(
     ExplorationSourceReader sourceReader) : IExplorationIndexService, IDisposable
 {
     public const int ComputationVersion = 1;
+    private const int StalePublicationLimit = 3;
     private readonly SemaphoreSlim _activityGate = new(1, 1);
 
     public void Dispose() => _activityGate.Dispose();
@@ -39,12 +40,8 @@ public sealed class ExplorationIndexService(
         return new(total, indexed, limited);
     }
 
-    public Task<ExplorationIndexStatus> BuildAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress = null,
+    public async Task<ExplorationIndexStatus> BuildAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress = null,
         bool recheckLimited = false, CancellationToken cancellationToken = default)
-        => ownerMutationLock.RunAsync(() => BuildCoreAsync(scope, progress, recheckLimited, cancellationToken), cancellationToken);
-
-    private async Task<ExplorationIndexStatus> BuildCoreAsync(ExplorationScope scope, IProgress<ExplorationBuildProgress>? progress,
-        bool recheckLimited, CancellationToken cancellationToken)
     {
         var status = await GetStatusAsync(scope, cancellationToken);
         var recheck = new Queue<Guid>();
@@ -57,15 +54,18 @@ public sealed class ExplorationIndexService(
             recheck = new(ids);
         }
         Report(progress, status, recheck.Count);
+        var stalePublications = 0;
 
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (status.IsComplete && recheck.Count == 0) return status;
+            if (stalePublications >= StalePublicationLimit) return status with { RemainingLimitedRechecks = recheck.Count };
             var force = recheck.Count > 0;
             var batch = force
                 ? Enumerable.Range(0, Math.Min(32, recheck.Count)).Select(_ => recheck.Dequeue()).ToArray()
                 : await PendingAsync(scope, cancellationToken);
+            if (batch.Length == 0) return await GetStatusAsync(scope, cancellationToken);
             for (var position = 0; position < batch.Length; position++)
             {
                 await _activityGate.WaitAsync(cancellationToken);
@@ -77,7 +77,11 @@ public sealed class ExplorationIndexService(
                         var published = await IndexAsync(activity, cancellationToken);
                         if (published && !force)
                             status = status with { IndexedActivities = Math.Min(status.TotalActivities, status.IndexedActivities + 1) };
-                        else if (!published && force) recheck.Enqueue(activity.Id);
+                        if (!published)
+                        {
+                            stalePublications++;
+                            if (force) recheck.Enqueue(activity.Id);
+                        }
                     }
                 }
                 finally

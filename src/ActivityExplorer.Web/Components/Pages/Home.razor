@@ -90,7 +90,8 @@
         </article>
         <article class="panel">
             <div class="panel-heading"><h2>Lifetime records</h2><a href="@RecordsUrl">View all records</a></div>
-            @if (_summary.Highlights.Count == 0) { <p class="muted">No records for this profile and sport.</p> }
+            @if (_summary.HighlightsPending) { <p class="muted" role="status">Some lifetime records are being recalculated.</p> }
+            else if (_summary.Highlights.Count == 0) { <p class="muted">No records for this profile and sport.</p> }
             @foreach (var record in _summary.Highlights)
             {
                 <div class="record-row"><span><a href="@HistoryUrl(record)">@record.Sport · @record.Key progress</a><strong>@RecordDisplay.Value(record.Sport, record.Kind, record.Value)</strong>@if (!ProfileState.SelectedOwnerId.HasValue) { <small>@record.OwnerName</small> }</span><a href="@($"/activities/{record.ActivityId}")" aria-label="@($"Open {record.ActivityTitle}")">Activity →</a></div>

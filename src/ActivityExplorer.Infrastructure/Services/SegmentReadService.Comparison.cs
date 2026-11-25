@@ -21,6 +21,7 @@ public sealed partial class SegmentReadService
             var source = db.Segments.AsNoTracking().Where(segment => segment.OwnerId == ownerId && segment.Id == segmentId);
             var loaded = await Summaries(source, db).SingleOrDefaultAsync(cancellationToken);
             if (loaded is null) return null;
+            if (loaded.EffortsPending) throw new ProjectionPendingException();
             summary = loaded;
             geometry = await source.Select(segment => segment.GeometryWkb).SingleAsync(cancellationToken);
             efforts = await Efforts(db, ownerId, segmentId).Where(effort => effort.Id == baselineId || effort.Id == comparisonId)

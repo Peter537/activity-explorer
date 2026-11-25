@@ -116,14 +116,14 @@ else if (_result is not null)
         </div>
         <div class="bulk-action-buttons">
             <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="ToggleCurrentPageSelection">@(AllCurrentPageSelected ? "Clear this page" : "Select this page")</button>
-            @if (_selectedIds.Count > 0) { <button class="button" type="button" disabled="@(_busy || _batchEditing || _deleteConfirming)" @onclick="ClearSelectionAndConfirmation">Clear selection</button> }
+            @if (_selected.Count > 0) { <button class="button" type="button" disabled="@(_busy || _batchEditing || _deleteConfirming)" @onclick="ClearSelectionAndConfirmation">Clear selection</button> }
             @if (ProfileState.SelectedOwnerId.HasValue)
             {
-                <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selectedIds.Count == 0)" @onclick="() => BeginBatch(false)">Edit selected</button>
+                <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selected.Count == 0)" @onclick="() => BeginBatch(false)">Edit selected</button>
                 <button class="button" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="() => BeginBatch(true)">Edit all matching</button>
             }
             <div class="deletion-actions" aria-label="Activity deletion actions">
-                <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selectedIds.Count == 0)" @onclick="BeginSelectedDelete">Delete selected</button>
+                <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing || _selected.Count == 0)" @onclick="BeginSelectedDelete">Delete selected</button>
                 <button class="button danger" type="button" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)" @onclick="BeginAllMatchingDelete">Delete all @_result.Total.ToString("N0") matching</button>
             </div>
         </div>
@@ -134,10 +134,10 @@ else if (_result is not null)
         <ActivityBatchEditor @key="_batchGeneration" OwnerId="batchOwner" Tags="_tags" SelectedIds="_batchIds" Filter="_result.EffectiveFilter"
                              AllMatching="_batchAll" OnApplied="result => BatchApplied(batchOwner, batchGeneration, result)" OnCancel="CancelBatch" OnRefresh="RefreshOrganizationActivities" />
     }
-    @if (_deleteConfirming)
+    @if (_pendingDeletion is { } deletion)
     {
-        <ActivityDeleteConfirmation Count="@_pendingDeleteIds.Count" ActivityName="@_pendingActivityName"
-                                    ScopeDescription="@_pendingScopeDescription" Busy="@_busy"
+        <ActivityDeleteConfirmation Count="@deletion.Review.Members.Count" ActivityName="@deletion.ActivityName"
+                                    ScopeDescription="@deletion.ScopeDescription" Busy="@_busy"
                                     OnConfirm="ConfirmDelete" OnCancel="CancelDelete" />
     }
     <section class="panel flush">
@@ -146,8 +146,8 @@ else if (_result is not null)
         {
             <div class="activity-selection-row">
                 <label class="activity-selector">
-                    <input type="checkbox" checked="@_selectedIds.Contains(activity.Id)" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)"
-                           @onchange="eventArgs => SetSelected(activity.Id, eventArgs.Value is true)" />
+                    <input type="checkbox" checked="@_selected.ContainsKey(activity.Id)" disabled="@(ActionsBlocked || _deleteConfirming || _batchEditing)"
+                           @onchange="eventArgs => SetSelected(activity, eventArgs.Value is true)" />
                     <span class="visually-hidden">Select @activity.Title recorded @LocalStart(activity).ToString("g")</span>
                 </label>
                 <a class="activity-row" href="@($"/activities/{activity.Id}")">
@@ -209,11 +209,10 @@ else if (_result is not null)
     private string _device = "";
     private string _sort = "start-desc";
     private int _page = 1;
-    private readonly HashSet<Guid> _selectedIds = [];
-    private IReadOnlyList<Guid> _pendingDeleteIds = [];
-    private string? _pendingActivityName;
-    private string _pendingScopeDescription = "";
-    private bool _deleteConfirming;
+    private readonly Dictionary<Guid, ActivityMutationTarget> _selected = [];
+    private PendingDeletion? _pendingDeletion;
+    private bool _deleteConfirming => _pendingDeletion is not null;
+    private sealed record PendingDeletion(ActivityDeletionReview Review, string? ActivityName, string ScopeDescription);
     private bool _busy;
     private string? _statusMessage;
     private string? _warningMessage;
@@ -357,8 +356,8 @@ else if (_result is not null)
 
     private DateTimeOffset LocalStart(ActivitySummary activity) => TimeZoneInfo.ConvertTime(activity.StartTime,
         ReportingTimeZone.Resolve(_result!.EffectiveFilter.ResolvedPeriods!.Single(x => x.OwnerId == activity.OwnerId).TimeZoneId));
-    private string SelectedSummary => _selectedIds.Count == 0 ? "No activities selected" : $"{_selectedIds.Count:N0} selected";
-    private bool AllCurrentPageSelected => _result?.Items.Count > 0 && _result.Items.All(activity => _selectedIds.Contains(activity.Id));
+    private string SelectedSummary => _selected.Count == 0 ? "No activities selected" : $"{_selected.Count:N0} selected";
+    private bool AllCurrentPageSelected => _result?.Items.Count > 0 && _result.Items.All(activity => _selected.ContainsKey(activity.Id));
 
     private void FiltersChanged()
     {
@@ -380,11 +379,11 @@ else if (_result is not null)
         _sortOnly = sortOnly;
     }
 
-    private void SetSelected(Guid activityId, bool selected)
+    private void SetSelected(ActivitySummary activity, bool selected)
     {
         if (ActionsBlocked) return;
-        if (selected) _selectedIds.Add(activityId);
-        else _selectedIds.Remove(activityId);
+        if (selected) _selected.TryAdd(activity.Id, ActivityMutationTarget.FromSummary(activity));
+        else _selected.Remove(activity.Id);
         _errorMessage = null;
     }
 
@@ -392,22 +391,22 @@ else if (_result is not null)
     {
         if (_result is null || ActionsBlocked) return;
         if (AllCurrentPageSelected)
-            foreach (var activity in _result.Items) _selectedIds.Remove(activity.Id);
+            foreach (var activity in _result.Items) _selected.Remove(activity.Id);
         else
-            foreach (var activity in _result.Items) _selectedIds.Add(activity.Id);
+            foreach (var activity in _result.Items) _selected.TryAdd(activity.Id, ActivityMutationTarget.FromSummary(activity));
     }
 
     private void BeginSelectedDelete()
     {
-        if (ActionsBlocked || _selectedIds.Count == 0) return;
-        _pendingDeleteIds = _selectedIds.ToArray();
-        _pendingActivityName = _pendingDeleteIds.Count == 1
-            ? _result?.Items.FirstOrDefault(activity => activity.Id == _pendingDeleteIds[0])?.Title
+        if (ActionsBlocked || _selected.Count == 0) return;
+        var review = new ActivityDeletionReview(_selected.Values);
+        var name = review.Members.Count == 1
+            ? _result?.Items.FirstOrDefault(activity => ActivityMutationTarget.FromSummary(activity) == review.Members[0])?.Title
             : null;
-        _pendingScopeDescription = _pendingDeleteIds.Count == 1
+        var description = review.Members.Count == 1
             ? "You are about to permanently delete the selected activity."
-            : $"You are about to permanently delete {_pendingDeleteIds.Count:N0} selected activities across pages.";
-        _deleteConfirming = true;
+            : $"You are about to permanently delete {review.Members.Count:N0} selected activities across pages.";
+        _pendingDeletion = new(review, name, description);
         _errorMessage = null;
     }
 
@@ -419,17 +418,15 @@ else if (_result is not null)
         _errorMessage = null;
         try
         {
-            var ids = await ActivitiesService.GetMatchingActivityIdsAsync(_result.EffectiveFilter);
+            var review = await ActivitiesService.PrepareDeletionAsync(_result.EffectiveFilter);
             if (revision != _revision) return;
-            _pendingDeleteIds = ids;
-            if (_pendingDeleteIds.Count == 0)
+            if (review.Members.Count == 0)
             {
                 _errorMessage = "No activities match the current filters anymore. Refresh the list and try again.";
                 return;
             }
-            _pendingActivityName = null;
-            _pendingScopeDescription = $"This exact snapshot contains {_pendingDeleteIds.Count:N0} activities matching the current filters. Activities imported after this confirmation appeared will not be included.";
-            _deleteConfirming = true;
+            _pendingDeletion = new(review, null,
+                $"This exact snapshot contains {review.Members.Count:N0} activities matching the current filters. Activities imported after this confirmation appeared will not be included.");
         }
         catch (Exception exception)
         {
@@ -443,12 +440,12 @@ else if (_result is not null)
 
     private async Task ConfirmDelete()
     {
-        if (ActionsBlocked || _pendingDeleteIds.Count == 0) return;
+        if (ActionsBlocked || _pendingDeletion is not { } deletion) return;
         _busy = true;
         _errorMessage = null;
         try
         {
-            var result = await ActivitiesService.DeleteAsync(_pendingDeleteIds);
+            var result = await ActivitiesService.DeleteReviewedAsync(deletion.Review);
             _organizationRevision++;
             _statusMessage = $"Permanently deleted {result.DeletedCount:N0} {(result.DeletedCount == 1 ? "activity" : "activities")}.";
             _warningMessage = BuildPendingWarning(result.FileCleanupPending, result.StatisticsRefreshPending);
@@ -473,21 +470,15 @@ else if (_result is not null)
     private void CancelDelete()
     {
         if (_busy) return;
-        _pendingDeleteIds = [];
-        _pendingActivityName = null;
-        _pendingScopeDescription = "";
-        _deleteConfirming = false;
+        _pendingDeletion = null;
         _errorMessage = null;
     }
 
     private void ClearSelectionAndConfirmation()
     {
         CancelBatch();
-        _selectedIds.Clear();
-        _pendingDeleteIds = [];
-        _pendingActivityName = null;
-        _pendingScopeDescription = "";
-        _deleteConfirming = false;
+        _selected.Clear();
+        _pendingDeletion = null;
     }
 
     private static string? BuildPendingWarning(bool cleanupPending, bool statisticsPending)

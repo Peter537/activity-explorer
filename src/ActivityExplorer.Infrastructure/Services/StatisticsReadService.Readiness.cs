@@ -33,9 +33,13 @@ public sealed partial class StatisticsReadService
         var versions = await stored.Select(record => record.ComputationVersion).Distinct().ToArrayAsync(cancellationToken);
         var invalidReferences = await stored.AnyAsync(record => !db.Activities.Any(activity => activity.Id == record.ActivityId &&
             activity.OwnerId == record.OwnerId && activity.Sport == record.Sport), cancellationToken);
-        var available = !invalidReferences && (!hasActivities || versions.Length > 0 && versions.All(version => version == RecordCatalog.ComputationVersion));
-        var records = available ? (await ReadRecordsAsync(db, query.OwnerId, query.Scope, cancellationToken)).Where(record => record.Sport == query.Sport).ToArray() : [];
-        return new(new(records, periods), benchmarks, "persisted_snapshot", available,
-            available ? null : "Record snapshots are missing or use a different calculation version. Refresh records in the matching web application.", RecordCatalog.ComputationVersion);
+        var generationPending = await ProjectionVersions.PendingRecords(db).AnyAsync(state => state.OwnerId == query.OwnerId, cancellationToken);
+        var hasPublication = await db.OwnerProjectionVersions.AnyAsync(state => state.OwnerId == query.OwnerId, cancellationToken);
+        var available = !generationPending && !invalidReferences && versions.All(version => version == RecordCatalog.ComputationVersion) &&
+            (!hasActivities || hasPublication || versions.Length > 0);
+        var records = available ? await ReadRecordsAsync(db, query.OwnerId, query.Scope, cancellationToken, query.Sport) : [];
+        return new(new(records, periods) { HasPendingSnapshots = generationPending }, benchmarks, "persisted_snapshot", available,
+            available ? null : "Record snapshots are pending, missing, or use a different calculation version. Refresh records in the matching web application.",
+            RecordCatalog.ComputationVersion);
     }
 }

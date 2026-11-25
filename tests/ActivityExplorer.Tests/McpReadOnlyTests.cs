@@ -106,6 +106,34 @@ public sealed class McpReadOnlyTests
     }
 
     [Fact]
+    public async Task Tools_report_pending_projections_and_keep_stored_results_until_the_web_repairs_them()
+    {
+        await using var fixture = await McpFixture.CreateAsync();
+        await using (var db = await fixture.Factory.CreateDbContextAsync())
+        {
+            await ProjectionVersions.EnsureAsync(db, CancellationToken.None);
+            await db.Activities.Where(activity => activity.Id == fixture.Activity)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(activity => activity.DistanceMeters, activity => activity.DistanceMeters + 100));
+        }
+
+        using var host = fixture.BuildHost();
+        var segmentTools = ActivatorUtilities.CreateInstance<SegmentTools>(host.Services);
+        var summary = Data(await segmentTools.GetSegment(fixture.Owner, fixture.Segment, default));
+        Assert.True(summary.GetProperty("summary").GetProperty("effortsPending").GetBoolean());
+        Assert.Equal("projection_pending", Error(await segmentTools.ListSegmentEfforts(fixture.Owner, fixture.Segment, default)));
+        Assert.Equal("projection_pending", Error(await segmentTools.CompareSegmentEfforts(
+            fixture.Owner, fixture.Segment, fixture.Efforts[0], fixture.Efforts[1], default)));
+
+        var reportingTools = ActivatorUtilities.CreateInstance<ReportingTools>(host.Services);
+        var records = Data(await reportingTools.GetRecords(fixture.Owner, SportKind.Cycling, default));
+        Assert.False(records.GetProperty("available").GetBoolean());
+        Assert.Empty(records.GetProperty("overview").GetProperty("records").EnumerateArray());
+        await using var verification = await fixture.Factory.CreateDbContextAsync();
+        Assert.NotEmpty(await verification.StatisticSnapshots.ToArrayAsync());
+        Assert.Equal(2, await verification.SegmentEfforts.CountAsync(value => value.SegmentId == fixture.Segment));
+    }
+
+    [Fact]
     public async Task Tool_policy_enforces_profiles_limits_timeout_cancellation_and_error_contracts()
     {
         await using var fixture = await McpFixture.CreateAsync();

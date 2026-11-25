@@ -47,6 +47,7 @@ public sealed class FitActivityImporter : IActivityImporter
         var records = new List<TrackPoint>();
         var laps = new List<LapCandidate>();
         SessionMesg? session = null;
+        var sessionCount = 0;
         FileIdMesg? fileId = null;
 
         var broadcaster = new MesgBroadcaster();
@@ -77,7 +78,10 @@ public sealed class FitActivityImporter : IActivityImporter
                 message.GetAvgHeartRate(),
                 message.GetAvgPower()));
         };
-        broadcaster.SessionMesgEvent += (_, args) => session = new SessionMesg(args.mesg);
+        broadcaster.SessionMesgEvent += (_, args) =>
+        {
+            if (++sessionCount == 1) session = new SessionMesg(args.mesg);
+        };
         broadcaster.FileIdMesgEvent += (_, args) => fileId = new FileIdMesg(args.mesg);
 
         var decoder = new Decode();
@@ -98,6 +102,8 @@ public sealed class FitActivityImporter : IActivityImporter
 
         stream.Position = 0;
         decoder.Read(stream);
+        if (sessionCount > 1)
+            throw new UnsupportedActivityException("FIT files with multiple sessions are not supported. Export each session as a separate activity.");
 
         var sport = MapSport(session?.GetSport(), session?.GetSubSport());
         var isIndoor = ClassifyIndoor(sport, session?.GetSubSport());

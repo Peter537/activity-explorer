@@ -9,13 +9,16 @@ namespace ActivityExplorer.Infrastructure.Import;
 public sealed class ArchiveActivityImporter(
     AppDataPaths paths,
     FitActivityImporter fit,
-    XmlActivityImporter xml) : IActivityImporter, IImporterDiagnosticsSource
+    XmlActivityImporter xml) : IActivityImporter
 {
     private const int MaxEntries = 50_000;
     private const long MaxEntryBytes = 4L * 1024 * 1024 * 1024;
     private const long MaxExpandedBytes = 20L * 1024 * 1024 * 1024;
     private const int MaxDepth = 3;
-    private ImporterDiagnostics _lastDiagnostics = new(0, 0, null);
+    private static readonly HashSet<string> StravaColumns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Activity ID", "Activity Name", "Activity Type", "Activity Description", "Activity Gear", "Filename"
+    };
 
     public string Name => "Garmin/Strava archive";
 
@@ -26,30 +29,76 @@ public sealed class ArchiveActivityImporter(
             || extension.Equals(".gz", StringComparison.OrdinalIgnoreCase);
     }
 
-
-    public ImporterDiagnostics ConsumeDiagnostics()
-    {
-        var result = _lastDiagnostics;
-        _lastDiagnostics = new ImporterDiagnostics(0, 0, null);
-        return result;
-    }
     public async Task<IReadOnlyList<ImportCandidate>> ReadAsync(
         string path,
         SourceKind sourceKind,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        (await ReadWithDiagnosticsAsync(path, sourceKind, cancellationToken)).Candidates;
+
+    internal async Task<(IReadOnlyList<ImportCandidate> Candidates, ImporterDiagnostics Diagnostics)> ReadWithDiagnosticsAsync(
+        string path, SourceKind sourceKind, CancellationToken cancellationToken = default)
+    {
+        var candidates = new List<ImportCandidate>();
+        var plan = await OpenAsync(path, sourceKind, recoverableExtraction: false, cancellationToken);
+        try
+        {
+            var diagnostics = await plan.VisitAsync(candidates.Add, cancellationToken);
+            // Bulk readers retain usable candidate file paths under the input's staging directory.
+            return (candidates, diagnostics);
+        }
+        catch
+        {
+            plan.Dispose();
+            throw;
+        }
+    }
+
+    public async Task<ImporterDiagnostics> VisitAsync(string path, SourceKind sourceKind, Action<ImportCandidate> visit,
+        bool recoverableExtraction = false, CancellationToken cancellationToken = default)
+    {
+        using var plan = await OpenAsync(path, sourceKind, recoverableExtraction, cancellationToken);
+        return await plan.VisitAsync(visit, cancellationToken);
+    }
+
+    internal async Task<ArchiveImportPlan> OpenAsync(string path, SourceKind sourceKind, bool recoverableExtraction,
+        CancellationToken cancellationToken)
     {
         paths.EnsureCreated();
-        var extractionRoot = Path.Combine(Path.GetDirectoryName(path) ?? paths.StagingPath, $"expanded-{Guid.NewGuid():N}");
+        var extractionRoot = recoverableExtraction
+            ? ManagedStagingDirectory.Create(paths.StagingPath)
+            : Path.Combine(Path.GetDirectoryName(path) ?? paths.StagingPath, $"expanded-{Guid.NewGuid():N}");
         Directory.CreateDirectory(extractionRoot);
 
-        var state = new ExtractionState();
-        await ExpandAsync(path, extractionRoot, Path.GetFileName(path), 0, state, cancellationToken);
+        try
+        {
+            var state = new ExtractionState();
+            await ExpandAsync(path, extractionRoot, Path.GetFileName(path), 0, state, cancellationToken);
+            return CreatePlan(CleanupExtraction, sourceKind, state, cancellationToken);
+        }
+        catch
+        {
+            CleanupExtraction();
+            throw;
+        }
 
+        void CleanupExtraction()
+        {
+            if (!recoverableExtraction) { TryDeleteDirectory(extractionRoot); return; }
+            try { ManagedStagingDirectory.DeleteOwned(paths.StagingPath, extractionRoot); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                // The startup sweep can retry while ownership and protection remain recorded.
+            }
+        }
+    }
+
+    private ArchiveImportPlan CreatePlan(Action cleanup, SourceKind sourceKind, ExtractionState state,
+        CancellationToken cancellationToken)
+    {
         var metadata = sourceKind == SourceKind.StravaArchive
-            ? ReadStravaMetadata(state.Files)
+            ? ReadStravaMetadata(state.Files, cancellationToken)
             : StravaMetadata.Empty;
 
-        var result = new List<ImportCandidate>();
         var supportedFiles = state.Files
             .Where(candidate => fit.CanImport(candidate.PhysicalPath) || xml.CanImport(candidate.PhysicalPath))
             .ToArray();
@@ -71,10 +120,23 @@ public sealed class ArchiveActivityImporter(
                 ? state.Files.Count(file => metadata.IsActivityFile(file) &&
                     !fit.CanImport(file.PhysicalPath) && !xml.CanImport(file.PhysicalPath))
                 : 0;
-        var corrupt = state.CorruptEntries;
-        foreach (var file in activityFiles)
+        if (activityFiles.Length == 0 && unsupported == 0 && state.CorruptEntries == 0) unsupported = 1;
+        return new ArchiveImportPlan(cleanup, sourceKind, fit, metadata, activityFiles, unsupported, state.CorruptEntries);
+    }
+
+    internal sealed class ArchiveImportPlan(Action cleanup, SourceKind sourceKind, FitActivityImporter fit,
+        StravaMetadata metadata, IReadOnlyList<ExtractedFile> activityFiles, int unsupported, int corrupt) : IDisposable
+    {
+        private bool HasMetadataWarning => metadata.AmbiguousColumns.Count > 0;
+        public int EntryCount => activityFiles.Count;
+        public int FilesDiscovered => EntryCount + unsupported + corrupt;
+        public int DiscoveryUnsupported => unsupported;
+        public int DiscoveryWarnings => corrupt + (HasMetadataWarning ? 1 : 0);
+
+        public async Task<ArchiveEntry> ReadEntryAsync(int index, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var file = activityFiles[index];
             try
             {
                 var meta = metadata.Find(file);
@@ -82,37 +144,55 @@ public sealed class ArchiveActivityImporter(
                     ? await fit.ReadAsync(file.PhysicalPath, sourceKind, cancellationToken)
                     : await XmlActivityImporter.ReadAsync(file.PhysicalPath, sourceKind,
                         meta is null ? null : Value(meta, "Activity Type"), cancellationToken);
-                foreach (var candidate in candidates)
+                var candidate = candidates.Single() with { OriginalName = ArchiveFileName(file.LogicalPath) };
+                var enriched = meta is null ? candidate : Enrich(candidate, meta);
+                var provider = sourceKind switch
                 {
-                    var logicalName = ArchiveFileName(file.LogicalPath);
-                    var logicalCandidate = candidate with { OriginalName = logicalName };
-                    var enriched = meta is null ? logicalCandidate : Enrich(logicalCandidate, meta);
-                    var provider = sourceKind switch
-                    {
-                        SourceKind.GarminArchive => SourceProvider.Garmin,
-                        SourceKind.StravaArchive => SourceProvider.Strava,
-                        _ => enriched.Provider
-                    };
-                    result.Add(enriched with { Provider = provider, AcquisitionMethod = AcquisitionMethod.AccountExport });
-                }
+                    SourceKind.GarminArchive => SourceProvider.Garmin,
+                    SourceKind.StravaArchive => SourceProvider.Strava,
+                    _ => enriched.Provider
+                };
+                return new(enriched with { Provider = provider, AcquisitionMethod = AcquisitionMethod.AccountExport }, 0, 0);
             }
             catch (UnsupportedActivityException)
             {
-                unsupported++;
+                return new(null, 1, 0);
             }
-            catch (Exception exception) when (exception is InvalidDataException or IOException or System.Xml.XmlException)
+            catch (Exception exception) when (exception is InvalidDataException or System.Xml.XmlException)
             {
-                corrupt++;
+                return new(null, 0, 1);
             }
         }
 
-        if (result.Count == 0 && unsupported == 0 && corrupt == 0) unsupported = 1;
-        var messages = new List<string>();
-        if (unsupported > 0) messages.Add($"Skipped {unsupported} unsupported or unrecognized archive entr{(unsupported == 1 ? "y" : "ies")}.");
-        if (corrupt > 0) messages.Add($"Skipped {corrupt} corrupt activity file{(corrupt == 1 ? string.Empty : "s")}.");
-        _lastDiagnostics = new ImporterDiagnostics(unsupported, corrupt, messages.Count == 0 ? null : string.Join(" ", messages));
-        return result;
+        public async Task<ImporterDiagnostics> VisitAsync(Action<ImportCandidate> visit, CancellationToken cancellationToken)
+        {
+            var skipped = DiscoveryUnsupported;
+            var warnings = DiscoveryWarnings;
+            for (var index = 0; index < EntryCount; index++)
+            {
+                var entry = await ReadEntryAsync(index, cancellationToken);
+                skipped += entry.Unsupported;
+                warnings += entry.Warnings;
+                if (entry.Candidate is { } candidate) visit(candidate);
+            }
+            return Diagnostics(skipped, warnings);
+        }
+
+        public ImporterDiagnostics Diagnostics(int skipped, int warnings)
+        {
+            var corruptCount = warnings - (HasMetadataWarning ? 1 : 0);
+            var messages = new List<string>();
+            if (skipped > 0) messages.Add($"Skipped {skipped} unsupported or unrecognized archive entr{(skipped == 1 ? "y" : "ies")}.");
+            if (corruptCount > 0) messages.Add($"Skipped {corruptCount} corrupt activity file{(corruptCount == 1 ? string.Empty : "s")}.");
+            if (HasMetadataWarning)
+                messages.Add($"Ignored ambiguous activities.csv columns ({string.Join(", ", metadata.AmbiguousColumns)}) because their headers repeat.");
+            return new(skipped, warnings, messages.Count == 0 ? null : string.Join(" ", messages));
+        }
+
+        public void Dispose() => cleanup();
     }
+
+    internal sealed record ArchiveEntry(ImportCandidate? Candidate, int Unsupported, int Warnings);
 
     private static async Task ExpandAsync(
         string archivePath,
@@ -265,7 +345,7 @@ public sealed class ArchiveActivityImporter(
         return candidate;
     }
 
-    private static StravaMetadata ReadStravaMetadata(IReadOnlyList<ExtractedFile> files)
+    private static StravaMetadata ReadStravaMetadata(IReadOnlyList<ExtractedFile> files, CancellationToken cancellationToken)
     {
         var csv = files
             .Where(file => ArchiveFileName(file.LogicalPath).Equals("activities.csv", StringComparison.OrdinalIgnoreCase))
@@ -276,8 +356,9 @@ public sealed class ArchiveActivityImporter(
             return StravaMetadata.Empty;
         }
 
-        var result = new StravaMetadata(ArchiveDirectoryName(csv.LogicalPath));
-        foreach (var row in CsvTable.Read(csv.PhysicalPath))
+        var (rows, ambiguousColumns) = CsvTable.Read(csv.PhysicalPath, StravaColumns, cancellationToken);
+        var result = new StravaMetadata(ArchiveDirectoryName(csv.LogicalPath)) { AmbiguousColumns = ambiguousColumns };
+        foreach (var row in rows)
         {
             var filename = Value(row, "Filename");
             if (!string.IsNullOrWhiteSpace(filename))
@@ -445,9 +526,9 @@ public sealed class ArchiveActivityImporter(
         public List<ExtractedFile> Files { get; } = [];
     }
 
-    private sealed record ExtractedFile(string PhysicalPath, string LogicalPath, string SourcePath);
+    internal sealed record ExtractedFile(string PhysicalPath, string LogicalPath, string SourcePath);
 
-    private sealed class StravaMetadata
+    internal sealed class StravaMetadata
     {
         private readonly Dictionary<string, List<IReadOnlyDictionary<string, string>>> _byPath =
             new(StringComparer.OrdinalIgnoreCase);
@@ -468,6 +549,7 @@ public sealed class ArchiveActivityImporter(
 
         public string RootPath { get; }
         public bool HasActivitiesCsv { get; }
+        public IReadOnlyList<string> AmbiguousColumns { get; init; } = [];
 
         public void Add(string filename, IReadOnlyDictionary<string, string> row)
         {

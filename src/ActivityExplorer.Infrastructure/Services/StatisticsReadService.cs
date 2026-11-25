@@ -15,10 +15,14 @@ public sealed partial class StatisticsReadService(IDbContextFactory<ExplorerDbCo
         return await ReadRecordsAsync(db, ownerId, scope, cancellationToken);
     }
 
-    private static async Task<IReadOnlyList<PersonalRecord>> ReadRecordsAsync(ExplorerDbContext db, Guid? ownerId, RecordScope scope, CancellationToken cancellationToken)
+    internal static async Task<IReadOnlyList<PersonalRecord>> ReadRecordsAsync(ExplorerDbContext db, Guid? ownerId,
+        RecordScope scope, CancellationToken cancellationToken, SportKind? sport = null)
     {
-        var query = db.StatisticSnapshots.AsNoTracking().Where(x => x.Scope == scope);
+        var pending = ProjectionVersions.PendingRecords(db);
+        var query = db.StatisticSnapshots.AsNoTracking().Where(x => x.Scope == scope &&
+            x.ComputationVersion == RecordCatalog.ComputationVersion && !pending.Any(state => state.OwnerId == x.OwnerId));
         if (ownerId.HasValue) query = query.Where(x => x.OwnerId == ownerId);
+        if (sport.HasValue) query = query.Where(x => x.Sport == sport);
         var records = await query.Join(db.Owners.AsNoTracking(), s => s.OwnerId, o => o.Id, (s, o) => new { s, o })
             .Join(db.Activities.AsNoTracking(), x => x.s.ActivityId, a => a.Id, (x, a) => new { Snapshot = x.s, Owner = x.o, Activity = a })
             .Where(item => item.Snapshot.OwnerId == item.Activity.OwnerId && item.Snapshot.Sport == item.Activity.Sport)

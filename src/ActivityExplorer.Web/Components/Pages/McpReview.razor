@@ -10,6 +10,15 @@
     <section class="panel form-panel">
         <h2>@(_preview.Summary[..1].ToUpperInvariant() + _preview.Summary[1..])</h2>
         <p>Profiles: @string.Join(", ", _preview.ProfileIds.Select(id => _profileNames.GetValueOrDefault(id, id.ToString()))). Expires: @_preview.ExpiresAt.ToLocalTime().ToString("g").</p>
+        @if (_path is not null)
+        {
+            <h3>Path to approve</h3>
+            <MapCanvas @key="_preview.PlanId" InlinePoints="_path.Points" Label="Path to approve" ForceBlank="true" />
+            @if (_path.OriginalCount > _path.Points.Count)
+            {
+                <p class="muted">The map shows @_path.Points.Count of @_path.OriginalCount path points.</p>
+            }
+        }
         <pre class="mcp-review-details">@System.Text.Json.JsonSerializer.Serialize(_preview.Details, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })</pre>
         @if (_preview.ConfirmationPhrase is not null)
         {
@@ -27,30 +36,51 @@
 @code {
     [Parameter] public Guid Id { get; set; }
     private McpChangePreview? _preview;
+    private McpWriteService.LocalReviewPath? _path;
     private string? _phrase;
     private string? _message;
     private bool _busy;
     private Dictionary<Guid, string> _profileNames = [];
     protected override async Task OnParametersSetAsync()
     {
-        _preview = null; _phrase = null;
+        _preview = null; _path = null; _phrase = null; _message = null;
         try
         {
-            _preview = Writes.GetPreview(Id);
+            (_preview, _path) = Writes.GetLocalReview(Id);
             _profileNames = (await Profiles.ListAsync()).ToDictionary(profile => profile.Id, profile => profile.DisplayName);
         }
-        catch (Exception exception) when (exception is KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+        catch (KeyNotFoundException)
+        {
+            try { ShowApproval(await Writes.StatusAsync(Id, CancellationToken.None)); }
+            catch (Exception exception) when (exception is KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+        }
+        catch (Exception exception) when (exception is McpPlanClosedException or UnauthorizedAccessException) { _message = exception.Message; }
     }
     private async Task Approve()
     {
         _busy = true;
-        try { var status = await Writes.ApproveAsync(Id, _phrase, CancellationToken.None); _preview = null; _message = $"Change approved. Operation {status.OperationId}: {status.Status}. Ask the client to check operation status for the result."; }
+        try { ShowApproval(await Writes.ApproveAsync(Id, _phrase, CancellationToken.None)); }
+        catch (McpPlanClosedException exception) { _preview = null; _message = exception.Message; }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
         finally { _busy = false; }
     }
-    private void Decline()
+    private async Task Decline()
     {
-        try { Writes.Decline(Id); _preview = null; _message = "Change declined. No operation was queued."; }
+        _busy = true;
+        try
+        {
+            var result = await Writes.DeclineAsync(Id, CancellationToken.None);
+            if (result.Operation is { } operation) ShowApproval(operation);
+            else { _preview = null; _message = "Change declined. No operation was queued."; }
+        }
+        catch (McpPlanClosedException exception) { _preview = null; _message = exception.Message; }
         catch (Exception exception) when (exception is KeyNotFoundException or UnauthorizedAccessException) { _message = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private void ShowApproval(McpOperationStatus operation)
+    {
+        _preview = null;
+        _message = $"Change approved. Operation {operation.OperationId} is {operation.Status}. Ask the client to check operation status for the result.";
     }
 }

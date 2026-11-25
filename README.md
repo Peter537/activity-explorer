@@ -42,7 +42,7 @@ Local desktop and IDE clients can query the existing database through the separa
 
 Prerequisites:
 
-- [.NET SDK 10.0.303](https://dotnet.microsoft.com/download/dotnet/10.0) is preferred; `global.json` accepts a later .NET 10 feature band when that exact SDK is unavailable.
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) version 10.0.404, with ASP.NET Core runtime 10.0.15 or newer for running the app.
 - An official account export or one or more FIT/GPX/TCX files.
 
 Run:
@@ -80,7 +80,7 @@ The Goals list has Current and upcoming, All, and Archived views, with name, spo
 
 ## Docker Compose
 
-Docker is optional:
+Docker is optional. Use Docker Engine 28.0.0 or newer with default bridge NAT networking. Activity Explorer relies on host loopback isolation. Affected older engines can expose loopback-published ports to nearby network peers. See the [Docker port publishing guidance](https://docs.docker.com/engine/network/port-publishing/#publishing-ports).
 
 ~~~powershell
 docker compose up --build

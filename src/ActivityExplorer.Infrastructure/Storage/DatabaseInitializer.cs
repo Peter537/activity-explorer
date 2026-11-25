@@ -20,12 +20,14 @@ public sealed class DatabaseInitializer(
         await EnsureSegmentProvenanceColumnsAsync(db, cancellationToken);
         await EnsureSegmentEffortMetricColumnsAsync(db, cancellationToken);
         await EnsureSegmentLinksAsync(db, cancellationToken);
+        await ProjectionVersions.EnsureAsync(db, cancellationToken);
         await EnsureOrganizationSchemaAsync(db, cancellationToken);
         await EnsureGoalsSchemaAsync(db, cancellationToken);
         await EnsureExplorationSchemaAsync(db, cancellationToken);
         await ExplorationCellSetStore.EnsureAsync(db, cancellationToken);
         await EnsureRecordEffortSummariesAsync(db, cancellationToken);
         await EnsureReadIndexesAsync(db, cancellationToken);
+        await ImportLifecycleSchema.EnsureAsync(db, cancellationToken);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "McpOperations" (
                 "Id" TEXT NOT NULL PRIMARY KEY, "Action" TEXT NOT NULL, "ProfileIdsJson" TEXT NOT NULL,
@@ -34,6 +36,7 @@ public sealed class DatabaseInitializer(
                 "CreatedAtUtc" INTEGER NOT NULL, "CompletedAtUtc" INTEGER NULL);
             CREATE TABLE IF NOT EXISTS "McpEffects" ("Id" TEXT NOT NULL PRIMARY KEY, "EntityId" TEXT NULL);
             """, cancellationToken);
+        await McpLibraryRevision.EnsureAsync(db, cancellationToken);
         await ReportUntrackedOriginalsAsync(db, cancellationToken);
 
         var interrupted = await db.ImportBatches
@@ -48,6 +51,7 @@ public sealed class DatabaseInitializer(
         if (interrupted.Count > 0) await db.SaveChangesAsync(cancellationToken);
 
         await fileOperations.RecoverAsync(cancellationToken);
+        await StagingRecovery.ReconcileAsync(db, paths, logger, cancellationToken);
     }
 
     internal static async Task EnsureSourceFileIndexesAsync(ExplorerDbContext db, CancellationToken cancellationToken = default)

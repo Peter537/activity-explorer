@@ -10,6 +10,7 @@ public sealed record ExplorationQuery(
 public sealed record ExplorationIndexStatus(int TotalActivities, int IndexedActivities, int LimitedActivities)
 {
     public bool IsComplete => TotalActivities == IndexedActivities;
+    public int RemainingLimitedRechecks { get; init; }
 }
 public sealed record ExplorationBuildProgress(int Completed, int Total, string Message);
 public sealed record ExplorationSummary(

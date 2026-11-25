@@ -39,24 +39,47 @@ public sealed partial class ChangeTools(McpWriteBridge bridge, ToolExecutionPoli
             return new McpApplyResult(existing.Status, planId, Operation: existing);
         }
         catch (McpBridgeException exception) when (exception.Code == "not_found") { }
-        var preview = await bridge.PreviewAsync(planId, token);
+        McpChangePreview preview;
+        try { preview = await bridge.PreviewAsync(planId, token); }
+        catch (McpBridgeException exception) when (exception.Code == "not_found")
+        {
+            var existing = await bridge.StatusAsync(planId, token);
+            return new McpApplyResult(existing.Status, planId, Operation: existing);
+        }
+        catch (McpBridgeException exception) when (McpWriteBridge.ClosedPlanStatus(exception) is not null)
+        {
+            return new McpApplyResult(McpWriteBridge.ClosedPlanStatus(exception)!, planId);
+        }
         if (context.Params?.InputResponses?.TryGetValue("confirmation", out var response) == true)
         {
             if (!bridge.Challenges.TryGetValue(planId, out var challenge))
                 throw new McpBridgeException("confirmation_required", "The confirmation request is unavailable. Review the change again.");
             if (challenge.State != context.Params.RequestState || challenge.ExpiresAt <= DateTimeOffset.UtcNow)
                 throw new McpBridgeException("confirmation_required", "The confirmation state does not match or expired. Review the change again.");
-            if (!bridge.Challenges.TryRemove(new KeyValuePair<Guid, McpWriteBridge.ConfirmationChallenge>(planId, challenge)))
-                throw new McpBridgeException("confirmation_required", "The confirmation was already consumed. Check operation status.");
-            var answer = response.Deserialize(InputResponse.ElicitResultJsonTypeInfo);
-            if (answer?.IsAccepted != true || answer.Content?.TryGetValue("confirm", out var confirm) != true || confirm.ValueKind != JsonValueKind.True)
+            var (decision, ownsDecision) = challenge.BeginDecision();
+            if (!ownsDecision) return await decision.Task.WaitAsync(token);
+            try
             {
-                await bridge.DeclineAsync(planId, token);
-                return new McpApplyResult("declined", planId);
+                var answer = response.Deserialize(InputResponse.ElicitResultJsonTypeInfo);
+                if (answer?.IsAccepted != true || answer.Content?.TryGetValue("confirm", out var confirm) != true || confirm.ValueKind != JsonValueKind.True)
+                    decision.SetResult(await bridge.DeclineAsync(planId, token));
+                else
+                {
+                    var phrase = answer.Content.TryGetValue("confirmationPhrase", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null;
+                    var operation = await bridge.ApproveAsync(planId, phrase, token);
+                    decision.SetResult(new McpApplyResult(operation.Status, planId, Operation: operation));
+                }
             }
-            var phrase = answer.Content.TryGetValue("confirmationPhrase", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null;
-            var operation = await bridge.ApproveAsync(planId, phrase, token);
-            return new McpApplyResult(operation.Status, planId, Operation: operation);
+            catch (McpBridgeException exception) when (McpWriteBridge.ClosedPlanStatus(exception) is not null)
+            {
+                decision.SetResult(new McpApplyResult(McpWriteBridge.ClosedPlanStatus(exception)!, planId));
+            }
+            catch (Exception exception)
+            {
+                bridge.Challenges.TryRemove(new KeyValuePair<Guid, McpWriteBridge.ConfirmationChallenge>(planId, challenge));
+                decision.SetException(exception);
+            }
+            return await decision.Task;
         }
         if (!context.Server.IsMrtrSupported || context.Server.ClientCapabilities?.Elicitation?.Form is null)
             return new McpApplyResult("awaiting_web_approval", planId, preview.ReviewUrl);

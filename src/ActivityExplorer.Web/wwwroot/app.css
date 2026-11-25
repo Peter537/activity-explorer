@@ -148,6 +148,16 @@ textarea { min-height: 105px; resize: vertical; }
 .filter-fields label { min-width: 0; }
 .map-load-status { padding: 12px 16px; }
 .map-load-status p { margin: 0 0 8px; }
+.map-viewport-results { border-top: 1px solid var(--line); padding: 16px; }
+.map-viewport-results h2 { margin: 0 0 6px; font-size: 1.05rem; }
+.map-viewport-results p { margin: 0 0 6px; color: var(--muted); }
+.map-viewport-results ul { margin: 0 0 8px; padding: 0; list-style: none; }
+.map-viewport-results li { border-bottom: 1px solid var(--line); }
+.map-viewport-results a { display: flex; min-height: 44px; flex-wrap: wrap; align-items: center; gap: 0 12px; padding: 4px 2px; overflow-wrap: anywhere; }
+.map-viewport-results a small { color: var(--muted); }
+.map-viewport-results :focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.map-viewport-results button[aria-disabled="true"] { opacity: .55; cursor: default; }
+.map-viewport-results [hidden] { display: none; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 18px; margin: 25px; }
 .pager button { padding: 8px 13px; border: 1px solid var(--line); border-radius: 7px; background: white; }
 .form-panel label { margin-bottom: 13px; }

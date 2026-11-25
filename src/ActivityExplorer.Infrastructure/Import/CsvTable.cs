@@ -4,22 +4,29 @@ namespace ActivityExplorer.Infrastructure.Import;
 
 internal static class CsvTable
 {
-    public static IReadOnlyList<IReadOnlyDictionary<string, string>> Read(string path)
+    public static (IReadOnlyList<IReadOnlyDictionary<string, string>> Rows, IReadOnlyList<string> AmbiguousColumns) Read(
+        string path, IReadOnlySet<string> selectedColumns, CancellationToken cancellationToken)
     {
         using var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var rows = Parse(reader).ToArray();
-        if (rows.Length == 0)
+        using var rows = Parse(reader).GetEnumerator();
+        if (!rows.MoveNext()) return ([], []);
+
+        var positions = rows.Current.Select((name, index) => (Name: name, Index: index))
+            .Where(column => selectedColumns.Contains(column.Name))
+            .ToLookup(column => column.Name, StringComparer.OrdinalIgnoreCase);
+        var columns = positions.Where(group => group.Count() == 1).Select(group => group.Single()).ToArray();
+        var ambiguousColumns = positions.Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+        var result = new List<IReadOnlyDictionary<string, string>>();
+        while (rows.MoveNext())
         {
-            return [];
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = rows.Current;
+            var values = columns.ToDictionary(column => column.Name,
+                column => column.Index < row.Count ? row[column.Index] : string.Empty, StringComparer.OrdinalIgnoreCase);
+            if (values.Values.Any(value => !string.IsNullOrWhiteSpace(value))) result.Add(values);
         }
 
-        var headers = rows[0];
-        return rows.Skip(1)
-            .Where(x => x.Any(value => !string.IsNullOrWhiteSpace(value)))
-            .Select(row => (IReadOnlyDictionary<string, string>)headers
-                .Select((header, index) => (header, value: index < row.Count ? row[index] : string.Empty))
-                .ToDictionary(x => x.header, x => x.value, StringComparer.OrdinalIgnoreCase))
-            .ToArray();
+        return (result, ambiguousColumns);
     }
 
     private static IEnumerable<IReadOnlyList<string>> Parse(TextReader reader)

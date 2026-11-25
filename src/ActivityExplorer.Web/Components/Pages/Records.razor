@@ -66,6 +66,10 @@
     <summary>How records qualify</summary>
     <p>Only achieved benchmarks are shown. Rowing distance bests can use valid per-point recorded distance without GPS; other sports require valid GPS. Distance and timed distance bests use elapsed time, so pauses and recording gaps count. Indoor activities can qualify for timed distance bests from valid per-point recorded distance. Power bests require at least 98% coverage with no sample gap over 5 seconds.</p>
 </details>
+@if (_hasPendingSnapshots)
+{
+    <div class="notice" role="status">Some record snapshots are being recalculated. <button class="button" @onclick="Load">Reload records</button></div>
+}
 @if (_dateError is not null || _datesDirty)
 {
     <p class="notice" role="status">Apply the period to update these records.</p>
@@ -84,6 +88,10 @@ else if (_loadError is not null)
         <div><strong>Records could not be loaded.</strong><span>@_loadError</span></div>
         <button class="button" @onclick="Load">Try again</button>
     </div>
+}
+else if (_hasPendingSnapshots && (_sports.Length == 0 || !_records!.Any(record => record.Sport == _selectedSport)))
+{
+    <section class="empty-state"><h2>Records pending</h2><p>Check again after recalculation completes.</p></section>
 }
 else if (_sports.Length == 0)
 {
@@ -145,14 +153,13 @@ else
 
 @code {
     private IReadOnlyList<PersonalRecord>? _records;
-    private readonly Dictionary<RecordScope, IReadOnlyList<PersonalRecord>> _scopeRecords = [];
     private IReadOnlyDictionary<SportKind, int> _activityCounts = new Dictionary<SportKind, int>();
     private SportKind[] _sports = [];
     private SportKind? _selectedSport;
     private RecordScope _scope = RecordScope.All;
-    private Guid? _loadedOwner;
     private int _loadVersion;
     private string? _loadError;
+    private bool _hasPendingSnapshots;
 
     [Parameter, SupplyParameterFromQuery(Name = "scope")]
     public string? QueryScope { get; set; }
@@ -188,32 +195,24 @@ else
         var owner = ProfileState.SelectedOwnerId;
         var scope = _scope;
         _records = null;
+        _hasPendingSnapshots = false;
         _loadError = null;
         _cancelled = false;
         _loading = true;
         if (!ValidateRecordDates()) { _loading = false; _cancellation = null; return; }
         _appliedPeriod = _dates.Selection;
         _datesDirty = false;
-        if (_loadedOwner != owner)
-        {
-            _scopeRecords.Clear();
-            _sports = [];
-        }
         try
         {
-            if (!_scopeRecords.TryGetValue(RecordScope.All, out var allRecords))
-            {
-                var recordsTask = Statistics.GetRecordsAsync(owner, RecordScope.All, cancellation.Token);
-                var countsTask = Activities.GetSportActivityCountsAsync(owner, cancellation.Token);
-                await Task.WhenAll(recordsTask, countsTask);
-                if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
-                allRecords = await recordsTask;
-                _activityCounts = await countsTask;
-                _scopeRecords[RecordScope.All] = allRecords;
-                _loadedOwner = owner;
-            }
-            IEnumerable<SportKind> sports = allRecords.Select(record => record.Sport);
-            if (_appliedPeriod.Preset != ReportingPreset.AllTime)
+            var recordsTask = Statistics.GetOverviewAsync(new(OwnerId: owner), cancellation.Token);
+            var countsTask = Activities.GetSportActivityCountsAsync(owner, cancellation.Token);
+            await Task.WhenAll(recordsTask, countsTask);
+            if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
+            var allRecords = await recordsTask;
+            _activityCounts = await countsTask;
+            _hasPendingSnapshots = _appliedPeriod.Preset == ReportingPreset.AllTime && allRecords.HasPendingSnapshots;
+            IEnumerable<SportKind> sports = allRecords.Records.Select(record => record.Sport);
+            if (_appliedPeriod.Preset != ReportingPreset.AllTime || _hasPendingSnapshots)
                 sports = sports.Concat(_activityCounts.Where(pair => pair.Value > 0).Select(pair => pair.Key));
             _sports = sports.Distinct().Order().ToArray();
             var requested = ParseSport(QuerySport);
@@ -230,24 +229,14 @@ else
                 return;
             }
             if (_sports.Length == 0) { _records = []; return; }
-            if (_appliedPeriod.Preset == ReportingPreset.AllTime)
-            {
-                if (!_scopeRecords.TryGetValue(scope, out var records))
-                {
-                    records = await Statistics.GetRecordsAsync(owner, scope, cancellation.Token);
-                    if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
-                    _scopeRecords[scope] = records;
-                }
-                _records = records;
-            }
-            else
-            {
-                var overview = await Statistics.GetOverviewAsync(new(OwnerId: owner, Sport: _selectedSport, Scope: scope,
+            var overview = _appliedPeriod.Preset == ReportingPreset.AllTime && scope == RecordScope.All
+                ? allRecords
+                : await Statistics.GetOverviewAsync(new(OwnerId: owner, Sport: _selectedSport, Scope: scope,
                     Period: _appliedPeriod, AsOfUtc: Clock.GetUtcNow()), cancellation.Token);
-                if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
-                _records = overview.Records;
-                _periods = overview.Periods;
-            }
+            if (version != _loadVersion || cancellation.IsCancellationRequested || _disposed) return;
+            _records = overview.Records;
+            _periods = overview.Periods;
+            _hasPendingSnapshots = overview.HasPendingSnapshots;
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception exception)
@@ -279,12 +268,7 @@ else
         Navigation.NavigateTo(RecordsUrl(ParseSport(QuerySport), scope));
     }
 
-    private async Task Load()
-    {
-        _scopeRecords.Clear();
-        _sports = [];
-        await RefreshRecords();
-    }
+    private Task Load() => RefreshRecords();
 
     private void Changed() => InvokeAsync(async () =>
     {

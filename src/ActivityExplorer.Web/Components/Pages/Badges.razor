@@ -84,17 +84,25 @@ else
         <section class="panel">
             <h2>Related tiers and editions</h2>
             <p class="muted">Status through @_snapshot.AsOf.ToString("d MMM yyyy"). Later editions have no later activity data in this snapshot.</p>
-            @foreach (var year in Related.GroupBy(x => x.StartsOn?.Year).OrderByDescending(x => x.Key))
+            @foreach (var year in _history)
             {
-                <details class="edition-year" open="@(year.Key is null || year.Key == _snapshot.Month.Year)">
-                    <summary>@(year.Key?.ToString(CultureInfo.InvariantCulture) ?? "Lifetime milestones") <span>@year.Count(x => x.Status == BadgeStatus.Completed) earned / @year.Count() editions</span></summary>
+                <details class="edition-year" open="@(year.Year is null || year.Year == _selected.StartsOn?.Year)">
+                    <summary>@(year.Year?.ToString(CultureInfo.InvariantCulture) ?? "Lifetime milestones") <span>@year.Editions.Count(x => x.Status == BadgeStatus.Completed) earned / @year.Editions.Count editions</span></summary>
                     <ul class="edition-list">
-                    @foreach (var edition in year.OrderByDescending(x => x.StartsOn).ThenBy(x => x.Definition.Target))
+                    @foreach (var edition in year.Editions)
                     {
                         <li><a href="@DetailUrl(edition)"><span>@edition.Definition.Name <small>@EditionLabel(edition)</small></span><span class="badge-status @StatusClass(edition.Status)">@StatusLabel(edition.Status)</span></a></li>
                     }
                     </ul>
                 </details>
+            }
+            @if (_historyPages > 1)
+            {
+                <nav class="badge-pagination" aria-label="Badge history pages">
+                    @if (_historyPage > 1) { <a class="button" href="@DetailUrl(_selected, _historyPage - 1)">Newer years</a> }
+                    <span>Page @_historyPage of @_historyPages</span>
+                    @if (_historyPage < _historyPages) { <a class="button" href="@DetailUrl(_selected, _historyPage + 1)">Older years</a> }
+                </nav>
             }
         </section>
     }
@@ -133,7 +141,7 @@ else
                     <progress value="@badge.Progress.ToString("R", CultureInfo.InvariantCulture)" max="@badge.Definition.Target.ToString("R", CultureInfo.InvariantCulture)" aria-label="@($"{badge.Definition.Name} progress")"></progress>
                     <span class="badge-progress-copy">@ProgressLabel(badge)</span>
                     <span class="badge-status @StatusClass(badge.Status)">@StatusLabel(badge.Status)</span>
-                    @if (_view == "collection") { <small>@_snapshot.Editions.Count(x => x.Definition.FamilyId == badge.Definition.FamilyId && x.Status == BadgeStatus.Completed) earned across this family</small> }
+                    @if (_view == "collection") { <small>@_snapshot.FamilyEarnedCount(badge.Definition.FamilyId) earned across this family</small> }
                 </div>
             </a>
         }
@@ -160,18 +168,22 @@ else
     [SupplyParameterFromQuery(Name = "search")] public string? QuerySearch { get; set; }
     [SupplyParameterFromQuery(Name = "page")] public string? QueryPage { get; set; }
     [SupplyParameterFromQuery(Name = "edition")] public string? QueryEdition { get; set; }
+    [SupplyParameterFromQuery(Name = "historyPage")] public string? QueryHistoryPage { get; set; }
+    private const int HistoryYearsPerPage = 10;
+    private sealed record HistoryYear(int? Year, IReadOnlyList<BadgeEdition> Editions);
     private BadgeSnapshot? _snapshot;
     private BadgeEdition? _selected;
     private IReadOnlyList<BadgeProfileOverview> _overview = [];
     private IReadOnlyList<BadgeEdition> _filtered = [];
+    private IReadOnlyList<HistoryYear> _history = [];
     private CancellationTokenSource? _load;
     private bool _loading, _selecting, _disposed;
     private string? _error;
     private string _view = "month", _sport = "all", _type = "all", _status = "all", _search = "";
     private int _page = 1, _evidenceLimit = 50;
+    private int _historyPage = 1, _historyPages = 1;
     private Guid? _owner;
     private int TotalPages => Math.Max(1, (int)Math.Ceiling(_filtered.Count / 24d));
-    private IEnumerable<BadgeEdition> Related => _snapshot!.Editions.Where(x => x.Definition.FamilyId == _selected!.Definition.FamilyId);
 
     protected override void OnInitialized() => ProfileState.Changed += ProfileChanged;
     protected override Task OnParametersSetAsync() => LoadAsync();
@@ -186,6 +198,8 @@ else
         _selected = null;
         _snapshot = null;
         _evidenceLimit = 50;
+        _history = [];
+        _historyPage = _historyPages = 1;
         try
         {
             await ProfileState.InitializeAsync();
@@ -213,37 +227,60 @@ else
                 if (!request.IsCancellationRequested) _overview = overview;
                 return;
             }
+            if (BadgeId is not null)
+            {
+                var detail = await BadgesService.GetDetailAsync(_owner.Value, BadgeId, QueryEdition, month, request.Token);
+                if (request.IsCancellationRequested) return;
+                if (detail is null) throw new InvalidOperationException("This badge edition is unavailable. Return to Badges to browse your collection.");
+                _snapshot = detail.Snapshot;
+                _selected = detail.Selected;
+                LoadHistory(detail);
+                NormalizeUrl(DetailUrl(_selected));
+                return;
+            }
             var snapshot = await BadgesService.GetCatalogueAsync(_owner.Value, month, request.Token);
             if (request.IsCancellationRequested) return;
             _snapshot = snapshot;
-            if (BadgeId is not null)
-            {
-                _selected = QueryEdition is null ? snapshot.ForMonth.FirstOrDefault(x => x.Definition.Id == BadgeId) :
-                    snapshot.Editions.FirstOrDefault(x => x.Definition.Id == BadgeId && x.Edition == QueryEdition);
-                if (_selected is null) throw new InvalidOperationException("This badge edition is unavailable. Return to Badges to browse your collection.");
-            }
-            var filtered = (_view == "collection" ? snapshot.Editions : snapshot.ForMonth).Where(Matches);
+            BadgeStatus? status = _status == "all" ? null : Enum.GetValues<BadgeStatus>().First(x => StatusClass(x) == _status);
+            var filtered = _view == "collection" ? snapshot.Collection(MatchesDefinition, status, request.Token) :
+                snapshot.ForMonth.Where(x => MatchesDefinition(x.Definition) && (status is null || x.Status == status));
             if (_view == "collection") filtered = filtered.GroupBy(x => x.Definition.FamilyId).Select(x =>
                 x.OrderBy(b => b.StartsOn > snapshot.AsOf ? 1 : 0).ThenByDescending(b => b.StartsOn <= snapshot.AsOf ? b.StartsOn : null)
                     .ThenBy(b => b.StartsOn > snapshot.AsOf ? b.StartsOn : null)
                     .ThenBy(b => b.Status == BadgeStatus.Completed ? 1 : 0).ThenBy(b => b.Status == BadgeStatus.Completed ? -b.Definition.Target : b.Definition.Target).First());
             _filtered = filtered.OrderBy(x => x.Definition.Sport).ThenBy(x => x.Definition.FamilyName).ThenBy(x => x.Definition.Target).ToArray();
             _page = Math.Min(_page, TotalPages);
-            var canonical = _selected is null ? Url() : DetailUrl(_selected);
-            if (Navigation.ToBaseRelativePath(Navigation.Uri) != canonical.TrimStart('/')) Navigation.NavigateTo(canonical, replace: true);
+            NormalizeUrl(Url());
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
         catch (Exception exception) { if (!request.IsCancellationRequested) _error = exception is InvalidOperationException ? exception.Message : "Badge history could not be loaded. Try Refresh."; }
         finally { if (ReferenceEquals(_load, request)) _loading = false; }
     }
 
-    private bool Matches(BadgeEdition badge) =>
-        (_sport == "all" || _sport == "shared" && badge.Definition.Sport is null || badge.Definition.Sport?.ToString().ToLowerInvariant() == _sport) &&
-        (_type == "all" || badge.Definition.Period.ToString().ToLowerInvariant() == _type) &&
-        (_status == "all" || StatusClass(badge.Status) == _status) &&
-        (string.IsNullOrWhiteSpace(_search) || $"{badge.Definition.Name} {badge.Definition.Sport} {badge.Definition.Requirement}".Contains(_search, StringComparison.OrdinalIgnoreCase));
+    private void LoadHistory(BadgeDetail detail)
+    {
+        var family = detail.Selected.Definition.FamilyId;
+        var years = detail.Snapshot.FamilyYears(family).ToArray();
+        _historyPages = Math.Max(1, (years.Length + HistoryYearsPerPage - 1) / HistoryYearsPerPage);
+        var selectedPage = Math.Max(0, Array.IndexOf(years, detail.Selected.StartsOn?.Year)) / HistoryYearsPerPage + 1;
+        _historyPage = int.TryParse(QueryHistoryPage, out var page) ? Math.Clamp(page, 1, _historyPages) : selectedPage;
+        _history = years.Skip((_historyPage - 1) * HistoryYearsPerPage).Take(HistoryYearsPerPage)
+            .Select(year => new HistoryYear(year, detail.Snapshot.FamilyEditions(family, year)
+                .OrderByDescending(x => x.StartsOn).ThenBy(x => x.Definition.Target).ToArray())).ToArray();
+    }
 
-    private string Url(Guid? owner = null, DateOnly? month = null, string? view = null, int? page = null, bool reset = false, string? badge = null, string? edition = null)
+    private void NormalizeUrl(string url)
+    {
+        if (Navigation.ToBaseRelativePath(Navigation.Uri) != url.TrimStart('/')) Navigation.NavigateTo(url, replace: true);
+    }
+
+    private bool MatchesDefinition(BadgeDefinition definition) =>
+        (_sport == "all" || _sport == "shared" && definition.Sport is null || definition.Sport?.ToString().ToLowerInvariant() == _sport) &&
+        (_type == "all" || definition.Period.ToString().ToLowerInvariant() == _type) &&
+        (string.IsNullOrWhiteSpace(_search) || $"{definition.Name} {definition.Sport} {definition.Requirement}".Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private string Url(Guid? owner = null, DateOnly? month = null, string? view = null, int? page = null, bool reset = false, string? badge = null,
+        string? edition = null, int? historyPage = null)
     {
         var values = new Dictionary<string, string?>
         {
@@ -251,12 +288,14 @@ else
             ["view"] = view ?? _view, ["sport"] = reset || _sport == "all" ? null : _sport,
             ["type"] = reset || _type == "all" ? null : _type, ["status"] = reset || _status == "all" ? null : _status,
             ["search"] = reset || _search.Length == 0 ? null : _search,
-            ["page"] = reset || (page ?? _page) <= 1 ? null : (page ?? _page).ToString(CultureInfo.InvariantCulture), ["edition"] = edition
+            ["page"] = reset || (page ?? _page) <= 1 ? null : (page ?? _page).ToString(CultureInfo.InvariantCulture), ["edition"] = edition,
+            ["historyPage"] = badge is null || !historyPage.HasValue ? null : historyPage.Value.ToString(CultureInfo.InvariantCulture)
         };
         var query = string.Join("&", values.Where(x => x.Value is not null).Select(x => $"{x.Key}={Uri.EscapeDataString(x.Value!)}"));
         return $"/badges{(badge is null ? "" : "/" + Uri.EscapeDataString(badge))}?{query}";
     }
-    private string DetailUrl(BadgeEdition badge) => Url(badge: badge.Definition.Id, edition: badge.Edition);
+    private string DetailUrl(BadgeEdition badge, int? historyPage = null) =>
+        Url(badge: badge.Definition.Id, edition: badge.Edition, historyPage: historyPage ?? (_historyPages > 1 ? _historyPage : null));
     private void FilterChanged(string name, ChangeEventArgs args)
     {
         var value = args.Value?.ToString() ?? "";

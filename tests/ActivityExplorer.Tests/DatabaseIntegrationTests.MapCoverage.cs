@@ -1,12 +1,87 @@
+using System.Text.Json;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Infrastructure.Services;
+using Microsoft.EntityFrameworkCore;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace ActivityExplorer.Tests;
 
 public sealed partial class DatabaseIntegrationTests
 {
+    [Fact]
+    public async Task Map_dense_geometry_obeys_zoom_local_and_layer_budgets_and_preserves_full_wrapped_routes()
+    {
+        const int vertices = 8192;
+        const int routeCount = 112;
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Wrapped map geometry");
+        var points = Enumerable.Range(0, vertices).Select(index =>
+        {
+            var fraction = (double)index / (vertices - 1);
+            var longitude = 179.25 + fraction * 2;
+            var latitude = 50 + Math.Sin(fraction * 4 * Math.PI) / 3;
+            return new TrackPoint(null, latitude, longitude > 180 ? longitude - 360 : longitude, null, null, null, null, null, null, null);
+        }).ToArray();
+        var fullGeometry = Assert.IsType<byte[]>(GeometryCodec.ToWkb(points));
+        var capturedIds = new List<Guid>(routeCount);
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            for (var index = 0; index < routeCount; index++)
+            {
+                var row = Route("Dense route", fullGeometry, index);
+                capturedIds.Add(row.Id);
+                db.Routes.Add(row);
+            }
+            db.Routes.Add(Route("Invalid geometry", new byte[64], routeCount));
+            await db.SaveChangesAsync();
+        }
+
+        var service = new MapFeatureService(setup.Factory);
+        var view = new MapQuery(OwnerId: owner, West: 179, South: 49, East: -178, North: 51, Zoom: 4);
+        var start = Stopwatch.GetTimestamp();
+        var allocated = GC.GetTotalAllocatedBytes(precise: true);
+        var wide = await service.GetRoutesAsync(view);
+        var wideBytes = JsonSerializer.SerializeToUtf8Bytes(wide, JsonSerializerOptions.Web).Length;
+        TestContext.Current.TestOutputHelper!.WriteLine($"Dense map routes ({routeCount} × {vertices} vertices). WKB {routeCount * (long)fullGeometry.Length:N0} bytes; display {wideBytes:N0} bytes; elapsed {Stopwatch.GetElapsedTime(start).TotalMilliseconds:N1} ms; process allocation delta {GC.GetTotalAllocatedBytes(precise: true) - allocated:N0} bytes.");
+        var close = await service.GetRoutesAsync(view with { Zoom = 14 });
+        Assert.Equal(new MapLayerCoverage(routeCount, routeCount + 1, 1000), wide.Coverage);
+        Assert.True(wide.Coverage!.Truncated);
+        var wideVertices = wide.Features.Sum(feature => feature.Geometry.Coordinates.Count);
+        var closeVertices = close.Features.Sum(feature => feature.Geometry.Coordinates.Count);
+        Assert.InRange(wideVertices, routeCount * 2, 8192);
+        Assert.InRange(closeVertices, wideVertices + 1, 16384);
+        Assert.InRange(wideBytes, 1, 450_000);
+        Assert.Equal(capturedIds.AsEnumerable().Reverse(), wide.Features.Select(feature => Assert.IsType<Guid>(feature.Properties["id"])));
+        foreach (var feature in close.Features)
+        {
+            var coordinates = feature.Geometry.Coordinates;
+            Assert.Equal([points[0].Longitude!.Value, points[0].Latitude!.Value], coordinates[0]);
+            Assert.Equal([points[^1].Longitude!.Value, points[^1].Latitude!.Value], coordinates[^1]);
+            var unwrapped = coordinates.Select(point => point[0] < 0 ? point[0] + 360 : point[0]).ToArray();
+            Assert.Equal(unwrapped.Order(), unwrapped);
+            Assert.Contains(coordinates, point => point[1] > 50.32);
+            Assert.Contains(coordinates, point => point[1] < 49.68);
+        }
+
+        await using var verification = await setup.Factory.CreateDbContextAsync();
+        Assert.Equal(fullGeometry, await verification.Routes.Where(x => x.Id == capturedIds[0]).Select(x => x.GeometryWkb).SingleAsync());
+
+        Route Route(string name, byte[] geometry, int index) => new()
+        {
+            OwnerId = owner,
+            Name = name,
+            Sport = SportKind.Cycling,
+            GeometryWkb = geometry,
+            CreatedAtUtc = new DateTimeOffset(2026, 1, 2, 12, 0, 0, TimeSpan.Zero).AddSeconds(index),
+            MinLongitude = 179.25,
+            MaxLongitude = -178.75,
+            MinLatitude = 49.6,
+            MaxLatitude = 50.4
+        };
+    }
+
     [Theory]
     [InlineData("activities", 2000)]
     [InlineData("routes", 1000)]

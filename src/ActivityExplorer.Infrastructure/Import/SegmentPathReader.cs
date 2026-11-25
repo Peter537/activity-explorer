@@ -28,7 +28,8 @@ public sealed class SegmentPathReader : ISegmentPathReader
         var extension = Path.GetExtension(path).ToLowerInvariant();
         return extension switch
         {
-            ".gpx" => new SegmentPathData(ValidateSinglePath(ParseGpx(await ReadXmlAsync(path, cancellationToken)), "GPX"), "GPX"),
+            ".gpx" => new SegmentPathData(
+                await GpxRouteReader.ReadPathAsync(path, MaximumPoints, 64L * 1024 * 1024, cancellationToken), "GPX"),
             ".tcx" => new SegmentPathData(ValidateSinglePath(ParseTcx(await ReadXmlAsync(path, cancellationToken)), "TCX"), "TCX"),
             ".kml" => new SegmentPathData(ValidateSinglePath(ParseKml(await ReadXmlAsync(path, cancellationToken)), "KML"), "KML"),
             ".geojson" or ".json" => new SegmentPathData(
@@ -56,36 +57,6 @@ public sealed class SegmentPathReader : ISegmentPathReader
         using var reader = XmlReader.Create(stream, settings);
         return await XDocument.LoadAsync(reader, LoadOptions.None, cancellationToken);
     }
-
-    private static IReadOnlyList<IReadOnlyList<TrackPoint>> ParseGpx(XDocument document)
-    {
-        var tracks = document.Descendants()
-            .Where(element => Is(element, "trkseg"))
-            .Select(segment => (IReadOnlyList<TrackPoint>)segment.Elements()
-                .Where(element => Is(element, "trkpt"))
-                .Select(ParseGpxPoint)
-                .ToArray())
-            .Where(points => points.Count > 0)
-            .ToArray();
-        if (tracks.Length > 0) return tracks;
-
-        return document.Descendants()
-            .Where(element => Is(element, "rte"))
-            .Select(route => (IReadOnlyList<TrackPoint>)route.Elements()
-                .Where(element => Is(element, "rtept"))
-                .Select(ParseGpxPoint)
-                .ToArray())
-            .Where(points => points.Count > 0)
-            .ToArray();
-    }
-
-    private static TrackPoint ParseGpxPoint(XElement element) => new(
-        null,
-        Number(element.Attribute("lat")?.Value, "GPX latitude"),
-        Number(element.Attribute("lon")?.Value, "GPX longitude"),
-        null,
-        OptionalNumber(element.Elements().FirstOrDefault(child => Is(child, "ele"))?.Value, "GPX elevation"),
-        null, null, null, null, null);
 
     private static IReadOnlyList<IReadOnlyList<TrackPoint>> ParseTcx(XDocument document)
     {

@@ -1,6 +1,12 @@
 window.activityExplorerMap = (() => {
     const maps = new Map();
     const cameras = new Map();
+    const lineLayers = [
+        { name: "activities", option: "activityUrl", kind: "activity", label: "Activity", color: "#246b59", width: 2.5 },
+        { name: "routes", option: "routeUrl", kind: "route", label: "Route", color: "#3366cc", width: 4 },
+        { name: "segments", option: "segmentUrl", kind: "segment", label: "Segment", color: "#d06a35", width: 5 }
+    ];
+    const viewportPageSize = 20;
     const mapLibrePromise = import("/vendor/maplibre-gl.mjs");
     const blankStyle = () => ({
         version: 8,
@@ -38,45 +44,154 @@ window.activityExplorerMap = (() => {
         });
     }
 
-    async function setLayer(entry, name, url, color, width, signal) {
-        const map = entry.map;
-        if (!url) {
-            map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
-            map.getCanvas().dataset[`${name}Features`] = "0";
-            return null;
-        }
+    async function readLineLayer(entry, layer, signal) {
+        const url = entry.options[layer.option];
+        if (!url) return null;
         try {
-            const response = await fetch(queryUrl(url, map), { headers: { "Accept": "application/json" }, signal });
+            const response = await fetch(queryUrl(url, entry.map), { headers: { "Accept": "application/json" }, signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            if (signal.aborted || entry.disposed) return null;
-            if (map.getSource(name)) map.getSource(name).setData(data);
-            else {
-                map.addSource(name, { type: "geojson", data });
-                map.addLayer({
-                    id: name, type: "line", source: name,
-                    paint: { "line-color": color, "line-width": width, "line-opacity": name === "activities" ? 0.72 : 0.92 }
-                });
-            }
+            if (!Array.isArray(data.features) || data.features.some(feature =>
+                feature?.geometry?.type !== "LineString" || !Array.isArray(feature.geometry.coordinates)))
+                throw new Error("Expected a collection of map lines.");
             const count = data.features.length;
-            map.getCanvas().dataset[`${name}Features`] = String(count);
-            return { layer: name, loading: false, failed: false, returnedCount: count,
+            return { data, status: { layer: layer.name, loading: false, failed: false, returnedCount: count,
                 matchingCount: data.coverage?.matchingCount ?? count, limit: data.coverage?.limit ?? count,
-                truncated: data.coverage?.truncated === true };
+                truncated: data.coverage?.truncated === true } };
         } catch (error) {
             if (signal.aborted || entry.disposed) return null;
-            map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
-            map.getCanvas().dataset[`${name}Features`] = "0";
-            console.warn(`Activity Explorer could not load map layer "${name}".`, error);
-            return { layer: name, loading: false, failed: true, returnedCount: 0, matchingCount: 0, limit: 0, truncated: false };
+            console.warn(`Activity Explorer could not load map layer "${layer.name}".`, error);
+            return { data: null, status: { layer: layer.name, loading: false, failed: true,
+                returnedCount: 0, matchingCount: 0, limit: 0, truncated: false } };
         }
     }
 
-    function clearDisabledLayers(entry) {
-        for (const [name, url] of [["activities", entry.options.activityUrl], ["routes", entry.options.routeUrl], ["segments", entry.options.segmentUrl]]) {
-            if (url) continue;
-            entry.map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
-            entry.map.getCanvas().dataset[`${name}Features`] = "0";
+    function clearLineLayer(entry, name) {
+        entry.map.getSource(name)?.setData({ type: "FeatureCollection", features: [] });
+        entry.map.getCanvas().dataset[`${name}Features`] = "0";
+        entry.visibleLines.delete(name);
+    }
+
+    function drawLineLayer(entry, layer, data) {
+        const { name, color, width } = layer;
+        if (!data) {
+            clearLineLayer(entry, name);
+            return;
+        }
+        for (const feature of data.features) unwrapLine(feature.geometry.coordinates);
+        const map = entry.map;
+        if (map.getSource(name)) map.getSource(name).setData(data);
+        else {
+            map.addSource(name, { type: "geojson", data });
+            map.addLayer({ id: name, type: "line", source: name,
+                paint: { "line-color": color, "line-width": width, "line-opacity": name === "activities" ? 0.72 : 0.92 } });
+        }
+        map.getCanvas().dataset[`${name}Features`] = String(data.features.length);
+        if (entry.viewport) entry.visibleLines.set(name, data.features.map(feature => feature.properties));
+    }
+
+    function lineDetail(properties) {
+        const layer = lineLayers.find(x => x.kind === properties?.kind);
+        if (!layer || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(properties.id)) return null;
+        return { href: `/${layer.name}/${properties.id}`, title: properties.title || layer.label,
+            context: [layer.label, properties.sport, properties.owner].filter(Boolean).join(" · ") };
+    }
+
+    function unwrapLine(coordinates) {
+        let offset = 0;
+        // Neighboring vertices should draw in the same world copy at the antimeridian.
+        for (let i = 1; i < coordinates.length; i++) {
+            const longitude = coordinates[i][0];
+            const delta = longitude + offset - coordinates[i - 1][0];
+            if (delta > 180) offset -= 360;
+            if (delta < -180) offset += 360;
+            if (offset) coordinates[i] = [longitude + offset, coordinates[i][1]];
+        }
+    }
+
+    function createViewport(entry) {
+        if (!entry.options.viewportListId) return null;
+        const container = document.getElementById(entry.options.viewportListId);
+        if (!container) return null;
+        const heading = document.createElement("h2");
+        heading.id = `${container.id}-heading`;
+        heading.tabIndex = -1;
+        heading.textContent = "Viewport results";
+        const summary = document.createElement("p");
+        const list = document.createElement("ul");
+        // Explicit list semantics persist in Safari when list-style is none.
+        list.setAttribute("role", "list");
+        const navigation = document.createElement("div");
+        navigation.className = "button-row";
+        const previous = document.createElement("button");
+        const next = document.createElement("button");
+        const counter = document.createElement("span");
+        const announcement = document.createElement("span");
+        announcement.className = "visually-hidden";
+        announcement.setAttribute("role", "status");
+        for (const [button, label, step] of [[previous, "Previous results", -1], [next, "Next results", 1]]) {
+            button.type = "button";
+            button.className = "button";
+            button.textContent = label;
+            button.addEventListener("click", () => {
+                if (button.getAttribute("aria-disabled") === "true") return;
+                entry.viewport.page += step;
+                renderViewport(entry, true);
+            });
+        }
+        navigation.append(previous, counter, next);
+        container.append(heading, summary, list, navigation, announcement);
+        return { container, heading, summary, list, navigation, previous, next, counter, announcement, page: 0 };
+    }
+
+    function renderViewport(entry, announce = false) {
+        const viewport = entry.viewport;
+        if (!viewport) return;
+        const { container, heading, summary, list, navigation, previous, next, counter, announcement } = viewport;
+        container.hidden = entry.options.explorationView !== "lines";
+        if (container.hidden) return;
+        const rows = lineLayers.flatMap(layer => entry.visibleLines.get(layer.name) || []).map(lineDetail).filter(Boolean);
+        const active = document.activeElement;
+        const focusedHref = !announce && list.contains(active) ? active.getAttribute("href") : null;
+        const focusIndex = focusedHref ? rows.findIndex(row => row.href === focusedHref) : -1;
+        const pageCount = Math.max(1, Math.ceil(rows.length / viewportPageSize));
+        viewport.page = focusIndex >= 0 ? Math.floor(focusIndex / viewportPageSize) : Math.min(viewport.page, pageCount - 1);
+        const pageStart = viewport.page * viewportPageSize;
+        const existing = new Map(Array.from(list.children, item => [item.firstChild.getAttribute("href"), item]));
+        const visible = rows.slice(pageStart, pageStart + viewportPageSize);
+        visible.forEach((row, index) => {
+            let item = existing.get(row.href);
+            if (!item) {
+                item = document.createElement("li");
+                const link = document.createElement("a");
+                link.href = row.href;
+                link.append(document.createElement("span"), document.createElement("small"));
+                item.append(link);
+            }
+            existing.delete(row.href);
+            const [title, context] = item.firstChild.children;
+            if (title.textContent !== row.title) title.textContent = row.title;
+            if (context.textContent !== row.context) context.textContent = row.context;
+            const atIndex = list.children[index];
+            if (atIndex !== item) list.insertBefore(item, atIndex || null);
+        });
+        for (const item of existing.values()) item.remove();
+
+        const showPages = pageCount > 1;
+        navigation.hidden = !showPages;
+        summary.textContent = entry.linesLoading ? "Updating viewport results…" : rows.length
+            ? `${rows.length.toLocaleString()} displayed map lines.` : "No displayed map lines to open.";
+        container.setAttribute("aria-busy", String(!!entry.linesLoading));
+        previous.setAttribute("aria-disabled", String(viewport.page === 0));
+        next.setAttribute("aria-disabled", String(viewport.page === pageCount - 1));
+        counter.textContent = `Results ${pageStart + 1}–${pageStart + visible.length} of ${rows.length}`;
+        if (announce) announcement.textContent = counter.textContent;
+
+        if (focusedHref && document.activeElement !== active) {
+            const retained = focusIndex < 0 ? heading : list.children[focusIndex - pageStart].firstChild;
+            retained.focus({ preventScroll: true });
+        } else if (!showPages && navigation.contains(active)) {
+            heading.focus({ preventScroll: true });
         }
     }
 
@@ -482,11 +597,18 @@ window.activityExplorerMap = (() => {
     function updateLayers(id, options) {
         const entry = maps.get(id);
         if (!entry || entry.disposed) return;
-        const changed = ["activityUrl", "routeUrl", "segmentUrl", "explorationUrl"].some(key => entry.options[key] !== options[key]);
-        if (changed || entry.options.explorationView !== options.explorationView) entry.cellPopup?.remove();
+        const changedLines = lineLayers.filter(layer => entry.options[layer.option] !== options[layer.option]);
+        const changedView = entry.options.explorationView !== options.explorationView;
+        const changed = changedLines.length || changedView || entry.options.explorationUrl !== options.explorationUrl;
+        if (changed) entry.cellPopup?.remove();
         Object.assign(entry.options, options);
-        if (changed) entry.request?.abort();
-        clearDisabledLayers(entry);
+        if (changed) {
+            entry.request?.abort();
+            entry.linePopup?.remove();
+            for (const layer of changedLines) clearLineLayer(entry, layer.name);
+            entry.linesLoading = lineLayers.some(layer => !!entry.options[layer.option]);
+            renderViewport(entry);
+        }
         entry.map.getCanvas().setAttribute("aria-label", options.label || "Activity map");
         paintExploration(entry);
         if (changed) return refresh(entry);
@@ -507,34 +629,40 @@ window.activityExplorerMap = (() => {
         const reportLines = layers => entry.options.reportLoadStatus
             ? entry.dotnet?.invokeMethodAsync("UpdateLineCoverage", layers, revision).catch(() => {})
             : Promise.resolve();
-        const enabled = [["activities", entry.options.activityUrl], ["routes", entry.options.routeUrl], ["segments", entry.options.segmentUrl]]
-            .filter(([, url]) => !!url).map(([layer]) => ({ layer, loading: true, failed: false,
+        const enabled = lineLayers.filter(layer => !!entry.options[layer.option]).map(({ name }) => ({ layer: name, loading: true, failed: false,
                 returnedCount: 0, matchingCount: 0, limit: 0, truncated: false }));
-        clearDisabledLayers(entry);
+        entry.linesLoading = enabled.length > 0;
+        renderViewport(entry);
         await report(true, false, 0);
         await reportLines(enabled);
         if (request.signal.aborted || entry.disposed) return;
-        const counts = await Promise.all([
-            setLayer(entry, "activities", entry.options.activityUrl, "#246b59", 2.5, request.signal),
-            setLayer(entry, "routes", entry.options.routeUrl, "#3366cc", 4, request.signal),
-            setLayer(entry, "segments", entry.options.segmentUrl, "#d06a35", 5, request.signal),
+        const [lines, cellCount] = await Promise.all([
+            Promise.all(lineLayers.map(layer => readLineLayer(entry, layer, request.signal))),
             setExploration(entry, request.signal)
         ]);
         if (request.signal.aborted || entry.disposed) return;
+        for (const [index, layer] of lineLayers.entries()) drawLineLayer(entry, layer, lines[index]?.data);
+        entry.linesLoading = false;
+        renderViewport(entry);
         refreshTrackLayers(entry);
-        await reportLines(counts.slice(0, 3).filter(Boolean));
-        await report(false, counts[3] === null, counts[3] || 0);
+        await reportLines(lines.filter(Boolean).map(line => line.status));
+        await report(false, cellCount === null, cellCount || 0);
     }
 
     function popup(entry, layer) {
         entry.map.on("click", layer, event => {
-            const feature = event.features?.[0];
-            if (!feature) return;
-            const props = feature.properties || {};
-            const id = props.id;
-            const href = props.kind && id ? "/" + (props.kind === "activity" ? "activities" : props.kind + "s") + "/" + id : "#";
-            const title = String(props.title || "Map feature").replace(/[<>&"']/g, value => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[value]));
-            new entry.maplibre.Popup().setLngLat(event.lngLat).setHTML("<strong>" + title + "</strong><br><a href=\"" + href + "\">Open details &rarr;</a>").addTo(entry.map);
+            const properties = event.features?.[0]?.properties;
+            const row = lineDetail(properties);
+            if (!row || entry.viewport && !entry.visibleLines.get(layer)?.some(line => line.id === properties.id)) return;
+            const content = document.createElement("div");
+            const title = document.createElement("strong");
+            title.textContent = row.title;
+            const link = document.createElement("a");
+            link.href = row.href;
+            link.textContent = "Open details →";
+            content.append(title, document.createElement("br"), link);
+            entry.linePopup?.remove();
+            entry.linePopup = new entry.maplibre.Popup().setLngLat(event.lngLat).setDOMContent(content).addTo(entry.map);
         });
         entry.map.on("mouseenter", layer, () => entry.map.getCanvas().style.cursor = "pointer");
         entry.map.on("mouseleave", layer, () => entry.map.getCanvas().style.cursor = "");
@@ -552,14 +680,18 @@ window.activityExplorerMap = (() => {
             attributionControl: false
         });
         options.inlineCoordinates = options.inlineCoordinates || [];
+        if (!options.editable) unwrapLine(options.inlineCoordinates);
         const canvas = map.getCanvas();
         canvas.setAttribute("aria-label", options.label || "Activity map");
         if (options.describedBy) canvas.setAttribute("aria-describedby", options.describedBy);
 
-        const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap, styleReady: false };
+        const entry = { map, maplibre: maplibregl, options, dotnet, fallback: !!options.blankBaseMap, styleReady: false,
+            visibleLines: new Map(), linesLoading: lineLayers.some(layer => !!options[layer.option]) };
+        entry.viewport = createViewport(entry);
+        renderViewport(entry);
         canvas.dataset.cameraRestored = String(!!camera);
         rememberCamera(entry);
-        ["activities", "routes", "segments"].forEach(layer => popup(entry, layer));
+        lineLayers.forEach(layer => popup(entry, layer.name));
         explorationInteraction(entry);
         indexActivityCoordinates(entry);
         maps.set(id, entry);
@@ -599,11 +731,13 @@ window.activityExplorerMap = (() => {
                 });
             }
         });
+        map.on("movestart", () => { entry.request?.abort(); entry.linePopup?.remove(); });
         map.on("moveend", () => { rememberCamera(entry); refresh(entry); });
         map.on("error", event => {
             if (!entry.fallback && event?.error) {
                 entry.fallback = true;
                 entry.styleReady = false;
+                entry.request?.abort();
                 map.setStyle(blankStyle());
             }
         });

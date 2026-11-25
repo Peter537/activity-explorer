@@ -18,16 +18,21 @@ public sealed partial class SegmentReadService
         effort.MetricComputationVersion == SegmentEffortMetricVersions.Current);
 
     private static IQueryable<SegmentEffort> Efforts(ExplorerDbContext db, Guid ownerId, Guid segmentId) =>
-        db.SegmentEfforts.AsNoTracking().Where(effort => effort.OwnerId == ownerId && effort.SegmentId == segmentId &&
-            effort.Segment!.OwnerId == ownerId && effort.Activity!.OwnerId == ownerId && effort.Activity.Sport == effort.Segment.Sport);
+        ProjectionVersions.CurrentEfforts(db).Where(effort => effort.OwnerId == ownerId && effort.SegmentId == segmentId);
 
-    private static IQueryable<SegmentSummary> Summaries(IQueryable<Segment> source, ExplorerDbContext db) => source.Select(segment =>
-        new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner!.DisplayName, segment.Name, segment.Sport,
-            segment.DistanceMeters, segment.ToleranceMeters,
-            db.SegmentEfforts.Count(effort => effort.SegmentId == segment.Id && effort.OwnerId == segment.OwnerId && effort.Activity!.OwnerId == segment.OwnerId && effort.Activity.Sport == segment.Sport),
-            db.SegmentEfforts.Where(effort => effort.SegmentId == segment.Id && effort.OwnerId == segment.OwnerId && effort.Activity!.OwnerId == segment.OwnerId && effort.Activity.Sport == segment.Sport).Min(effort => (double?)effort.ElapsedSeconds),
-            segment.AverageGradePercent, segment.ElevationGainMeters, segment.ElevationLossMeters,
-            segment.SourceKind, segment.SourceName, segment.SourceFormat));
+    private static IQueryable<SegmentSummary> Summaries(IQueryable<Segment> source, ExplorerDbContext db)
+    {
+        var efforts = ProjectionVersions.CurrentEfforts(db);
+        var pending = ProjectionVersions.PendingSegments(db);
+        return source.Select(segment =>
+            new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner!.DisplayName, segment.Name, segment.Sport,
+                segment.DistanceMeters, segment.ToleranceMeters,
+                efforts.Count(effort => effort.SegmentId == segment.Id),
+                efforts.Where(effort => effort.SegmentId == segment.Id).Min(effort => (double?)effort.ElapsedSeconds),
+                segment.AverageGradePercent, segment.ElevationGainMeters, segment.ElevationLossMeters,
+                segment.SourceKind, segment.SourceName, segment.SourceFormat)
+            { EffortsPending = pending.Any(value => value.Id == segment.Id) });
+    }
 
     public async Task<PagedResult<SegmentSummary>> SearchAsync(Guid ownerId, string? search, SportKind? sport, string sort, ReadPage page, CancellationToken cancellationToken = default)
     {
@@ -60,7 +65,8 @@ public sealed partial class SegmentReadService
         return new(summary,
             await db.SegmentLinks.CountAsync(link => link.ChildSegmentId == segmentId && link.ParentSegment!.OwnerId == ownerId, cancellationToken),
             await db.SegmentLinks.CountAsync(link => link.ParentSegmentId == segmentId && link.ChildSegment!.OwnerId == ownerId, cancellationToken),
-            !await Efforts(db, ownerId, segmentId).AnyAsync(effort => effort.MetricComputationVersion != SegmentEffortMetricVersions.Current, cancellationToken));
+            !summary.EffortsPending && !await Efforts(db, ownerId, segmentId)
+                .AnyAsync(effort => effort.MetricComputationVersion != SegmentEffortMetricVersions.Current, cancellationToken));
     }
 
     public async Task<PagedResult<SegmentEffortSummary>?> GetEffortsAsync(Guid ownerId, Guid segmentId, SegmentEffortFilter filter, ReadPage page, CancellationToken cancellationToken = default)
@@ -70,6 +76,8 @@ public sealed partial class SegmentReadService
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken);
         if (!await db.Segments.AnyAsync(segment => segment.OwnerId == ownerId && segment.Id == segmentId, cancellationToken)) return null;
+        if (await ProjectionVersions.PendingSegments(db).AnyAsync(segment => segment.Id == segmentId, cancellationToken))
+            throw new ProjectionPendingException();
         var periods = await ReportingDateQuery.ResolveAsync(db, ownerId, new(ReportingPreset.Custom, filter.From, filter.To), DateTimeOffset.UtcNow, cancellationToken);
         var period = periods.Single();
         var query = Efforts(db, ownerId, segmentId);

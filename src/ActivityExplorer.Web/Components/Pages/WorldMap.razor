@@ -107,7 +107,7 @@
     <section class="panel flush map-panel">
         <MapCanvas @ref="_worldMap" CameraStorageKey="world-map" ActivityUrl="@(_view == "lines" && _showActivities ? LineUrl("activities") : null)" RouteUrl="@(_view == "lines" && _showRoutes ? LineUrl("routes") : null)" SegmentUrl="@(_view == "lines" && _showSegments ? LineUrl("segments") : null)"
                    ExplorationUrl="@ExplorationUrl" ExplorationView="@_view" SelectedCellId="@_selectedCell" SelectedCellIdChanged="SelectCell" ExplorationInvalidated="Retry" ExplorationSummaryChanged="ViewportSummaryChanged"
-                   CssClass="world-map" Label="@(_view == "lines" ? "Activity, route, and segment world map" : "GPS activity cells world map")" ShowDisclosure="true" ShowLoadStatus="true" />
+                   CssClass="world-map" Label="@(_view == "lines" ? "Activity, route, and segment world map" : "GPS activity cells world map")" ShowDisclosure="true" ShowLoadStatus="true" ShowViewportResults="true" />
     </section>
     @if (_view == "lines") { <div class="map-legend">@if (_showActivities) { <span class="activity-line"></span><span>Activities</span> }@if (_showRoutes) { <span class="route-line"></span><span>Routes</span> }@if (_showSegments) { <span class="segment-line"></span><span>Segments</span> }</div> }
     else if (_result?.Summary is not null)

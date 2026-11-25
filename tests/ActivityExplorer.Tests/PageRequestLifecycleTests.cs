@@ -170,7 +170,7 @@ public sealed partial class PageRequestLifecycleTests
         {
             Invoke(page, "BeginDelete");
             Invoke(page, "EditMetric", new ActivityMetricSummary(Guid.NewGuid(), "custom.previous", "Previous metric", 1, null, null, ActivityMetricOrigin.Manual, Started));
-            typeof(ActivityDetailPage).GetField("_editing", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(page, true);
+            Invoke(page, "ToggleMetadataEditor");
         });
         await renderer.Dispatcher.InvokeAsync(() => page.SetParametersAsync(Identity(Guid.NewGuid())));
         var html = await renderer.Dispatcher.InvokeAsync(root.ToHtmlString);

@@ -902,6 +902,8 @@ public sealed partial class DatabaseIntegrationTests
     public async Task Garmin_then_exact_Strava_source_enriches_without_duplicate_activity()
     {
         var setup = await DatabaseSetup.CreateAsync();
+        await using (var schema = await setup.Factory.CreateDbContextAsync())
+            await ProjectionVersions.EnsureAsync(schema, CancellationToken.None);
         Environment.SetEnvironmentVariable("ACTIVITY_EXPLORER_DATA", setup.DataDirectory);
         var paths = new AppDataPaths();
         paths.EnsureCreated();
@@ -986,8 +988,8 @@ public sealed partial class DatabaseIntegrationTests
             var csv = archive.CreateEntry("activities.csv");
             using (var writer = new StreamWriter(csv.Open()))
             {
-                writer.WriteLine("Activity ID,Activity Name,Activity Type,Activity Description,Filename,Activity Gear");
-                writer.WriteLine("strava-42,Strava edited title,Ride,Strava description,activities/strava-42.fit.gz,Strava bike");
+                writer.WriteLine("Activity ID,Activity Name,Elapsed Time,Activity Type,Activity Description,Distance,Filename,Activity Gear,Elapsed Time,Distance");
+                writer.WriteLine("strava-42,Strava edited title,600,Ride,Strava description,5.2,activities/strava-42.fit.gz,Strava bike,600.0,5200.0");
             }
 
             var activity = archive.CreateEntry("activities/strava-42.fit.gz");

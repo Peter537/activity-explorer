@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
+using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,12 +21,69 @@ public sealed class ImportQueue(
     {
         await using var ownerLock = await ownerMutationLock.AcquireAsync([request.OwnerId], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        if (!await db.Owners.AnyAsync(x => x.Id == request.OwnerId, cancellationToken))
-        {
-            throw new InvalidOperationException("The selected profile no longer exists.");
-        }
+        await EnsureOwnerAsync(db, request.OwnerId, cancellationToken);
+        var batch = CreateBatch(request);
+        db.ImportBatches.Add(batch);
+        await db.SaveChangesAsync(cancellationToken);
+        // The persisted batch owns the staged file even if the request is cancelled now.
+        await _channel.Writer.WriteAsync(batch.Id, CancellationToken.None);
+        return batch.Id;
+    }
 
-        var batch = new ImportBatch
+    public async ValueTask<bool> EnqueueWatchedAsync(
+        Guid ownerId, string stagedPath, string displayName, CancellationToken cancellationToken = default)
+    {
+        await using var ownerLock = await ownerMutationLock.AcquireAsync([ownerId], cancellationToken);
+        var filePath = ManagedPathGuard.ResolveUnder(paths.StagingPath, stagedPath);
+        var sha256 = await Fingerprint.Sha256Async(filePath, cancellationToken);
+        var format = GetWatchedFormat(filePath);
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await EnsureOwnerAsync(db, ownerId, cancellationToken);
+
+        if (await IsKnownWatchedContentAsync(db, ownerId, sha256, format, cancellationToken))
+            return false;
+
+        var admission = await db.Set<WatchedImportAdmission>()
+            .SingleOrDefaultAsync(x => x.OwnerId == ownerId && x.Sha256 == sha256 && x.Format == format, cancellationToken);
+        var batch = CreateBatch(new ImportRequest(ownerId, filePath, displayName, SourceKind.WatchedFolder));
+        db.ImportBatches.Add(batch);
+        if (admission is null)
+        {
+            db.Add(new WatchedImportAdmission { OwnerId = ownerId, Sha256 = sha256, Format = format, BatchId = batch.Id });
+        }
+        else
+        {
+            admission.BatchId = batch.Id;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        await _channel.Writer.WriteAsync(batch.Id, CancellationToken.None);
+        return true;
+    }
+
+    internal static async Task<bool> IsKnownWatchedContentAsync(ExplorerDbContext db, Guid ownerId, string sha256,
+        string format, CancellationToken cancellationToken) =>
+        await db.Set<WatchedImportAdmission>().AnyAsync(x => x.OwnerId == ownerId && x.Sha256 == sha256 &&
+            x.Format == format && (x.Rejected || x.Batch.Status != ImportStatus.Failed), cancellationToken) ||
+        await db.SourceFiles.AnyAsync(x => x.OwnerId == ownerId && (x.ActivityId != null || x.RouteId == null) &&
+            x.Sha256 == sha256, cancellationToken);
+
+    internal static string GetWatchedFormat(string path)
+    {
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        // GZip has no member name. Its inner format comes from the remaining filename.
+        return extension == ".gz"
+            ? Path.GetExtension(Path.GetFileNameWithoutExtension(path)).ToLowerInvariant() + extension
+            : extension;
+    }
+
+    private static async Task EnsureOwnerAsync(ExplorerDbContext db, Guid ownerId, CancellationToken cancellationToken)
+    {
+        if (!await db.Owners.AnyAsync(x => x.Id == ownerId, cancellationToken))
+            throw new InvalidOperationException("The selected profile no longer exists.");
+    }
+
+    private ImportBatch CreateBatch(ImportRequest request) =>
+        new()
         {
             OwnerId = request.OwnerId,
             SourceKind = request.SourceKind,
@@ -34,12 +92,6 @@ public sealed class ImportQueue(
                 ManagedPathGuard.ResolveUnder(paths.StagingPath, request.StagedPath)),
             Status = ImportStatus.Queued
         };
-        db.ImportBatches.Add(batch);
-        await db.SaveChangesAsync(cancellationToken);
-        // The persisted batch owns the staged file even if the request is cancelled now.
-        await _channel.Writer.WriteAsync(batch.Id, CancellationToken.None);
-        return batch.Id;
-    }
 
     internal async Task RecoverAsync(CancellationToken cancellationToken)
     {
@@ -101,7 +153,8 @@ public sealed class ImportQueue(
                 previous = batch.Status;
             }
 
-            if (batch.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or ImportStatus.Interrupted)
+            if (batch.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed or
+                ImportStatus.Interrupted or ImportStatus.ReviewRequired)
             {
                 yield break;
             }

@@ -59,16 +59,23 @@ public sealed partial class ActivityReadService(IDbContextFactory<ExplorerDbCont
 
     public async Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(
         ActivityFilter filter,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await ReadMatchingAsync(filter, activity => activity.Id, cancellationToken);
+
+    internal async Task<ActivityDeletionReview> PrepareDeletionAsync(ActivityFilter filter, CancellationToken cancellationToken) =>
+        new(await ReadMatchingAsync(filter, activity => new ActivityMutationTarget(activity.Id, activity.OwnerId, activity.MutationVersion), cancellationToken));
+
+    private async Task<T[]> ReadMatchingAsync<T>(ActivityFilter filter,
+        System.Linq.Expressions.Expression<Func<Activity, T>> select, CancellationToken cancellationToken)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await ReadSnapshot.BeginAsync(db, cancellationToken);
         var effective = await ResolveFilterAsync(db, filter, cancellationToken);
-        var ids = await ApplySort(ApplyFilter(db, effective), filter.Sort)
-            .Select(x => x.Id)
-            .ToListAsync(cancellationToken);
+        var matches = await ApplySort(ApplyFilter(db, effective), filter.Sort)
+            .Select(select)
+            .ToArrayAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return ids;
+        return matches;
     }
 
     public async Task<IReadOnlyDictionary<SportKind, int>> GetSportActivityCountsAsync(

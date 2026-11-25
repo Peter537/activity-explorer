@@ -35,8 +35,8 @@ else
             {
                 <button class="button" type="button" disabled title="Requires at least two GPS points">Create segment</button>
             }
-            <button class="button" disabled="@(_deleteBusy || _metadataSave is not null || _refreshing)" @onclick="() => _editing = !_editing">Edit activity</button>
-            <button class="button danger" disabled="@(_deleteBusy || _deleteConfirming || _metadataSave is not null || _refreshing)" @onclick="BeginDelete">Delete activity</button>
+            <button class="button" disabled="@(_deleteBusy || _metadataSave is not null || _refreshing)" @onclick="ToggleMetadataEditor">Edit activity</button>
+            <button class="button danger" disabled="@(_deleteBusy || _deleteActivity is not null || _metadataSave is not null || _refreshing)" @onclick="BeginDelete">Delete activity</button>
         </Actions>
     </PageHeader>
     <ActivityTagEditor @ref="_tagEditor" OwnerId="_activity.Summary.OwnerId" ActivityId="Id" Tags="_activity.Summary.Tags"
@@ -47,15 +47,15 @@ else
         <a href="@ActivityUrl("activity-details")">Details</a>
         <a href="@ActivityUrl("activity-sources")">Sources</a>
     </nav>
-    @if (_deleteConfirming)
+    @if (_deleteActivity is { } deleteActivity)
     {
-        <ActivityDeleteConfirmation Count="1" ActivityName="@_activity.Summary.Title"
-                                    ScopeDescription="@($"You are about to permanently delete the {_activity.Summary.Sport.ToString().ToLowerInvariant()} recorded {_activity.Summary.StartTime.ToLocalTime():g}.")"
+        <ActivityDeleteConfirmation Count="1" ActivityName="@deleteActivity.Title"
+                                    ScopeDescription="@($"You are about to permanently delete the {deleteActivity.Sport.ToString().ToLowerInvariant()} recorded {deleteActivity.StartTime.ToLocalTime():g}.")"
                                     Busy="@_deleteBusy" OnConfirm="ConfirmDelete" OnCancel="CancelDelete" />
     }
     <StatusMessage Message="@_deleteMessage" IsError="true" />
     @if (_message is not null) { <div class="notice" role="status">@_message</div> }
-    @if (_saveUnconfirmed) { <button class="button" @onclick="LoadAsync">Reload activity before saving again</button> }
+    @if (_saveUnconfirmed) { <button class="button" @onclick="ReloadMetadataAsync">Reload activity before saving again</button> }
     @if (_pendingRefresh is not null)
     {
         <button class="button" disabled="@(_refreshing || _metadataSave is not null)" @onclick="RetryMaintenance">@(_refreshing ? "Refreshing results..." : "Retry records and segment refresh")</button>
@@ -74,17 +74,17 @@ else
         }
         <MetricCard Label="@(_activity.Summary.Sport == SportKind.Cycling ? "Average speed" : "Average pace")" Value="@Format.Speed(_activity.AverageSpeed, _activity.Summary.Sport)" />
     </section>
-    @if (_editing)
+    @if (_metadataTarget is not null)
     {
         <section class="panel form-panel">
             <h2>Edit local metadata</h2>
             <div class="form-grid">
-                <label><span>Title</span><input @bind="_title" /></label>
-                <label><span>Profile</span><select @bind="_ownerId">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
-                <label><span>Gear</span><input @bind="_gear" /></label>
-                <label class="wide"><span>Notes</span><textarea @bind="_description"></textarea></label>
+                <label><span>Title</span><input @bind="_title" disabled="@(_metadataSave is not null)" /></label>
+                <label><span>Profile</span><select @bind="_ownerId" disabled="@(_metadataSave is not null)">@foreach (var profile in ProfileState.Profiles) { <option value="@profile.Id">@profile.DisplayName</option> }</select></label>
+                <label><span>Gear</span><input @bind="_gear" disabled="@(_metadataSave is not null)" /></label>
+                <label class="wide"><span>Notes</span><textarea @bind="_description" disabled="@(_metadataSave is not null)"></textarea></label>
             </div>
-            <button class="button primary" disabled="@(_metadataSave is not null || _refreshing || _saveUnconfirmed)" @onclick="Save">@(_metadataSave is null ? "Save changes" : "Saving changes...")</button>
+            <button class="button primary" disabled="@(_metadataSave is not null || _refreshing || _saveUnconfirmed || _deleteActivity is not null)" @onclick="Save">@(_metadataSave is null ? "Save changes" : "Saving changes...")</button>
         </section>
     }
     @if (HasMap)
@@ -217,7 +217,8 @@ else
         </article>
         <article class="panel">
             <div class="panel-heading"><h2>Segment efforts</h2></div>
-            @if (_activity.SegmentEfforts.Count == 0) { <p class="muted">No local segment matches yet.</p> }
+            @if (_activity.SegmentEffortsPending) { <p class="muted" role="status">Some local segment matches are being recalculated.</p> }
+            else if (_activity.SegmentEfforts.Count == 0) { <p class="muted">No local segment matches yet.</p> }
             @foreach (var effort in _activity.SegmentEfforts)
             {
                 <a class="compact-row" href="@($"/segments/{effort.SegmentId}?effort={effort.Id}")"><strong>@effort.SegmentName</strong><span>@Format.Duration(effort.ElapsedSeconds)</span><span>#@effort.Rank</span></a>
@@ -247,7 +248,7 @@ else
     [SupplyParameterFromQuery(Name = "axis")] public string? QueryAxis { get; set; }
     [SupplyParameterFromQuery(Name = "section")] public string? QuerySection { get; set; }
     private ActivityDetail? _activity;
-    private bool _editing;
+    private ActivityMutationTarget? _metadataTarget;
     private bool _loaded;
     private string? _loadError;
     private string _title = "", _routeName = "", _gear = "";
@@ -257,7 +258,7 @@ else
     private Guid? _editingMetricId;
     private string _metricLabel = "", _metricKey = "", _metricUnit = "", _metricText = "";
     private double? _metricNumeric;
-    private bool _deleteConfirming;
+    private ActivitySummary? _deleteActivity;
     private bool _deleteBusy;
     private string? _deleteMessage;
     private ActivityRange? _range;
@@ -280,7 +281,7 @@ else
     private bool _refreshing;
     private bool _saveUnconfirmed;
     private CancellationTokenSource _mutationLifetime = new();
-    private sealed record MetadataSave(Guid ActivityId, Guid PreviousOwnerId, UpdateActivityRequest Request);
+    private sealed record MetadataSave(ActivityMutationTarget Target, UpdateActivityRequest Request);
     private sealed record PendingRefresh(Guid ActivityId, IReadOnlyList<Guid> Owners, bool Statistics, bool Segments, bool FileCleanup);
 
 
@@ -320,9 +321,10 @@ else
             _pendingRefresh = null;
             _refreshing = false;
             _saveUnconfirmed = false;
-            _editing = false;
+            _metadataTarget = null;
             CancelMetricEdit();
-            _deleteConfirming = _deleteBusy = false;
+            _deleteActivity = null;
+            _deleteBusy = false;
             _deleteMessage = _message = null;
             _focusTagEditor = false;
         }
@@ -337,7 +339,6 @@ else
             var projection = activity is null ? null : await Task.Run(() => RangeAnalyzer.ProjectMap(activity.Points, cancellationToken: cancellation.Token), cancellation.Token);
             if (cancellation.IsCancellationRequested || _disposed) return;
             _activity = activity;
-            _saveUnconfirmed = false;
             _fullMapProjection = projection;
             _loadedId = activityId;
             _loaded = true;
@@ -356,8 +357,7 @@ else
             if (ReferenceEquals(_loadCancellation, cancellation)) _loadCancellation = null;
         }
         if (_activity is null) return;
-        _title = _activity.Summary.Title; _description = _activity.Description; _gear = _activity.GearName ?? "";
-        _ownerId = _activity.Summary.OwnerId; _routeName = _activity.Summary.Title;
+        _routeName = _activity.Summary.Title;
         await ApplyRangeQueryAsync();
     }
 
@@ -541,21 +541,48 @@ else
     }
 
 
+    private void ToggleMetadataEditor()
+    {
+        if (_metadataTarget is not null) _metadataTarget = null;
+        else if (_activity is not null) SetMetadataDraft(_activity);
+    }
+
+    private void SetMetadataDraft(ActivityDetail activity)
+    {
+        _metadataTarget = ActivityMutationTarget.FromSummary(activity.Summary);
+        _title = activity.Summary.Title;
+        _description = activity.Description;
+        _gear = activity.GearName ?? "";
+        _ownerId = activity.Summary.OwnerId;
+    }
+
+    private async Task ReloadMetadataAsync()
+    {
+        var id = Id;
+        var target = _metadataTarget;
+        var token = _mutationLifetime.Token;
+        await LoadAsync();
+        if (token.IsCancellationRequested || _disposed || id != Id || !_loaded || _activity is not { } activity || activity.Summary.Id != id) return;
+        if (target is not null && ReferenceEquals(_metadataTarget, target)) SetMetadataDraft(activity);
+        _saveUnconfirmed = false;
+    }
+
     private async Task Save()
     {
-        if (_disposed || !_editing || _metadataSave is not null || _refreshing || _saveUnconfirmed || _activity is null) return;
-        var submission = new MetadataSave(Id, _activity.Summary.OwnerId, new(_title, _description, _gear, _ownerId));
+        if (_disposed || !_loaded || _metadataTarget is not { } target || target.Id != Id || _metadataSave is not null ||
+            _refreshing || _saveUnconfirmed || _deleteActivity is not null) return;
+        var submission = new MetadataSave(target, new(_title, _description, _gear, _ownerId));
         var token = _mutationLifetime.Token;
         _metadataSave = submission;
         var saved = false;
         try
         {
-            var result = await Activities.UpdateAsync(submission.ActivityId, submission.Request, token);
+            var result = await Activities.UpdateReviewedAsync(submission.Target, submission.Request, token);
             saved = true;
             if (!IsCurrentSave(submission)) return;
-            _editing = false;
+            _metadataTarget = null;
             _pendingRefresh = result.StatisticsRefreshPending || result.SegmentRefreshPending
-                ? new PendingRefresh(result.ActivityId, new[] { submission.PreviousOwnerId, result.OwnerId }.Distinct().ToArray(),
+                ? new PendingRefresh(result.ActivityId, new[] { submission.Target.OwnerId, result.OwnerId }.Distinct().ToArray(),
                     result.StatisticsRefreshPending, result.SegmentRefreshPending, result.FileCleanupPending) : null;
             _message = SavedMessage(result.FileCleanupPending, result.StatisticsRefreshPending || result.SegmentRefreshPending);
             await LoadAsync();
@@ -574,7 +601,7 @@ else
         finally { if (ReferenceEquals(_metadataSave, submission)) _metadataSave = null; }
     }
 
-    private bool IsCurrentSave(MetadataSave submission) => !_disposed && Id == submission.ActivityId && ReferenceEquals(_metadataSave, submission);
+    private bool IsCurrentSave(MetadataSave submission) => !_disposed && Id == submission.Target.Id && ReferenceEquals(_metadataSave, submission);
 
     private static string SavedMessage(bool fileCleanup, bool refresh) => "Activity metadata saved locally."
         + (fileCleanup ? " File cleanup is pending and will be retried at startup." : "")
@@ -622,35 +649,41 @@ else
     private void BeginDelete()
     {
         _deleteMessage = null;
-        _deleteConfirming = true;
+        _deleteActivity = _activity?.Summary;
     }
 
     private void CancelDelete()
     {
         if (_deleteBusy) return;
-        _deleteConfirming = false;
+        _deleteActivity = null;
         _deleteMessage = null;
     }
 
     private async Task ConfirmDelete()
     {
-        if (_deleteBusy) return;
+        if (_deleteBusy || _deleteActivity is not { } activity || activity.Id != Id) return;
         _deleteBusy = true;
         _deleteMessage = null;
+        var token = _mutationLifetime.Token;
         try
         {
-            var result = await Activities.DeleteAsync([Id]);
+            var review = new ActivityDeletionReview([ActivityMutationTarget.FromSummary(activity)]);
+            var result = await Activities.DeleteReviewedAsync(review, token);
+            if (!IsCurrentDeletion(activity)) return;
             var query = new List<string> { $"deleted={result.DeletedCount}" };
             if (result.FileCleanupPending) query.Add("cleanupPending=true");
             if (result.StatisticsRefreshPending) query.Add("statisticsPending=true");
             Navigation.NavigateTo($"/activities?{string.Join('&', query)}");
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException)
         {
-            _deleteMessage = exception.Message;
-            _deleteBusy = false;
+            if (IsCurrentDeletion(activity)) _deleteMessage = exception.Message;
         }
+        finally { if (IsCurrentDeletion(activity)) _deleteBusy = false; }
     }
+
+    private bool IsCurrentDeletion(ActivitySummary activity) => !_disposed && Id == activity.Id && ReferenceEquals(_deleteActivity, activity);
     private async Task CreateRoute()
     {
         var id = await Routes.CreateFromActivityAsync(new CreateRouteRequest(_activity!.Summary.OwnerId, Id, _routeName, null));

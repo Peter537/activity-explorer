@@ -38,6 +38,8 @@ Attempts use the qualification rules below. Selecting multiple attempts does not
 
 The Records page shows one sport at a time. Use the icons and sport names above the tables to switch sports. All time lists sports with lifetime record snapshots for the selected profile, in Cycling, Running, Walking, and Rowing order. Period views also include sports with imported activities, so they can calculate results before lifetime snapshots exist. Changing scope keeps the available sports; changing period updates availability for that calculation.
 
+When an import, transfer, deletion, or application upgrade leaves lifetime snapshots pending, Records shows the pending status and any current results from other selected profiles. Reload after the background repair finishes. Period calculations continue to use the committed activities directly.
+
 Without an explicit sport choice, the page opens the available sport with the most imported activities across indoor and outdoor training. Ties use the selector order. All profiles counts stored activities across all profiles. This choice is independent of whether that sport has a winner in the selected period.
 
 Selecting a sport adds its lowercase name to the URL, for example `/records?sport=rowing&scope=indoor`. Refresh and browser Back or Forward restore explicit choices. Changing scope preserves the sport. Changing profile also preserves it when available; otherwise the page removes the sport parameter and selects the new profile's default. Unsupported sport values are removed independently of scope. No last-used sport preference is stored.

@@ -45,8 +45,7 @@ public sealed class XmlActivityImporter : IActivityImporter
 
     private static ParsedActivity Parse(string path, string? rowingFallback, CancellationToken cancellationToken)
     {
-        var points = new List<TrackPoint>();
-        var laps = new List<LapCandidate>();
+        var track = new TrackMeasurements();
         string? activityName = null;
         string? sportText = null;
         DateTimeOffset? currentTime = null;
@@ -54,12 +53,18 @@ public sealed class XmlActivityImporter : IActivityImporter
         double? currentLon = null;
         double? currentEle = null;
         double? currentDistance = null;
+        double? currentSpeed = null;
         double? currentHr = null;
         double? currentCadence = null;
         double? currentPower = null;
         double? currentTemp = null;
         var inPoint = false;
-        var lapStartIndex = 0;
+        var activitiesDepth = -1;
+        var activityDepth = -1;
+        var isTcx = Path.GetExtension(path).Equals(".tcx", StringComparison.OrdinalIgnoreCase);
+        var activityCount = 0;
+        var lapDepth = -1;
+        double? declaredLapDistance = null;
 
         var settings = new XmlReaderSettings
         {
@@ -79,15 +84,24 @@ public sealed class XmlActivityImporter : IActivityImporter
             if (reader.NodeType == XmlNodeType.Element)
             {
                 var local = reader.LocalName;
+                if (reader.Depth == 0 && local == "TrainingCenterDatabase") isTcx = true;
+                if (isTcx && activityDepth < 0 &&
+                    !(local == "Activities" && reader.Depth == 1) &&
+                    !(local == "Activity" && activitiesDepth >= 0 && reader.Depth == activitiesDepth + 1))
+                {
+                    reader.Read();
+                    continue;
+                }
                 if (local is "trkpt" or "Trackpoint")
                 {
-                    inPoint = true;
+                    inPoint = !reader.IsEmptyElement;
+                    if (!inPoint) track.Break();
                     currentTime = null;
-                    currentEle = currentDistance = currentHr = currentCadence = currentPower = currentTemp = null;
+                    currentEle = currentDistance = currentSpeed = currentHr = currentCadence = currentPower = currentTemp = null;
                     currentLat = Parse(reader.GetAttribute("lat"));
                     currentLon = Parse(reader.GetAttribute("lon"));
                 }
-                else if (local == "Position")
+                else if (inPoint && local == "Position")
                 {
                     currentLat = currentLon = null;
                 }
@@ -95,9 +109,30 @@ public sealed class XmlActivityImporter : IActivityImporter
                 {
                     activityName = ReadText(reader, ref readerAdvanced);
                 }
-                else if (local == "Activity" && !inPoint && reader.GetAttribute("Sport") is { } activitySport)
+                else if (local == "Activities" && reader.Depth == 1 && !reader.IsEmptyElement)
                 {
-                    sportText = activitySport;
+                    activitiesDepth = reader.Depth;
+                }
+                else if (local == "Activity" && activitiesDepth >= 0 && reader.Depth == activitiesDepth + 1)
+                {
+                    if (++activityCount > 1)
+                        throw new UnsupportedActivityException("TCX files with multiple activities are not supported. Export each activity as a separate file.");
+                    sportText = reader.GetAttribute("Sport");
+                    if (!reader.IsEmptyElement) activityDepth = reader.Depth;
+                }
+                else if (local == "Lap" && activityDepth >= 0 && reader.Depth == activityDepth + 1 && !reader.IsEmptyElement)
+                {
+                    lapDepth = reader.Depth;
+                    declaredLapDistance = null;
+                    track.BeginLap();
+                }
+                else if (local == "DistanceMeters" && lapDepth >= 0 && reader.Depth == lapDepth + 1)
+                {
+                    declaredLapDistance = Nonnegative(Parse(ReadText(reader, ref readerAdvanced)));
+                }
+                else if (!inPoint && local is "trk" or "trkseg" or "Track")
+                {
+                    track.Break();
                 }
                 else if (local is "type" or "Sport" && !inPoint)
                 {
@@ -117,7 +152,11 @@ public sealed class XmlActivityImporter : IActivityImporter
                 }
                 else if (inPoint && local == "DistanceMeters")
                 {
-                    currentDistance = Parse(ReadText(reader, ref readerAdvanced));
+                    currentDistance = Nonnegative(Parse(ReadText(reader, ref readerAdvanced)));
+                }
+                else if (inPoint && local is "speed" or "Speed")
+                {
+                    currentSpeed = Nonnegative(Parse(ReadText(reader, ref readerAdvanced)));
                 }
                 else if (inPoint && local == "LatitudeDegrees")
                 {
@@ -143,26 +182,24 @@ public sealed class XmlActivityImporter : IActivityImporter
                 {
                     currentTemp = ReadNestedNumber(reader);
                 }
-                else if (local == "Lap")
-                {
-                    lapStartIndex = points.Count;
-                }
             }
             else if (reader.NodeType == XmlNodeType.EndElement)
             {
-                if (reader.LocalName is "trkpt" or "Trackpoint")
+                if (inPoint && reader.LocalName is "trkpt" or "Trackpoint")
                 {
-                    points.Add(new TrackPoint(currentTime, currentLat, currentLon, currentDistance, currentEle, null, currentHr, currentCadence, currentPower, currentTemp));
+                    track.Add(new TrackPoint(currentTime,
+                        currentLat is >= -90 and <= 90 ? currentLat : null,
+                        currentLon is >= -180 and <= 180 ? currentLon : null,
+                        currentDistance, currentEle, currentSpeed, currentHr, currentCadence, currentPower, currentTemp));
                     inPoint = false;
                 }
-                else if (reader.LocalName == "Lap" && points.Count > lapStartIndex)
+                else if (reader.LocalName == "Lap" && reader.Depth == lapDepth)
                 {
-                    var slice = points.Skip(lapStartIndex).ToArray();
-                    var first = slice.FirstOrDefault(x => x.Timestamp.HasValue)?.Timestamp;
-                    var last = slice.LastOrDefault(x => x.Timestamp.HasValue)?.Timestamp;
-                    var seconds = first.HasValue && last.HasValue ? (last.Value - first.Value).TotalSeconds : 0;
-                    laps.Add(new LapCandidate(laps.Count + 1, Distance(slice), seconds, seconds, Average(slice, x => x.HeartRate), Average(slice, x => x.PowerWatts)));
+                    track.EndLap(declaredLapDistance);
+                    lapDepth = -1;
                 }
+                else if (reader.LocalName == "Activity" && reader.Depth == activityDepth) activityDepth = -1;
+                else if (reader.LocalName == "Activities" && reader.Depth == activitiesDepth) activitiesDepth = -1;
             }
 
             if (readerAdvanced)
@@ -172,6 +209,7 @@ public sealed class XmlActivityImporter : IActivityImporter
             reader.Read();
         }
 
+        var points = track.Points;
         if (points.Count == 0)
         {
             throw new InvalidDataException("The XML activity contains no track points.");
@@ -181,10 +219,11 @@ public sealed class XmlActivityImporter : IActivityImporter
             RowingLabels.IsRowing(rowingFallback))
             sportText = rowingFallback;
         var sport = MapSport(sportText);
-        var start = points.FirstOrDefault(x => x.Timestamp.HasValue)?.Timestamp
+        var start = track.FirstTime
             ?? throw new InvalidDataException("The XML activity has no timestamps.");
-        var elapsed = (points.LastOrDefault(x => x.Timestamp.HasValue)?.Timestamp - start)?.TotalSeconds ?? 0;
-        var distance = Distance(points);
+        var elapsed = (track.LatestTime - start)?.TotalSeconds ?? 0;
+        var distance = track.DistanceMeters;
+        if (!double.IsFinite(distance)) throw new InvalidDataException("The XML activity distance is outside the supported numeric range.");
         var elevations = points.Where(x => x.ElevationMeters.HasValue).Select(x => x.ElevationMeters!.Value).ToArray();
 
         return new ParsedActivity
@@ -195,7 +234,8 @@ public sealed class XmlActivityImporter : IActivityImporter
             StartTimeUtc = start.ToUniversalTime(),
             OriginalUtcOffset = start.Offset,
             DistanceMeters = distance,
-            MovingTimeSeconds = elapsed,
+            MovingTimeSeconds = track.MovingSeconds,
+            MovingTimeSource = track.HasMovementEvidence ? MovingTimeSource.EstimatedFromRecords : MovingTimeSource.Unavailable,
             ElapsedTimeSeconds = elapsed,
             ElevationGainMeters = ElevationGain(elevations),
             AverageSpeedMetersPerSecond = elapsed > 0 ? distance / elapsed : null,
@@ -204,8 +244,8 @@ public sealed class XmlActivityImporter : IActivityImporter
             AverageCadence = Average(points, x => x.Cadence),
             AveragePowerWatts = Average(points, x => x.PowerWatts),
             MaxPowerWatts = Max(points, x => x.PowerWatts),
-            Points = FillDistancesAndSpeeds(points, sport),
-            Laps = laps
+            Points = points,
+            Laps = track.Laps
         };
     }
 
@@ -232,61 +272,106 @@ public sealed class XmlActivityImporter : IActivityImporter
         return value.Contains("outdoor", StringComparison.Ordinal) ? false : null;
     }
 
-    private static IReadOnlyList<TrackPoint> FillDistancesAndSpeeds(IReadOnlyList<TrackPoint> points, SportKind sport)
+    private sealed class TrackMeasurements
     {
-        var result = new List<TrackPoint>(points.Count);
-        var preserveDistanceGaps = sport == SportKind.Rowing && points.Any(point =>
-            point.Latitude is not (>= -90 and <= 90) || point.Longitude is not (>= -180 and <= 180));
-        double cumulative = 0;
-        TrackPoint? previous = null;
-        foreach (var point in points)
+        private const double MaxMovementSampleGapSeconds = 30;
+        private const double MinMovingSpeedMetersPerSecond = 0.3;
+        private double _sampledMeters;
+        private double _observedLapMeters;
+        private double _totalLapMeters;
+        private TrackPoint? _previous;
+        private double? _previousRecordedDistance;
+        private double _sampledAtPreviousRecordedDistance;
+        private int _lapStart;
+        private double _lapStartingMeters;
+        private double _lapStartingMovingSeconds;
+
+        public List<TrackPoint> Points { get; } = [];
+        public List<LapCandidate> Laps { get; } = [];
+        public DateTimeOffset? FirstTime { get; private set; }
+        public DateTimeOffset? LatestTime { get; private set; }
+        public double DistanceMeters => (_sampledMeters - _observedLapMeters) + _totalLapMeters;
+        public double MovingSeconds { get; private set; }
+        public bool HasMovementEvidence { get; private set; }
+
+        public void Break()
         {
-            if (preserveDistanceGaps)
-            {
-                // Retain source distance gaps. Best efforts can use GPS edges independently.
-                double? rowingSpeed = null;
-                if (previous?.Timestamp is not null && point.Timestamp is not null)
-                {
-                    var seconds = (point.Timestamp.Value - previous.Timestamp.Value).TotalSeconds;
-                    if (seconds > 0)
-                    {
-                        var delta = point.DistanceMeters - previous.DistanceMeters;
-                        if (delta is null && previous.Latitude is >= -90 and <= 90 && previous.Longitude is >= -180 and <= 180 &&
-                            point.Latitude is >= -90 and <= 90 && point.Longitude is >= -180 and <= 180)
-                            delta = GeometryCodec.HaversineMeters(previous.Latitude.Value, previous.Longitude.Value,
-                                point.Latitude.Value, point.Longitude.Value);
-                        if (delta is >= 0 && double.IsFinite(delta.Value)) rowingSpeed = delta / seconds;
-                    }
-                }
-                result.Add(point with { SpeedMetersPerSecond = point.SpeedMetersPerSecond ?? rowingSpeed });
-                previous = point;
-                continue;
-            }
-            if (previous?.Latitude is not null && previous.Longitude is not null && point.Latitude is not null && point.Longitude is not null)
-            {
-                cumulative += GeometryCodec.HaversineMeters(previous.Latitude.Value, previous.Longitude.Value, point.Latitude.Value, point.Longitude.Value);
-            }
-
-            var distance = point.DistanceMeters ?? cumulative;
-            double? speed = null;
-            if (previous?.Timestamp is not null && point.Timestamp is not null)
-            {
-                var seconds = (point.Timestamp.Value - previous.Timestamp.Value).TotalSeconds;
-                if (seconds > 0)
-                {
-                    speed = (distance - (previous.DistanceMeters ?? Math.Max(0, cumulative))) / seconds;
-                }
-            }
-
-            result.Add(point with { DistanceMeters = distance, SpeedMetersPerSecond = point.SpeedMetersPerSecond ?? speed });
-            previous = result[^1];
+            _previous = null;
+            _previousRecordedDistance = null;
         }
 
-        return result;
-    }
+        public void BeginLap()
+        {
+            Break();
+            _lapStart = Points.Count;
+            _lapStartingMeters = _sampledMeters;
+            _lapStartingMovingSeconds = MovingSeconds;
+        }
 
-    private static double Distance(IReadOnlyList<TrackPoint> points) =>
-        points.LastOrDefault(x => x.DistanceMeters.HasValue)?.DistanceMeters ?? GeometryCodec.DistanceMeters(points);
+        public void EndLap(double? declaredDistance)
+        {
+            Break();
+            if (_lapStart == Points.Count && declaredDistance is null) return;
+            var samples = Points.Skip(_lapStart);
+            var first = samples.FirstOrDefault(x => x.Timestamp.HasValue)?.Timestamp;
+            var last = samples.Max(x => x.Timestamp);
+            var elapsed = (last - first)?.TotalSeconds ?? 0;
+            var observedDistance = _sampledMeters - _lapStartingMeters;
+            var lapDistance = declaredDistance ?? observedDistance;
+            _observedLapMeters += observedDistance;
+            _totalLapMeters += lapDistance;
+            Laps.Add(new LapCandidate(Laps.Count + 1, lapDistance, elapsed, MovingSeconds - _lapStartingMovingSeconds,
+                Average(samples, x => x.HeartRate), Average(samples, x => x.PowerWatts)));
+        }
+
+        public void Add(TrackPoint point)
+        {
+            var edgeMeters = _previous is null ? null : EdgeDistance(_previous, point);
+            var additionalMeters = edgeMeters ?? 0;
+            if (point.DistanceMeters is { } recorded)
+            {
+                if (_previousRecordedDistance is { } baseline && recorded >= baseline)
+                {
+                    // The counter can establish distance across missing samples without establishing movement in the gap.
+                    var distanceSinceBaseline = _sampledMeters - _sampledAtPreviousRecordedDistance;
+                    additionalMeters = Math.Max(0, recorded - baseline - distanceSinceBaseline);
+                }
+                _previousRecordedDistance = recorded;
+                _sampledAtPreviousRecordedDistance = _sampledMeters + additionalMeters;
+            }
+            _sampledMeters += additionalMeters;
+
+            var speed = point.SpeedMetersPerSecond;
+            var interval = (point.Timestamp - _previous?.Timestamp)?.TotalSeconds;
+            if (interval is > 0 and <= MaxMovementSampleGapSeconds && _previous?.Timestamp >= LatestTime)
+            {
+                speed ??= edgeMeters / interval.Value;
+                HasMovementEvidence |= speed.HasValue;
+                if (speed > MinMovingSpeedMetersPerSecond) MovingSeconds += interval.Value;
+            }
+
+            FirstTime ??= point.Timestamp;
+            if (LatestTime is null || point.Timestamp > LatestTime) LatestTime = point.Timestamp;
+            Points.Add(point with
+            {
+                DistanceMeters = point.DistanceMeters.HasValue || HasPosition(point) ? _sampledMeters : null,
+                SpeedMetersPerSecond = speed
+            });
+            _previous = point;
+        }
+
+        private static double? EdgeDistance(TrackPoint previous, TrackPoint current)
+        {
+            if (previous.DistanceMeters is { } start && current.DistanceMeters is { } end)
+                return end >= start ? end - start : null;
+            if (!HasPosition(previous) || !HasPosition(current)) return null;
+            return Nonnegative(GeometryCodec.HaversineMeters(previous.Latitude!.Value, previous.Longitude!.Value,
+                current.Latitude!.Value, current.Longitude!.Value));
+        }
+
+        private static bool HasPosition(TrackPoint point) =>
+            point.Latitude is >= -90 and <= 90 && point.Longitude is >= -180 and <= 180;
+    }
 
     private static double ElevationGain(IReadOnlyList<double> values)
     {
@@ -337,7 +422,10 @@ public sealed class XmlActivityImporter : IActivityImporter
     }
 
     private static double? Parse(string? value) =>
-        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) ? result : null;
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && double.IsFinite(result) ? result : null;
+
+    private static double? Nonnegative(double? value) =>
+        value is >= 0 && double.IsFinite(value.Value) ? value : null;
 
     private static DateTimeOffset? ParseDate(string? value) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var result) ? result : null;

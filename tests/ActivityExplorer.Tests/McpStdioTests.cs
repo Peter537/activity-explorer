@@ -20,7 +20,7 @@ public sealed class McpStdioTests
     {
         await using var fixture = await McpFixture.CreateAsync();
         var before = SHA256.HashData(await File.ReadAllBytesAsync(fixture.DatabasePath));
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         await using (var client = await McpClient.CreateAsync(new StdioClientTransport(new()
         {
             Command = "dotnet",
@@ -28,7 +28,7 @@ public sealed class McpStdioTests
             EnvironmentVariables = ChildEnvironment(fixture.DirectoryPath),
             InheritEnvironmentVariables = false,
             ShutdownTimeout = TimeSpan.FromSeconds(8)
-        }), new() { ProtocolVersion = version }, cancellationToken: deadline.Token))
+        }), new() { ProtocolVersion = version, DiscoverProbeTimeout = TimeSpan.FromSeconds(20) }, cancellationToken: deadline.Token))
         {
             var listing = await client.ListToolsAsync(new ListToolsRequestParams(), deadline.Token);
             Assert.Equal(15, listing.Tools.Count);

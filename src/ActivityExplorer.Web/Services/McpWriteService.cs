@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using System.Data;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -7,23 +7,39 @@ using System.Threading.Channels;
 using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
-using ActivityExplorer.Infrastructure.Import;
-using ActivityExplorer.Infrastructure.Processing;
+using ActivityExplorer.Infrastructure.Services;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ActivityExplorer.Web.Services;
 
+public enum McpPlanClosure { Declined, Expired }
+
+public sealed class McpPlanClosedException(McpPlanClosure closure, string action, Guid[] profileIds) : InvalidOperationException(closure switch
+{
+    McpPlanClosure.Declined => "The change was declined. No operation was queued.",
+    _ => "The preview expired. Prepare and review it again."
+})
+{
+    public McpPlanClosure Closure { get; } = closure;
+    public string Action { get; } = action;
+    public Guid[] ProfileIds { get; } = profileIds;
+}
+
 public sealed partial class McpWriteService(
     McpWriteOptions options, IDbContextFactory<ExplorerDbContext> factory,
-    IOwnerMutationLock mutations, AppDataPaths paths, IServiceProvider services, TimeProvider clock, ILogger<McpWriteService> logger)
+    IOwnerMutationLock mutations, AppDataPaths paths, IServiceProvider services, TimeProvider clock, ILogger<McpWriteService> logger) : IProfileDeletionCleanup, IDisposable
 {
-    private sealed record Plan(McpChangePreview Preview, McpChangeRequest Request, string Fingerprint);
+    private sealed record Plan(McpChangePreview Preview, McpChangeRequest Request, long Revision, LocalReviewPath? Path);
     private sealed record Asset(McpApprovedAsset Summary, string Path, string Hash);
+    private sealed record ClosedPlan(string Action, Guid[] ProfileIds, McpPlanClosure Closure, DateTimeOffset RetainUntil);
     private readonly ConcurrentDictionary<Guid, Plan> _plans = new();
+    private readonly ConcurrentDictionary<Guid, ClosedPlan> _closedPlans = new();
     private readonly ConcurrentDictionary<Guid, Asset> _assets = new();
-    private readonly Channel<Guid> _queue = Channel.CreateBounded<Guid>(32);
+    private readonly Dictionary<Guid, Guid?> _preparations = new();
+    private readonly SemaphoreSlim _filePreviews = new(1);
+    // The durable queued/running limit bounds admissions; the channel only notifies the worker of committed receipts.
+    private readonly Channel<Guid> _queue = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true });
     public string Token { get; private set; } = "";
     public string Endpoint { get; private set; } = "";
     public bool Enabled => options.Enabled;
@@ -33,23 +49,56 @@ public sealed partial class McpWriteService(
     public async Task PublishConnectionAsync(string endpoint, CancellationToken token)
     {
         if (!Enabled) return;
-        CleanupDownloads();
-        await CleanupOrphanAssetsAsync(token);
+        await CleanupArtifactsAsync(token, discardDownloads: true);
         var uri = new Uri(endpoint);
-        if (!uri.IsLoopback) throw new InvalidOperationException("MCP writes require a loopback Web listener.");
-        Endpoint = endpoint.TrimEnd('/');
-        Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var connection = new McpConnection(Endpoint, Token, DataIdentity(paths.Root), options.ProfileIds,
+        if (!uri.IsLoopback || uri.Scheme is not ("http" or "https"))
+            throw new InvalidOperationException("MCP writes require a loopback HTTP Web listener.");
+        endpoint = endpoint.TrimEnd('/');
+        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var connection = new McpConnection(endpoint, secret, DataIdentity(paths.Root), options.ProfileIds,
             options.AllowDestructive, options.AllowAdministration);
-        await File.WriteAllTextAsync(ConnectionFile, JsonSerializer.Serialize(connection, McpChangeJson.Options), token);
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(ConnectionFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var temporary = Path.Combine(paths.Root, $".mcp-connection-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            var open = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Options = FileOptions.Asynchronous };
+            if (!OperatingSystem.IsWindows()) open.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            await using (var stream = new FileStream(temporary, open))
+                await JsonSerializer.SerializeAsync(stream, connection, McpChangeJson.Options, token);
+            token.ThrowIfCancellationRequested();
+            File.Move(temporary, ConnectionFile, overwrite: true);
+            Endpoint = endpoint;
+            Token = secret;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException("The MCP write bridge could not publish mcp-connection.json.", exception);
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                CredentialCleanupFailed(logger, exception);
+            }
+        }
     }
 
-    public void RemoveConnection()
+    [LoggerMessage(4101, LogLevel.Warning, "Could not remove temporary MCP connection credentials.")]
+    private static partial void CredentialCleanupFailed(ILogger logger, Exception exception);
+
+    internal async Task RemoveConnectionAsync(CancellationToken cancellationToken)
     {
-        if (Token.Length > 0 && File.Exists(ConnectionFile)) File.Delete(ConnectionFile);
-        CleanupAssets(all: true);
-        CleanupDownloads();
+        var published = Token.Length > 0;
+        Token = "";
+        Endpoint = "";
+        try
+        {
+            if (published) File.Delete(ConnectionFile);
+        }
+        finally
+        {
+            await CleanupArtifactsAsync(cancellationToken, discardDownloads: true, clearSelections: true);
+        }
     }
 
     public static string DataIdentity(string root) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -63,11 +112,21 @@ public sealed partial class McpWriteService(
 
     public void Authorize(McpChangeRequest request)
     {
-        if (!Enabled || !McpChangeCatalog.Actions.Contains(request.Action)) throw new UnauthorizedAccessException("This write capability is unavailable.");
-        if (McpChangeCatalog.Destructive(request.Action) && !options.AllowDestructive || McpChangeCatalog.Administration(request.Action) && !options.AllowAdministration)
-            throw new UnauthorizedAccessException("This action requires a separate destructive or administration opt-in.");
+        AuthorizeAction(request.Action);
         if (request.ProfileId is null && !McpChangeCatalog.Administration(request.Action)) throw new ArgumentException("Select an explicit profile.");
-        foreach (var id in Profiles(request))
+        AuthorizeProfiles(Profiles(request));
+    }
+
+    private void AuthorizeAction(string action)
+    {
+        if (!Enabled || !McpChangeCatalog.Actions.Contains(action)) throw new UnauthorizedAccessException("This write capability is unavailable.");
+        if (McpChangeCatalog.Destructive(action) && !options.AllowDestructive || McpChangeCatalog.Administration(action) && !options.AllowAdministration)
+            throw new UnauthorizedAccessException("This action requires a separate destructive or administration opt-in.");
+    }
+
+    private void AuthorizeProfiles(IEnumerable<Guid> profileIds)
+    {
+        foreach (var id in profileIds)
             if (!options.ProfileIds.Contains(id)) throw new UnauthorizedAccessException("The requested profile or entity is unavailable.");
     }
 
@@ -78,72 +137,141 @@ public sealed partial class McpWriteService(
         return ids.Distinct().Order().ToArray();
     }
 
-    public Task<McpChangePreview> PrepareAsync(McpChangeRequest request, CancellationToken token) => mutations.RunAsync(async () =>
+    public async Task<McpChangePreview> PrepareAsync(McpChangeRequest request, CancellationToken token)
     {
         Authorize(request);
         if (JsonSerializer.SerializeToUtf8Bytes(request, McpChangeJson.Options).Length > 1024 * 1024) throw new ArgumentException("The change exceeds the 1 MiB input limit. Select a Web-approved file instead.");
-        Prune();
-        if (_plans.Count >= options.MaxPendingPlans) throw new InvalidOperationException("Too many pending previews. Cancel or let existing previews expire.");
-        var details = await DescribeAsync(request, token);
-        var fingerprint = await FingerprintAsync(token);
+        request = request with { Arguments = request.Arguments.Clone(), ReviewedGeometrySha256 = null };
         var id = Guid.NewGuid();
-        string? phrase = null;
-        if (McpChangeCatalog.Destructive(request.Action))
+        var (revision, asset) = await mutations.RunAsync(async () =>
         {
+            Prune();
+            if (_plans.Count + _preparations.Count >= options.MaxPendingPlans)
+                throw new InvalidOperationException("Too many pending previews. Cancel or let existing previews expire.");
+            Asset? selected = null;
+            if (request.Arguments.TryGetProperty("assetId", out var property) && _assets.TryGetValue(property.GetGuid(), out var entry) &&
+                entry.Summary.ProfileId == request.ProfileId && entry.Summary.ExpiresAt > clock.GetUtcNow()) selected = entry;
             await using var db = await factory.CreateDbContextAsync(token);
-            phrase = request.Action == "delete_profile"
-                ? "DELETE " + await db.Owners.Where(owner => owner.Id == request.ProfileId).Select(owner => owner.DisplayName).SingleAsync(token)
-                : "CONFIRM " + request.Action;
+            var captured = await McpLibraryRevision.ReadAsync(db, token);
+            _preparations.Add(id, selected?.Summary.Id);
+            return (captured, selected);
+        }, token);
+
+        var published = false;
+        try
+        {
+            var (details, path) = await DescribeWithBudgetAsync(request, asset, token);
+            request = request with { ReviewedGeometrySha256 = path?.Digest };
+            var phrase = await ConfirmationPhraseAsync(request, token);
+            return await mutations.RunAsync(async () =>
+            {
+                await using var db = await factory.CreateDbContextAsync(token);
+                if (revision != await McpLibraryRevision.ReadAsync(db, token))
+                    throw new InvalidOperationException("The application data changed while preparing this preview. Prepare the change again.");
+                var now = clock.GetUtcNow();
+                var expiresAt = now.AddMinutes(options.PlanLifetimeMinutes);
+                if (asset is not null)
+                {
+                    if (asset.Summary.ExpiresAt <= now || !_assets.ContainsKey(asset.Summary.Id))
+                        throw new InvalidOperationException("The selected file or folder became unavailable. Approve it in the Web app again.");
+                    if (asset.Summary.ExpiresAt < expiresAt) expiresAt = asset.Summary.ExpiresAt;
+                }
+                var preview = new McpChangePreview(id, request.Action, Profiles(request), request.Action.Replace('_', ' '), details,
+                    expiresAt, phrase, Endpoint + "/mcp/review/" + id);
+                if (!_plans.TryAdd(id, new(preview, request, revision, path))) throw new InvalidOperationException("Could not prepare the change.");
+                _preparations.Remove(id);
+                published = true;
+                return preview;
+            }, token);
         }
-        var expiresAt = clock.GetUtcNow().AddMinutes(options.PlanLifetimeMinutes);
-        if (request.Arguments.TryGetProperty("assetId", out var assetId) && _assets.TryGetValue(assetId.GetGuid(), out var asset))
-            expiresAt = asset.Summary.ExpiresAt < expiresAt ? asset.Summary.ExpiresAt : expiresAt;
-        var preview = new McpChangePreview(id, request.Action, Profiles(request), request.Action.Replace('_', ' '), details,
-            expiresAt, phrase, Endpoint + "/mcp/review/" + id);
-        if (!_plans.TryAdd(id, new(preview, request, fingerprint))) throw new InvalidOperationException("Could not prepare the change.");
-        return preview;
+        finally
+        {
+            if (!published) await mutations.RunAsync(() => Task.FromResult(_preparations.Remove(id)), CancellationToken.None);
+        }
+    }
+
+    private async Task<(JsonElement Details, LocalReviewPath? Path)> DescribeWithBudgetAsync(McpChangeRequest request, Asset? asset, CancellationToken token)
+    {
+        if (asset?.Summary.Kind != "file" && request.Action is not ("create_segment_from_activity" or "create_segment_from_route" or
+            "create_subsegment" or "create_route_from_activity" or "create_segment_path" or "create_route_path"))
+            return await DescribeAsync(request, token);
+
+        await _filePreviews.WaitAsync(token);
+        try { return await DescribeAsync(request, token); }
+        finally { _filePreviews.Release(); }
+    }
+
+    private async Task<string?> ConfirmationPhraseAsync(McpChangeRequest request, CancellationToken token)
+    {
+        if (!McpChangeCatalog.Destructive(request.Action)) return null;
+        if (request.Action != "delete_profile") return "CONFIRM " + request.Action;
+        await using var db = await factory.CreateDbContextAsync(token);
+        return "DELETE " + await db.Owners.Where(owner => owner.Id == request.ProfileId).Select(owner => owner.DisplayName).SingleAsync(token);
+    }
+
+    private bool IsPreparingAsset(Guid assetId) => _preparations.ContainsValue(assetId);
+
+    public McpChangePreview GetPreview(Guid id) => RequirePlan(id).Preview;
+
+    internal (McpChangePreview Preview, LocalReviewPath? Path) GetLocalReview(Guid id)
+    {
+        var plan = RequirePlan(id);
+        return (plan.Preview, plan.Path);
+    }
+
+    public Task<McpApplyResult> DeclineAsync(Guid id, CancellationToken token) => mutations.RunAsync(async () =>
+    {
+        await using var db = await factory.CreateDbContextAsync(token);
+        var existing = await db.McpOperations.AsNoTracking().SingleOrDefaultAsync(operation => operation.Id == id, token);
+        if (existing is not null)
+        {
+            var operation = await ReadStatusAsync(db, existing, token);
+            return new McpApplyResult(operation.Status, id, Operation: operation);
+        }
+        try
+        {
+            var plan = RequirePlan(id, closeExpired: true);
+            var now = clock.GetUtcNow();
+            var closure = plan.Preview.ExpiresAt <= now ? McpPlanClosure.Expired : McpPlanClosure.Declined;
+            ClosePlan(id, plan, closure, now);
+            if (closure == McpPlanClosure.Expired) throw ClosedException(plan, closure);
+        }
+        catch (McpPlanClosedException exception) when (exception.Closure == McpPlanClosure.Declined) { }
+        return new McpApplyResult("declined", id);
     }, token);
-
-    public McpChangePreview GetPreview(Guid id)
-    {
-        Prune();
-        var plan = RequirePlan(id);
-        Authorize(plan.Request);
-        return plan.Preview;
-    }
-
-    public void Decline(Guid id)
-    {
-        var plan = RequirePlan(id);
-        Authorize(plan.Request);
-        _plans.TryRemove(id, out _);
-    }
 
     public Task<McpOperationStatus> ApproveAsync(Guid id, string? phrase, CancellationToken token) => mutations.RunAsync(async () =>
     {
         await using var db = await factory.CreateDbContextAsync(token);
         var existing = await db.McpOperations.AsNoTracking().SingleOrDefaultAsync(operation => operation.Id == id, token);
-        if (existing is not null) return await StatusAsync(id, token);
-        var plan = RequirePlan(id);
-        Authorize(plan.Request);
+        if (existing is not null) return await ReadStatusAsync(db, existing, token);
+        var plan = RequirePlan(id, closeExpired: true);
         if (!string.Equals(phrase, plan.Preview.ConfirmationPhrase, StringComparison.Ordinal)) throw new ArgumentException("The confirmation phrase does not match the reviewed change.");
-        if (plan.Preview.ExpiresAt <= clock.GetUtcNow()) throw new InvalidOperationException("The preview expired. Prepare and review it again.");
-        if (plan.Fingerprint != await FingerprintAsync(token)) throw new InvalidOperationException("The application data changed after preview. Prepare and review the change again.");
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        if (plan.Revision != await McpLibraryRevision.ReadAsync(db, token)) throw new InvalidOperationException("The application data changed after preview. Prepare and review the change again.");
         if (await db.McpOperations.CountAsync(operation => operation.Status == McpExecutionState.Queued || operation.Status == McpExecutionState.Running, token) >= 32)
             throw new InvalidOperationException("The write queue is full. Try again when an operation finishes.");
-        db.McpOperations.Add(new McpOperation
+        var now = clock.GetUtcNow();
+        if (plan.Preview.ExpiresAt <= now)
+        {
+            ClosePlan(id, plan, McpPlanClosure.Expired, now);
+            throw ClosedException(plan, McpPlanClosure.Expired);
+        }
+        var approved = new McpOperation
         {
             Id = id,
             Action = plan.Request.Action,
             ProfileIdsJson = JsonSerializer.Serialize(plan.Preview.ProfileIds),
             RequestJson = JsonSerializer.Serialize(plan.Request, McpChangeJson.Options),
-            Fingerprint = plan.Fingerprint,
-            CreatedAtUtc = clock.GetUtcNow()
-        });
+            RevisionToken = RevisionToken(plan.Revision),
+            CreatedAtUtc = now
+        };
+        db.McpOperations.Add(approved);
         await db.SaveChangesAsync(token);
-        if (!_queue.Writer.TryWrite(id)) throw new InvalidOperationException("The write queue is unavailable. Check operation status before retrying.");
+        await transaction.CommitAsync(CancellationToken.None);
         _plans.TryRemove(id, out _);
-        return await StatusAsync(id, CancellationToken.None);
+        await _queue.Writer.WriteAsync(id, CancellationToken.None);
+        return await ReadStatusAsync(db, approved, CancellationToken.None);
     }, token);
 
     public async Task<McpOperationStatus> StatusAsync(Guid id, CancellationToken token)
@@ -151,6 +279,11 @@ public sealed partial class McpWriteService(
         await using var db = await factory.CreateDbContextAsync(token);
         var operation = await db.McpOperations.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, token)
             ?? throw new KeyNotFoundException("The operation is unavailable.");
+        return await ReadStatusAsync(db, operation, token);
+    }
+
+    private async Task<McpOperationStatus> ReadStatusAsync(ExplorerDbContext db, McpOperation operation, CancellationToken token)
+    {
         AuthorizeReceipt(operation);
         var result = operation.ResultJson is null ? (JsonElement?)null : JsonSerializer.Deserialize<JsonElement>(operation.ResultJson);
         var progress = new OperationProgress(operation.Status);
@@ -163,7 +296,7 @@ public sealed partial class McpWriteService(
                 result = McpChangeJson.Element(new { importBatchId = batch.Id, batch.ActivitiesCreated, batch.ActivitiesUpdated, batch.DuplicatesSkipped, batch.UnsupportedSkipped, batch.Warnings });
             }
         }
-        return new(id, operation.Action, progress.ProtocolStatus, operation.EntityId, result, operation.Message, operation.CreatedAtUtc, operation.CompletedAtUtc, JsonSerializer.Deserialize<Guid[]>(operation.ProfileIdsJson)!);
+        return new(operation.Id, operation.Action, progress.ProtocolStatus, operation.EntityId, result, operation.Message, operation.CreatedAtUtc, operation.CompletedAtUtc, JsonSerializer.Deserialize<Guid[]>(operation.ProfileIdsJson)!);
     }
 
     private sealed record OperationProgress(McpExecutionState Execution, ImportStatus? Import = null)
@@ -179,151 +312,51 @@ public sealed partial class McpWriteService(
             throw new UnauthorizedAccessException("The operation is unavailable.");
     }
 
-    private Plan RequirePlan(Guid id) => _plans.TryGetValue(id, out var plan) && plan.Preview.ExpiresAt > clock.GetUtcNow()
-        ? plan : throw new KeyNotFoundException("The preview is unavailable or expired. Prepare it again.");
+    private Plan RequirePlan(Guid id, bool closeExpired = false)
+    {
+        var now = clock.GetUtcNow();
+        if (_plans.TryGetValue(id, out var plan))
+        {
+            Authorize(plan.Request);
+            if (plan.Preview.ExpiresAt > now) return plan;
+            if (closeExpired) ClosePlan(id, plan, McpPlanClosure.Expired, now);
+            throw ClosedException(plan, McpPlanClosure.Expired);
+        }
+        if (_closedPlans.TryGetValue(id, out var closed) && closed.RetainUntil > now)
+        {
+            AuthorizeAction(closed.Action);
+            AuthorizeProfiles(closed.ProfileIds);
+            throw new McpPlanClosedException(closed.Closure, closed.Action, closed.ProfileIds);
+        }
+        throw new KeyNotFoundException("The preview is unavailable. Prepare it again.");
+    }
+
+    private static McpPlanClosedException ClosedException(Plan plan, McpPlanClosure closure) =>
+        new(closure, plan.Request.Action, Profiles(plan.Request));
 
     private void Prune()
     {
-        foreach (var pair in _plans.Where(pair => pair.Value.Preview.ExpiresAt <= clock.GetUtcNow())) _plans.TryRemove(pair.Key, out _);
+        var now = clock.GetUtcNow();
+        foreach (var pair in _closedPlans)
+            if (pair.Value.RetainUntil <= now) _closedPlans.TryRemove(pair.Key, out _);
+        foreach (var pair in _plans)
+            if (pair.Value.Preview.ExpiresAt <= now) ClosePlan(pair.Key, pair.Value, McpPlanClosure.Expired, now);
     }
 
-    public async Task<McpApprovedAsset> ApproveFileAsync(Guid profileId, string name, Stream input, long maximumBytes, CancellationToken token)
+    private void ClosePlan(Guid id, Plan plan, McpPlanClosure closure, DateTimeOffset now)
     {
-        if (!Enabled || !options.ProfileIds.Contains(profileId)) throw new UnauthorizedAccessException("Select a permitted profile.");
-        if (Token.Length == 0) throw new InvalidOperationException("The Web write connection is starting. Try the selection again shortly.");
-        var fileName = Path.GetFileName(name);
-        if (string.IsNullOrWhiteSpace(fileName) || fileName is "." or ".." || !new[] { ".fit", ".gpx", ".tcx", ".gz", ".zip", ".kml", ".geojson", ".json" }.Contains(Path.GetExtension(fileName), StringComparer.OrdinalIgnoreCase))
-            throw new ArgumentException("Select a supported activity or path file.");
-        CleanupAssets(all: false);
-        if (_assets.Count >= options.MaxPendingPlans) throw new InvalidOperationException("Too many approved assets. Restart or use existing selections.");
-        var id = Guid.NewGuid();
-        var directory = Path.Combine(paths.StagingPath, "mcp-assets", id.ToString("N"));
-        Directory.CreateDirectory(directory);
-        var target = Path.Combine(directory, Path.GetFileName(name));
-        try
+        if (_closedPlans.Count >= options.MaxPendingPlans * 2)
         {
-            await using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                var buffer = new byte[81920];
-                long total = 0;
-                int read;
-                while ((read = await input.ReadAsync(buffer, token)) > 0)
-                {
-                    total += read;
-                    if (total > maximumBytes) throw new InvalidDataException("The selected file exceeds the upload limit.");
-                    await output.WriteAsync(buffer.AsMemory(0, read), token);
-                }
-            }
-            var summary = new McpApprovedAsset(id, profileId, Path.GetFileName(name), "file", new FileInfo(target).Length, clock.GetUtcNow().AddHours(1));
-            _assets[id] = new(summary, target, await Fingerprint.Sha256Async(target, token));
-            return summary;
+            var oldest = _closedPlans.MinBy(pair => pair.Value.RetainUntil);
+            _closedPlans.TryRemove(oldest.Key, out _);
         }
-        catch { File.Delete(target); Directory.Delete(directory); throw; }
+        _closedPlans[id] = new(plan.Request.Action, Profiles(plan.Request), closure, now.AddMinutes(options.PlanLifetimeMinutes));
+        _plans.TryRemove(id, out _);
     }
 
-    public McpApprovedAsset ApproveFolder(Guid profileId, string path)
-    {
-        if (!Enabled || !options.ProfileIds.Contains(profileId)) throw new UnauthorizedAccessException("Select a permitted profile.");
-        if (Token.Length == 0) throw new InvalidOperationException("The Web write connection is starting. Try the selection again shortly.");
-        CleanupAssets(all: false);
-        if (_assets.Count >= options.MaxPendingPlans) throw new InvalidOperationException("Too many approved assets.");
-        var fullPath = Path.GetFullPath(path);
-        if (!Directory.Exists(fullPath) || (File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0)
-            throw new ArgumentException("Select an existing local folder, without a symbolic link.");
-        var summary = new McpApprovedAsset(Guid.NewGuid(), profileId, new DirectoryInfo(fullPath).Name, "folder", 0, clock.GetUtcNow().AddHours(1));
-        _assets[summary.Id] = new(summary, fullPath, "");
-        return summary;
-    }
+    private static string RevisionToken(long revision) => "r:" + revision.ToString(CultureInfo.InvariantCulture);
 
-    private Asset RequireAsset(Guid id, Guid profileId, string kind)
-    {
-        if (!_assets.TryGetValue(id, out var asset) || asset.Summary.ProfileId != profileId || asset.Summary.Kind != kind || asset.Summary.ExpiresAt <= clock.GetUtcNow())
-            throw new ArgumentException("Select or approve the file or folder in the Web app again.");
-        if (kind == "folder" && (!Directory.Exists(asset.Path) || (File.GetAttributes(asset.Path) & FileAttributes.ReparsePoint) != 0))
-            throw new ArgumentException("The approved folder changed. Select it again in the Web app.");
-        return asset;
-    }
-
-    private void CleanupAssets(bool all, Guid? profileId = null)
-    {
-        foreach (var item in _assets.Where(item => (all || item.Value.Summary.ExpiresAt <= clock.GetUtcNow()) && (!profileId.HasValue || item.Value.Summary.ProfileId == profileId)))
-        {
-            if (!_assets.TryRemove(item.Key, out var asset) || asset.Summary.Kind != "file") continue;
-            var directory = ManagedPathGuard.ResolveUnder(Path.Combine(paths.StagingPath, "mcp-assets"), Path.GetDirectoryName(asset.Path)!);
-            try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                _assets.TryAdd(item.Key, asset);
-                AssetCleanupPending(logger, item.Key, exception);
-            }
-        }
-    }
-
-    private async Task CleanupOrphanAssetsAsync(CancellationToken token)
-    {
-        var root = ManagedPathGuard.ResolveUnder(paths.StagingPath, Path.Combine(paths.StagingPath, "mcp-assets"));
-        if (!Directory.Exists(root)) return;
-        await using var db = await factory.CreateDbContextAsync(token);
-        var references = await db.ImportBatches.AsNoTracking().Where(batch => batch.Status == ImportStatus.Queued || batch.Status == ImportStatus.Running || batch.Status == ImportStatus.Interrupted)
-            .Select(batch => batch.StagedPath).ToListAsync(token);
-        references.AddRange((await db.FileOperations.AsNoTracking().Where(operation => operation.State == FileOperationState.Pending && operation.SourceRelativePath != null)
-            .Select(operation => operation.SourceRelativePath!).ToArrayAsync(token)));
-        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        var retained = references.Where(path => !string.IsNullOrWhiteSpace(path)).Select(path => Path.GetDirectoryName(Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(paths.Root, path)))!).ToHashSet(comparer);
-        foreach (var candidate in Directory.GetDirectories(root))
-        {
-            var directory = ManagedPathGuard.ResolveUnder(root, candidate);
-            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
-            if (retained.Contains(directory) || !Guid.TryParseExact(Path.GetFileName(directory), "N", out var id) || _assets.ContainsKey(id)) continue;
-            try { Directory.Delete(directory, recursive: true); }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { AssetCleanupPending(logger, id, exception); }
-        }
-    }
-
-    public string DownloadPath(Guid id) => ManagedPathGuard.ResolveUnder(paths.StagingPath,
-        Path.Combine(paths.StagingPath, "mcp-downloads", id.ToString("N"), "content"));
-
-    private void CleanupDownloads()
-    {
-        var directory = ManagedPathGuard.ResolveUnder(paths.StagingPath, Path.Combine(paths.StagingPath, "mcp-downloads"));
-        try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { DownloadsCleanupPending(logger, exception); }
-    }
-
-    [LoggerMessage(4102, LogLevel.Warning, "Temporary MCP downloads could not be removed yet; cleanup will be retried when the Web app restarts.")]
-    private static partial void DownloadsCleanupPending(ILogger logger, Exception exception);
-
-    [LoggerMessage(4101, LogLevel.Warning, "MCP temporary asset {AssetId} could not be removed yet.")]
-    private static partial void AssetCleanupPending(ILogger logger, Guid assetId, Exception exception);
-
-    private async Task<string> FingerprintAsync(CancellationToken token)
-    {
-        string[] tables = ["Owners", "Activities", "ActivityStreams", "ActivityLaps", "ActivityMetrics", "SourceFiles", "Routes", "Segments", "SegmentLinks", "SegmentEfforts", "Tags", "ActivityTags", "SavedSearches", "Goals", "GoalDefinitionRevisions", "WatchedFolders", "ApplicationSettings"];
-        await using var db = await factory.CreateDbContextAsync(token);
-        await using var transaction = await db.Database.BeginTransactionAsync(token);
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        foreach (var table in tables)
-        {
-            hash.AppendData(Encoding.UTF8.GetBytes(table));
-            await using var command = db.Database.GetDbConnection().CreateCommand();
-            command.Transaction = transaction.GetDbTransaction();
-            command.CommandText = table == "WatchedFolders"
-                ? "SELECT \"Id\", \"OwnerId\", \"Path\", \"Enabled\" FROM \"WatchedFolders\" ORDER BY rowid"
-                : $"SELECT * FROM \"{table}\" ORDER BY rowid";
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, token);
-            while (await reader.ReadAsync(token))
-                for (var index = 0; index < reader.FieldCount; index++)
-                {
-                    var value = reader.GetValue(index);
-                    hash.AppendData([(byte)(value is DBNull ? 0 : value is byte[]? 1 : value is string ? 2 : value is long ? 3 : 4)]);
-                    var bytes = value is byte[] binary ? binary : Encoding.UTF8.GetBytes(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "");
-                    hash.AppendData(BitConverter.GetBytes(bytes.Length));
-                    hash.AppendData(bytes);
-                }
-        }
-        await transaction.CommitAsync(token);
-        return Convert.ToHexString(hash.GetHashAndReset());
-    }
+    public void Dispose() => _filePreviews.Dispose();
 
     private static T Read<T>(JsonElement args, string name) => args.TryGetProperty(name, out var value)
         ? value.Deserialize<T>(McpChangeJson.Options) ?? throw new ArgumentException($"{name} is required.")
@@ -332,12 +365,45 @@ public sealed partial class McpWriteService(
         ? value.Deserialize<T>(McpChangeJson.Options) : default;
 }
 
-public sealed partial class McpOperationWorker(McpWriteService writes, ILogger<McpOperationWorker> logger) : BackgroundService
+public sealed partial class McpOperationWorker(
+    McpWriteService writes, Microsoft.AspNetCore.Hosting.Server.IServer server, IConfiguration configuration,
+    ILogger<McpOperationWorker> logger) : BackgroundService, IHostedLifecycleService
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    private int _stopped;
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        if (writes.Enabled) await writes.RecoverAsync(cancellationToken);
+        else await writes.CleanupArtifactsAsync(cancellationToken, discardDownloads: true);
+        await base.StartAsync(cancellationToken);
+    }
+
+    public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartedAsync(CancellationToken cancellationToken)
+    {
+        if (!writes.Enabled) return Task.CompletedTask;
+        var bound = server.Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>();
+        var addresses = bound is { Addresses.Count: > 0 }
+            ? bound.Addresses
+            : (configuration["Urls"] ?? "http://localhost:8342").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (addresses.Count == 0 || addresses.Any(url => !Uri.TryCreate(url, UriKind.Absolute, out var address) ||
+                !address.IsLoopback || address.Scheme is not ("http" or "https")))
+            throw new InvalidOperationException("All Web listeners must be loopback-only when MCP writes are enabled.");
+        return writes.PublishConnectionAsync(addresses.First(), cancellationToken);
+    }
+
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppedAsync(CancellationToken cancellationToken) => Interlocked.Exchange(ref _stopped, 1) == 0 && writes.Enabled
+        ? writes.RemoveConnectionAsync(cancellationToken)
+        : Task.CompletedTask;
+
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        writes.Enabled ? Task.WhenAll(ProcessQueueAsync(stoppingToken), writes.RunArtifactCleanupAsync(stoppingToken)) : Task.CompletedTask;
+
+    private async Task ProcessQueueAsync(CancellationToken stoppingToken)
     {
         if (!writes.Enabled) return;
-        await writes.RecoverAsync(stoppingToken);
         await foreach (var id in writes.ReadQueueAsync(stoppingToken))
         {
             try { await writes.ExecuteAsync(id, stoppingToken); }

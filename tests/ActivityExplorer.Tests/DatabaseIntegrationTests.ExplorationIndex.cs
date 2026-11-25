@@ -144,6 +144,73 @@ public sealed partial class DatabaseIntegrationTests
     }
 
     [Fact]
+    public async Task Exploration_allows_an_unrelated_mutation_while_reading_an_original()
+    {
+        var setup = await DatabaseSetup.CreateAsync();
+        var owner = await setup.SeedOwnerAsync("Indexing profile");
+        var other = await setup.SeedOwnerAsync("Independent profile");
+        var id = await setup.SeedActivityAsync(owner, "Explored activity", SportKind.Cycling);
+        var otherId = await setup.SeedActivityAsync(other, "Independent activity", SportKind.Cycling);
+        var storage = CreateStorageServices(setup);
+        var hash = new string('F', 64);
+        var original = storage.Originals.GetOriginalTarget(owner, hash, ".gpx");
+        await using (var db = await setup.Factory.CreateDbContextAsync())
+        {
+            var batch = new ImportBatch { OwnerId = owner, Status = ImportStatus.Completed };
+            db.AddRange(batch, new SourceFile
+            {
+                OwnerId = owner,
+                ActivityId = id,
+                ImportBatchId = batch.Id,
+                OriginalName = "paused.gpx",
+                Sha256 = hash,
+                StoredPath = storage.Originals.ToStoredPath(original)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var originals = new PausedExplorationOriginal(storage.Originals, deadline.Token);
+        using var service = new ExplorationIndexService(setup.Factory, storage.OwnerLock, new ExplorationSourceReader(originals));
+        var build = Task.Run(() => service.BuildAsync(new(owner), cancellationToken: deadline.Token), deadline.Token);
+        try
+        {
+            await originals.Entered.Task.WaitAsync(deadline.Token);
+            await storage.OwnerLock.RunAsync(async () =>
+            {
+                await using var db = await setup.Factory.CreateDbContextAsync(deadline.Token);
+                var otherActivity = await db.Activities.SingleAsync(x => x.Id == otherId, deadline.Token);
+                otherActivity.Title = "Independent update while building";
+                await db.SaveChangesAsync(deadline.Token);
+                return true;
+            }, deadline.Token);
+            Assert.False(build.IsCompleted);
+        }
+        finally
+        {
+            originals.Release.TrySetResult();
+            await build;
+        }
+        Assert.True((await build).IsComplete);
+    }
+
+    private sealed class PausedExplorationOriginal(IOriginalStore inner, CancellationToken cancellationToken) : IOriginalStore
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string ResolveStoredPath(string storedPath)
+        {
+            Entered.TrySetResult();
+            Release.Task.WaitAsync(cancellationToken).GetAwaiter().GetResult();
+            return inner.ResolveStoredPath(storedPath);
+        }
+
+        public string ToStoredPath(string fullPath) => inner.ToStoredPath(fullPath);
+        public string GetOriginalTarget(Guid ownerId, string sha256, string extension) => inner.GetOriginalTarget(ownerId, sha256, extension);
+    }
+
+    [Fact]
     public async Task Exploration_reuses_geometry_for_metadata_timezone_transfer_and_cascades_on_deletion()
     {
         var setup = await DatabaseSetup.CreateAsync();

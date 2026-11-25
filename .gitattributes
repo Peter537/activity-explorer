@@ -1,0 +1,2 @@
+# Vendored assets are verified byte-for-byte against their package provenance.
+src/ActivityExplorer.Web/wwwroot/vendor/* -text

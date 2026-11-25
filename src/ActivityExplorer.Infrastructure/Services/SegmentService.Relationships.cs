@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Processing;
@@ -33,6 +34,9 @@ public sealed partial class SegmentService
             throw new ArgumentException("Select a smaller portion with at least two GPS points.", nameof(request));
 
         var points = parentPoints.Skip(request.StartPointIndex).Take(request.EndPointIndex - request.StartPointIndex + 1).ToArray();
+        var geometry = GeometryCodec.ToWkb(points)!;
+        if (request.ReviewedGeometrySha256 is { } digest && digest != Convert.ToHexString(SHA256.HashData(geometry)))
+            throw new InvalidOperationException("The path changed after review. Prepare the change again.");
         var metrics = new TrackPathAnalysis(points).Slice(0, points.Length - 1);
         var bounds = GeometryCodec.Bounds(points);
         var child = new Segment
@@ -43,7 +47,7 @@ public sealed partial class SegmentService
             SourceKind = SegmentSourceKind.Segment,
             SourceName = parent.Name,
             ToleranceMeters = request.ToleranceMeters,
-            GeometryWkb = GeometryCodec.ToWkb(points)!,
+            GeometryWkb = geometry,
             DistanceMeters = metrics.DistanceMeters,
             ElevationGainMeters = metrics.ElevationGainMeters,
             ElevationLossMeters = metrics.ElevationLossMeters,
@@ -56,10 +60,8 @@ public sealed partial class SegmentService
         if ((await FindPlacementsAsync(parentPoints, child, cancellationToken)).Count == 0)
             throw new InvalidOperationException("The selection must follow a smaller, continuous portion of this segment.");
 
-        db.Segments.Add(child);
-        db.SegmentEfforts.AddRange(await GenerateEffortsAsync(db, child, points, cancellationToken));
         db.SegmentLinks.Add(new SegmentLink { ParentSegmentId = parent.Id, ChildSegmentId = child.Id });
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveNewSegmentAsync(db, child, points, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return child.Id;
     }
@@ -148,53 +150,62 @@ public sealed partial class SegmentService
             .Where(placement => placement.EndDistanceMeters > placement.StartDistanceMeters).ToArray();
     }
 
-    private async Task<(IReadOnlyList<SegmentSummary> Parents, IReadOnlyList<SubsegmentDetail> Children)> GetRelatedSegmentsAsync(
-        ExplorerDbContext db, Segment segment, IReadOnlyList<TrackPoint> definitionPoints,
+    private sealed record RelatedChild(Segment Definition, SegmentSummary Summary, SegmentEffortSummary[] Efforts);
+
+    private static async Task<(SegmentSummary[] Parents, RelatedChild[] Children)> ReadRelatedSegmentsAsync(
+        ExplorerDbContext db, Guid segmentId,
         SegmentEffortSummary? selected, CancellationToken cancellationToken)
     {
         var links = await db.SegmentLinks.AsNoTracking()
-            .Where(link => link.ParentSegmentId == segment.Id || link.ChildSegmentId == segment.Id)
+            .Where(link => link.ParentSegmentId == segmentId || link.ChildSegmentId == segmentId)
             .Select(link => new SegmentRelationship(link.ParentSegmentId, link.ChildSegmentId)).ToListAsync(cancellationToken);
         if (links.Count == 0) return ([], []);
-        var childIds = links.Where(link => link.ParentSegmentId == segment.Id).Select(link => link.ChildSegmentId).ToArray();
-        var parentIds = links.Where(link => link.ChildSegmentId == segment.Id).Select(link => link.ParentSegmentId).ToArray();
+        var childIds = links.Where(link => link.ParentSegmentId == segmentId).Select(link => link.ChildSegmentId).ToArray();
+        var parentIds = links.Where(link => link.ChildSegmentId == segmentId).Select(link => link.ParentSegmentId).ToArray();
         var relatedIds = childIds.Concat(parentIds).Distinct().ToArray();
         var related = await db.Segments.AsNoTracking().Include(value => value.Owner)
             .Where(value => relatedIds.Contains(value.Id)).ToListAsync(cancellationToken);
         var summaries = await SummarizeAsync(db, related, cancellationToken);
-        var efforts = selected is null ? [] : await db.SegmentEfforts.AsNoTracking()
+        var efforts = selected is null ? [] : await ProjectionVersions.CurrentEfforts(db)
             .Where(effort => childIds.Contains(effort.SegmentId) && effort.ActivityId == selected.ActivityId &&
                 effort.StartPointIndex >= selected.StartPointIndex && effort.EndPointIndex <= selected.EndPointIndex)
             .OrderBy(effort => effort.StartPointIndex).ThenBy(effort => effort.EndPointIndex).ThenBy(effort => effort.Id)
             .ToListAsync(cancellationToken);
         var effortsBySegment = efforts.ToLookup(effort => effort.SegmentId);
-        var children = new List<SubsegmentDetail>();
-        foreach (var child in related.Where(value => childIds.Contains(value.Id)))
-        {
-            children.Add(new SubsegmentDetail(summaries[child.Id],
-                await FindPlacementsAsync(definitionPoints, child, cancellationToken),
-                effortsBySegment[child.Id].Select(effort => ToEffortSummary(effort, child.Name)).ToArray()));
-        }
         return (parentIds.Select(id => summaries[id]).OrderBy(parent => parent.Name).ThenBy(parent => parent.Id).ToArray(),
-            children.OrderBy(child => child.Placements.Count > 0 ? child.Placements[0].StartDistanceMeters : double.MaxValue)
-                .ThenBy(child => child.Summary.Name).ThenBy(child => child.Summary.Id).ToArray());
+            related.Where(child => childIds.Contains(child.Id)).Select(child => new RelatedChild(child, summaries[child.Id],
+                effortsBySegment[child.Id].Select(effort => ToEffortSummary(effort, child.Name)).ToArray())).ToArray());
+    }
+
+    private async Task<SubsegmentDetail[]> BuildSubsegmentDetailsAsync(
+        RelatedChild[] related, IReadOnlyList<TrackPoint> definitionPoints, CancellationToken cancellationToken)
+    {
+        var children = new List<SubsegmentDetail>();
+        foreach (var child in related)
+            children.Add(new SubsegmentDetail(child.Summary,
+                await FindPlacementsAsync(definitionPoints, child.Definition, cancellationToken), child.Efforts));
+        return children.OrderBy(child => child.Placements.Count > 0 ? child.Placements[0].StartDistanceMeters : double.MaxValue)
+            .ThenBy(child => child.Summary.Name).ThenBy(child => child.Summary.Id).ToArray();
     }
 
     private static async Task<Dictionary<Guid, SegmentSummary>> SummarizeAsync(
         ExplorerDbContext db, IReadOnlyList<Segment> segments, CancellationToken cancellationToken)
     {
         var ids = segments.Select(segment => segment.Id).ToArray();
-        var totals = await db.SegmentEfforts.AsNoTracking().Where(effort => ids.Contains(effort.SegmentId))
+        var totals = await ProjectionVersions.CurrentEfforts(db).Where(effort => ids.Contains(effort.SegmentId))
             .GroupBy(effort => effort.SegmentId)
             .Select(group => new { Id = group.Key, Count = group.Count(), Best = (double?)group.Min(effort => effort.ElapsedSeconds) })
             .ToDictionaryAsync(group => group.Id, cancellationToken);
+        var pending = await ProjectionVersions.PendingSegments(db).Where(segment => ids.Contains(segment.Id))
+            .Select(segment => segment.Id).ToArrayAsync(cancellationToken);
         return segments.ToDictionary(segment => segment.Id, segment =>
         {
             totals.TryGetValue(segment.Id, out var total);
             return new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner?.DisplayName ?? "Unknown profile",
                 segment.Name, segment.Sport, segment.DistanceMeters, segment.ToleranceMeters, total?.Count ?? 0, total?.Best,
                 segment.AverageGradePercent, segment.ElevationGainMeters, segment.ElevationLossMeters,
-                segment.SourceKind, segment.SourceName, segment.SourceFormat);
+                segment.SourceKind, segment.SourceName, segment.SourceFormat)
+            { EffortsPending = pending.Contains(segment.Id) };
         });
     }
 

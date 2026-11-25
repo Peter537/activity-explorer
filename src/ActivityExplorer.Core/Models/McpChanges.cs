@@ -3,7 +3,11 @@ using System.Text.Json.Serialization;
 
 namespace ActivityExplorer.Core.Models;
 
-public sealed record McpChangeRequest(string Action, Guid? ProfileId, JsonElement Arguments);
+public sealed record McpChangeRequest(string Action, Guid? ProfileId, JsonElement Arguments)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReviewedGeometrySha256 { get; init; }
+}
 public sealed record McpConnection(string Endpoint, string Token, string DataIdentity, Guid[] ProfileIds,
     bool AllowDestructive, bool AllowAdministration, int Version = 1);
 public sealed record McpChangePreview(Guid PlanId, string Action, Guid[] ProfileIds, string Summary,

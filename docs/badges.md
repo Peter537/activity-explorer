@@ -12,7 +12,7 @@ Choose a profile to open its collection. **All profiles** shows separate point a
 
 Collections remain browsable without activities. If the available history contains no leap year, the Leap Day family previews its next edition.
 
-Open a badge for its exact requirement, points, qualifying date, supporting activities, and related tiers and editions. For example, the New Year's Eve badges for 2024 and 2025 are separate awards in the same family. Expand a year to inspect its earned and missed editions.
+Open a badge for its exact requirement, points, qualifying date, supporting activities, and related tiers and editions. For example, the New Year's Eve badges for 2024 and 2025 are separate awards in the same family. Expand a year to inspect its earned and missed editions. Long histories show ten years at a time with Newer years and Older years links.
 
 | Status | Meaning at the selected snapshot |
 | --- | --- |

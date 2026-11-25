@@ -21,12 +21,19 @@ public sealed partial class StatisticsService(IDbContextFactory<ExplorerDbContex
         try
         {
             await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-            var activities = await db.Activities.AsNoTracking().Include(x => x.Stream)
-                .Where(x => x.OwnerId == ownerId).ToListAsync(cancellationToken);
+            long generation;
+            List<Activity> activities;
+            await using (var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken))
+            {
+                generation = await ProjectionVersions.ReadActivityGenerationAsync(db, ownerId, cancellationToken);
+                activities = await db.Activities.AsNoTracking().Include(x => x.Stream)
+                    .Where(x => x.OwnerId == ownerId).ToListAsync(cancellationToken);
+            }
             var snapshots = new Dictionary<(RecordScope Scope, SportKind Sport, RecordKind Kind, string Key), StatisticSnapshot>();
 
             foreach (var activity in activities)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var scopes = activity.IsIndoor ? AllAndIndoorScopes : AllAndOutdoorScopes;
                 foreach (var scope in scopes)
                 {
@@ -70,10 +77,24 @@ public sealed partial class StatisticsService(IDbContextFactory<ExplorerDbContex
                 }
             }
 
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            if (generation != await ProjectionVersions.ReadActivityGenerationAsync(db, ownerId, cancellationToken) ||
+                !await db.Owners.AnyAsync(owner => owner.Id == ownerId, cancellationToken)) return;
+
             var previous = await db.StatisticSnapshots.Where(x => x.OwnerId == ownerId).ToListAsync(cancellationToken);
+            if (previous.Any(snapshot => snapshot.ComputationVersion > RecordCatalog.ComputationVersion)) return;
             db.StatisticSnapshots.RemoveRange(previous);
             db.StatisticSnapshots.AddRange(snapshots.Values);
+            var state = await db.OwnerProjectionVersions.FindAsync([ownerId], cancellationToken);
+            if (state is null)
+            {
+                state = new OwnerProjectionVersion { OwnerId = ownerId, InputGeneration = generation };
+                db.OwnerProjectionVersions.Add(state);
+            }
+            state.RecordsGeneration = generation;
+            state.RecordsCount = snapshots.Count;
             await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         }
         finally
         {

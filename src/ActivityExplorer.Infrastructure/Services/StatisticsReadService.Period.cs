@@ -39,9 +39,11 @@ public sealed partial class StatisticsReadService
         if (selection.Preset == ReportingPreset.AllTime)
         {
             var periods = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);
-            var records = await ReadRecordsAsync(db, query.OwnerId, query.Scope, cancellationToken);
+            var records = await ReadRecordsAsync(db, query.OwnerId, query.Scope, cancellationToken, query.Sport);
+            var pending = await Storage.ProjectionVersions.PendingRecords(db)
+                .AnyAsync(state => !query.OwnerId.HasValue || state.OwnerId == query.OwnerId, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            return new(records.Where(record => !query.Sport.HasValue || record.Sport == query.Sport).ToArray(), periods);
+            return new(records, periods) { HasPendingSnapshots = pending };
         }
 
         var resolved = await ReportingDateQuery.ResolveAsync(db, query.OwnerId, selection, asOf, cancellationToken);

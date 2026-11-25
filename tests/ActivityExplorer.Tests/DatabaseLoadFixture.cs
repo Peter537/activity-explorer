@@ -15,6 +15,10 @@ namespace ActivityExplorer.Tests;
 // profiles scales whole owner graphs. Fanout is intentionally fixed in both.
 internal sealed class DatabaseLoadFixture : IAsyncDisposable
 {
+    private const int ActivitiesPerGraph = 50;
+    private static readonly string[] LifecycleTables =
+        ["WatchedImportAdmissions", "ImportBatchCheckpoints", "OwnerProjectionVersions", "SegmentProjectionVersions"];
+    private readonly string connectionString;
     private readonly DbContextOptions<ExplorerDbContext> options;
     private static readonly DateTimeOffset Epoch = new(2020, 1, 1, 12, 0, 0, TimeSpan.Zero);
     public IDbContextFactory<ExplorerDbContext> Factory => new LoadFactory(options);
@@ -27,8 +31,8 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
 
     private DatabaseLoadFixture(string path)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, ForeignKeys = true, DefaultTimeout = 30, Pooling = true }.ToString();
-        options = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite(cs).Options;
+        connectionString = new SqliteConnectionStringBuilder { DataSource = path, ForeignKeys = true, DefaultTimeout = 30, Pooling = true }.ToString();
+        options = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite(connectionString).Options;
     }
     private sealed class LoadFactory(DbContextOptions<ExplorerDbContext> options) : IDbContextFactory<ExplorerDbContext>
     {
@@ -45,15 +49,21 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
         // Atomic create protects existing fixtures from accidental replacement.
         using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
         var fixture = new DatabaseLoadFixture(path);
+        var ownsManifest = false;
         try
         {
             await fixture.SeedAsync(scale, dimension);
-            await File.WriteAllTextAsync(path + ".manifest", $"activity-explorer-load-v1:{dimension}:{scale}");
+            await using var manifest = new FileStream(path + ".manifest", FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            ownsManifest = true;
+            await using var writer = new StreamWriter(manifest);
+            await writer.WriteAsync($"activity-explorer-load-v2:{dimension}:{scale}");
             return fixture;
         }
         catch
         {
-            foreach (var suffix in new[] { "", "-wal", "-shm", ".manifest" }) File.Delete(path + suffix);
+            await fixture.DisposeAsync();
+            foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" }) File.Delete(path + suffix);
+            if (ownsManifest) File.Delete(path + ".manifest");
             throw;
         }
     }
@@ -62,14 +72,33 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
     {
         if (scale < 1 || dimension is not ("history" or "profiles")) throw new ArgumentException("Invalid fixture dimensions.");
         var path = Path.Combine(directory, $"load-{dimension}-{scale}.db");
-        if (!File.Exists(path) || !File.Exists(path + ".manifest") ||
-            await File.ReadAllTextAsync(path + ".manifest") != $"activity-explorer-load-v1:{dimension}:{scale}")
-            throw new InvalidOperationException("Fixture database or matching manifest is missing.");
+        if (!File.Exists(path)) throw new InvalidOperationException("Fixture database is missing.");
+        var legacy = await IsLegacyFixtureAsync(path, scale, dimension);
         var fixture = new DatabaseLoadFixture(path);
-        await using var db = await fixture.Factory.CreateDbContextAsync();
-        await fixture.ReadCountsAsync(db);
-        return fixture;
+        try
+        {
+            await using var db = await fixture.Factory.CreateDbContextAsync();
+            await fixture.ReadCountsAsync(db, legacy);
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
+
+    internal static async Task<bool> IsLegacyFixtureAsync(string path, int scale, string dimension)
+    {
+        if (!File.Exists(path + ".manifest")) throw new InvalidOperationException("Fixture database manifest is missing.");
+        var manifest = await File.ReadAllTextAsync(path + ".manifest");
+        if (manifest == $"activity-explorer-load-v1:{dimension}:{scale}") return true;
+        if (manifest == $"activity-explorer-load-v2:{dimension}:{scale}") return false;
+        throw new InvalidOperationException("Fixture database manifest is incompatible.");
+    }
+
+    internal static bool IsLifecycleTable(string table) =>
+        LifecycleTables.Contains(table, StringComparer.Ordinal);
 
     private async Task SeedAsync(int scale, string dimension)
     {
@@ -109,7 +138,28 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
             var child = Id("segment", graph, 1);
             var first = Id("activity", graph, 0);
             var route = Id("route", graph, 0);
-            db.ImportBatches.Add(new ImportBatch { Id = batch, OwnerId = owner, DisplayName = $"Import {graph}", StagedPath = $"staging/{graph}", Status = ImportStatus.Completed, SourceKind = SourceKind.Fit, CreatedAtUtc = Epoch });
+            db.ImportBatches.Add(new ImportBatch
+            {
+                Id = batch,
+                OwnerId = owner,
+                DisplayName = $"Import {graph}",
+                StagedPath = $"staging/{batch:N}/history.zip",
+                Status = ImportStatus.Completed,
+                SourceKind = SourceKind.WatchedFolder,
+                CreatedAtUtc = Epoch,
+                StartedAtUtc = Epoch,
+                CompletedAtUtc = Epoch,
+                FilesDiscovered = ActivitiesPerGraph,
+                ActivitiesCreated = ActivitiesPerGraph
+            });
+            db.Add(new WatchedImportAdmission
+            {
+                OwnerId = owner,
+                BatchId = batch,
+                Format = ".zip",
+                Sha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"fixture:archive:{graph}")))
+            });
+            db.Add(new ImportBatchCheckpoint { BatchId = batch, NextEntry = ActivitiesPerGraph });
             db.Tags.AddRange(Enumerable.Range(0, 2).Select(i => new Tag { Id = tags[i], OwnerId = owner, Name = $"Tag {graph}-{i}", NormalizedName = $"TAG {graph}-{i}" }));
             db.SavedSearches.Add(new SavedSearch { Id = Id("search", graph, 0), OwnerId = owner, Name = $"Search {graph}", NormalizedName = $"SEARCH {graph}", CriteriaJson = "{}" });
             db.Gears.Add(new Gear { Id = Id("gear", graph, 0), OwnerId = owner, Name = $"Bike {graph}", Sport = SportKind.Cycling });
@@ -123,15 +173,28 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
             db.Segments.AddRange(new Segment { Id = segment, OwnerId = owner, SourceActivityId = first, Name = $"Segment {graph}", Sport = SportKind.Cycling, DistanceMeters = 3000, GeometryWkb = geometry, MinLatitude = 55, MaxLatitude = 55.006, MinLongitude = 12, MaxLongitude = 12.006, CreatedAtUtc = Epoch },
                 new Segment { Id = child, OwnerId = owner, SourceActivityId = first, Name = $"Child {graph}", Sport = SportKind.Cycling, DistanceMeters = 1000, GeometryWkb = geometry, MinLatitude = 55, MaxLatitude = 55.006, MinLongitude = 12, MaxLongitude = 12.006, CreatedAtUtc = Epoch });
             db.SegmentLinks.Add(new SegmentLink { ParentSegmentId = segment, ChildSegmentId = child });
-            for (var i = 0; i < 50; i++)
+            for (var i = 0; i < ActivitiesPerGraph; i++)
             {
                 var activity = Id("activity", graph, i);
                 var source = Id("source", graph, i);
-                var day = (int)((graph * 50L + i) % 2400);
+                var day = (int)((graph * (long)ActivitiesPerGraph + i) % 2400);
                 var date = Epoch.AddDays(day);
                 db.Activities.Add(new Activity { Id = activity, OwnerId = owner, Title = $"{(i % 5 == 0 ? "Hill Ride" : "Ride")} {graph}-{i}", Sport = i % 2 == 0 ? SportKind.Cycling : SportKind.Running, StartTimeUtc = date, NaturalFingerprint = $"fixture-{graph}-{i}", DistanceMeters = 5900 + i, MovingTimeSeconds = 590, ElapsedTimeSeconds = 590, ElevationGainMeters = 20, HasGps = true, HasPower = i % 2 == 0, DeviceName = "Synthetic device", GearName = "Synthetic bike", GeometryWkb = geometry, SimplifiedGeometryWkb = geometry, MinLatitude = 55, MaxLatitude = 55.006, MinLongitude = 12, MaxLongitude = 12.006, CreatedAtUtc = Epoch, UpdatedAtUtc = Epoch });
                 db.ActivityStreams.Add(new ActivityStream { ActivityId = activity, OwnerId = owner, PointCount = 60, CompressedPayload = Payload(day, i % 2 == 0) });
-                db.SourceFiles.Add(new SourceFile { Id = source, OwnerId = owner, ImportBatchId = batch, ActivityId = activity, RouteId = i == 0 ? route : null, SourceKind = SourceKind.Fit, OriginalName = $"ride-{graph}-{i}.fit", StoredPath = $"synthetic/{graph}/{i}.fit", Sha256 = $"{graph:x8}{i:x8}", ImportedAtUtc = Epoch });
+                db.SourceFiles.Add(new SourceFile
+                {
+                    Id = source,
+                    OwnerId = owner,
+                    ImportBatchId = batch,
+                    ActivityId = activity,
+                    RouteId = i == 0 ? route : null,
+                    SourceKind = SourceKind.WatchedFolder,
+                    AcquisitionMethod = AcquisitionMethod.WatchedFolder,
+                    OriginalName = $"ride-{graph}-{i}.fit",
+                    StoredPath = $"synthetic/{graph}/{i}.fit",
+                    Sha256 = $"{graph:x8}{i:x8}",
+                    ImportedAtUtc = Epoch
+                });
                 for (var j = 0; j < 2; j++)
                 {
                     db.ActivityLaps.Add(new ActivityLap { Id = Id("lap", graph, i * 2 + j), OwnerId = owner, ActivityId = activity, Sequence = j, DistanceMeters = 2950, ElapsedSeconds = 295, MovingSeconds = 295 });
@@ -146,17 +209,30 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
             if (dimension == "profiles" || graph < 2)
                 db.StatisticSnapshots.Add(new StatisticSnapshot { Id = Id("snapshot", graph, 0), OwnerId = owner, Sport = SportKind.Cycling, Kind = RecordKind.Distance, Key = "Longest distance", ActivityId = Id("activity", graph, 48), Value = 5948, ComputationVersion = RecordCatalog.ComputationVersion, CoveragePercent = 100, ComputedAtUtc = Epoch });
             db.FileOperations.Add(new FileOperationJournal { Id = Id("file-operation", graph, 0), OwnerId = owner, EntityId = first, Kind = FileOperationKind.Copy, State = FileOperationState.Completed, CreatedAtUtc = Epoch, UpdatedAtUtc = Epoch });
-            db.McpOperations.Add(new McpOperation { Id = Id("operation", graph, 0), Action = "synthetic", Fingerprint = $"fixture-{graph}", EntityId = first, CreatedAtUtc = Epoch });
+            db.McpOperations.Add(new McpOperation { Id = Id("operation", graph, 0), Action = "synthetic", RevisionToken = $"fixture-{graph}", EntityId = first, CreatedAtUtc = Epoch });
             db.McpEffects.Add(new McpEffect { Id = Id("operation", graph, 0), EntityId = first });
             db.ApplicationSettings.Add(new ApplicationSetting { Key = $"fixture-{graph}", Value = "synthetic", UpdatedAtUtc = Epoch });
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
         }
         await transaction.CommitAsync();
-        await ReadCountsAsync(db);
+        await ProjectionVersions.EnsureAsync(db, CancellationToken.None);
+        await db.Database.ExecuteSqlRawAsync(PublishSeededProjectionsSql);
+        await ReadCountsAsync(db, legacy: false);
     }
 
-    private async Task ReadCountsAsync(ExplorerDbContext db)
+    // These outputs are supplied by the fixture. Match their publication to the actual seeded inputs
+    // rather than recomputing different winners as a side effect of preparing a measurement clone.
+    internal const string PublishSeededProjectionsSql = """
+        UPDATE OwnerProjectionVersions SET RecordsGeneration = InputGeneration,
+            RecordsCount = (SELECT count(*) FROM StatisticSnapshots WHERE OwnerId = OwnerProjectionVersions.OwnerId);
+        UPDATE SegmentProjectionVersions SET PublishedDefinitionGeneration = DefinitionGeneration,
+            PublishedActivityGeneration = coalesce((
+                SELECT o.InputGeneration FROM Segments s JOIN OwnerProjectionVersions o ON o.OwnerId = s.OwnerId
+                WHERE s.Id = SegmentProjectionVersions.SegmentId), 0);
+        """;
+
+    private async Task ReadCountsAsync(ExplorerDbContext db, bool legacy)
     {
         var counts = new Dictionary<string, long>();
         await db.Database.OpenConnectionAsync();
@@ -175,9 +251,34 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
             """;
         if (Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture) != 0)
             throw new InvalidOperationException("Synthetic fixture has inconsistent ownership.");
-        // The optional effort read model is derived from existing streams and audited separately.
-        foreach (var table in db.Model.GetEntityTypes().Select(x => x.GetTableName()!).Distinct()
-                     .Where(table => table != "ActivityRecordEffortSummaries"))
+        if (!legacy)
+        {
+            command.CommandText = $"""
+                SELECT
+                    (SELECT count(*) FROM ImportBatches b
+                        LEFT JOIN WatchedImportAdmissions a ON a.BatchId=b.Id
+                        LEFT JOIN ImportBatchCheckpoints p ON p.BatchId=b.Id
+                        WHERE a.OwnerId IS NOT b.OwnerId OR a.Rejected IS NOT 0 OR a.Format IS NOT '.zip'
+                            OR length(a.Sha256) IS NOT 64 OR b.SourceKind <> {(int)SourceKind.WatchedFolder}
+                            OR b.Status <> {(int)ImportStatus.Completed} OR p.NextEntry IS NOT b.FilesDiscovered
+                            OR b.ActivitiesCreated <> b.FilesDiscovered OR b.ActivitiesCreated <>
+                                (SELECT count(*) FROM SourceFiles f WHERE f.ImportBatchId=b.Id
+                                    AND f.SourceKind=b.SourceKind AND f.AcquisitionMethod={(int)AcquisitionMethod.WatchedFolder})) +
+                    (SELECT count(*) FROM Owners o LEFT JOIN OwnerProjectionVersions v ON v.OwnerId=o.Id
+                        WHERE v.InputGeneration IS NULL OR v.InputGeneration <> v.RecordsGeneration
+                            OR v.RecordsCount <> (SELECT count(*) FROM StatisticSnapshots s WHERE s.OwnerId=o.Id)) +
+                    (SELECT count(*) FROM Segments s JOIN OwnerProjectionVersions o ON o.OwnerId=s.OwnerId
+                        LEFT JOIN SegmentProjectionVersions v ON v.SegmentId=s.Id
+                        WHERE v.DefinitionGeneration IS NULL OR v.DefinitionGeneration <> v.PublishedDefinitionGeneration
+                            OR o.InputGeneration <> v.PublishedActivityGeneration)
+                """;
+            if (Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture) != 0)
+                throw new InvalidOperationException("Synthetic fixture has inconsistent import progress or stale projections.");
+        }
+        // Preserve the original count contract for frozen v1 comparisons.
+        foreach (var table in db.Model.GetEntityTypes().Select(x => x.GetTableName()!)
+                     .Where(table => table != "ActivityRecordEffortSummaries" && (!legacy || !IsLifecycleTable(table)))
+                     .Concat(legacy ? [] : LifecycleTables).Distinct())
         {
             command.CommandText = $"SELECT count(*) FROM \"{table.Replace("\"", "\"\"")}\"";
             var count = Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
@@ -189,7 +290,9 @@ internal sealed class DatabaseLoadFixture : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        // The caller owns the persistent fixture and its lifecycle.
+        using var connection = new SqliteConnection(connectionString);
+        SqliteConnection.ClearPool(connection);
+        // The caller owns the persistent fixture files.
         return ValueTask.CompletedTask;
     }
 }

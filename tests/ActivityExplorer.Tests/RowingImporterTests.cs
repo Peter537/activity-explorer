@@ -80,6 +80,8 @@ public sealed class RowingImporterTests
             </Track></Lap></Activity></Activities></TrainingCenterDatabase>
             """);
         var parsed = Assert.Single(await new XmlActivityImporter().ReadAsync(path, SourceKind.Tcx)).Parsed;
+        Assert.Equal(150, parsed.DistanceMeters);
+        Assert.Equal(MovingTimeSource.Unavailable, parsed.MovingTimeSource);
         Assert.Null(parsed.Points[1].DistanceMeters);
         Assert.Null(parsed.Points[2].SpeedMetersPerSecond);
         Assert.Null(BestEffortCalculator.BestDistance(parsed.Points, 100, SportKind.Rowing));

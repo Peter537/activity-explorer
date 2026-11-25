@@ -36,7 +36,11 @@ else
         <div class="notice subtle">Imported provenance: @(_segment.Summary.SourceName ?? "user-supplied file")@if (!string.IsNullOrWhiteSpace(_segment.Summary.SourceFormat)) { <text> · @_segment.Summary.SourceFormat</text> }. Only local path geometry and this provenance label were retained.</div>
     }
 
-    @if (HasLegacyEfforts)
+    @if (_segment.Summary.EffortsPending)
+    {
+        <div class="notice" role="status">Segment efforts are being recalculated. <button class="button" @onclick="LoadAsync">Reload efforts</button></div>
+    }
+    else if (HasLegacyEfforts)
     {
         <StatusMessage IsWarning="true" Message="Some efforts use the legacy sample-average calculation. Select Recompute efforts to update this segment to fixed-distance speed and timestamp-weighted sensor averages." />
     }
@@ -188,7 +192,11 @@ else
         {
             <p class="notice subtle" role="status" data-effort-selection-outside>Comparison effort is outside the history filters. The comparison pair is unchanged.</p>
         }
-        @if (_segment.Efforts.Count == 0)
+        @if (_segment.Summary.EffortsPending)
+        {
+            <p class="muted">Effort history will be available after recalculation.</p>
+        }
+        else if (_segment.Efforts.Count == 0)
         {
             <p class="muted">No matching passes found. Increase the advanced segment tolerance only when the recorded GPS is noisy.</p>
         }
@@ -393,7 +401,9 @@ else
             version++;
             await LoadAsync();
             if (version != _loadVersion) return;
-            _recomputeStatus = "Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.";
+            _recomputeStatus = _segment?.Summary.EffortsPending == true
+                ? "Inputs changed during recalculation. Efforts are pending repair."
+                : "Efforts recomputed with fixed-distance speed and timestamp-weighted sensor averages.";
         }
         catch
         {

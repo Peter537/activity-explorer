@@ -28,47 +28,43 @@ public sealed class ImportProcessor(
         var batch = await db.ImportBatches.SingleOrDefaultAsync(x => x.Id == importBatchId, cancellationToken)
             ?? throw new InvalidOperationException("Import batch was not found.");
         await using var ownerLock = await ownerMutationLock.AcquireAsync([batch.OwnerId], cancellationToken);
+        if (batch.Status is not (ImportStatus.Queued or ImportStatus.Interrupted)) return;
         var stagedPath = ResolveStagedPath(batch.StagedPath);
 
         batch.Status = ImportStatus.Running;
         batch.StartedAtUtc ??= DateTimeOffset.UtcNow;
+        batch.ErrorMessage = null;
         await db.SaveChangesAsync(cancellationToken);
 
         var persistOutcomeSeparately = false;
+        var preparingInput = true;
+        var rejected = false;
         try
         {
             var importer = importers.FirstOrDefault(x => x.CanImport(stagedPath))
                 ?? throw new InvalidDataException("Supported files are FIT, GPX, TCX, GZ, and ZIP archives.");
-            var candidates = await importer.ReadAsync(stagedPath, batch.SourceKind, cancellationToken);
-            var diagnostics = importer is IImporterDiagnosticsSource diagnosticSource
-                ? diagnosticSource.ConsumeDiagnostics()
-                : new ImporterDiagnostics(0, 0, null);
-            batch.FilesDiscovered = candidates.Count + diagnostics.Unsupported + diagnostics.Warnings;
-            batch.UnsupportedSkipped += diagnostics.Unsupported;
-            batch.Warnings += diagnostics.Warnings;
-            await db.SaveChangesAsync(cancellationToken);
-
-            foreach (var candidate in candidates)
+            string? diagnosticSummary = null;
+            if (importer is ArchiveActivityImporter archive)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                await ProcessCandidateAsync(db, batch, candidate, cancellationToken);
+                // OpenAsync validates and expands the entire archive before its first candidate can commit.
+                using var plan = await archive.OpenAsync(stagedPath, batch.SourceKind, recoverableExtraction: true, cancellationToken);
+                preparingInput = false;
+                diagnosticSummary = await ProcessArchiveAsync(db, batch, plan, cancellationToken);
+            }
+            else
+            {
+                var candidates = await importer.ReadAsync(stagedPath, batch.SourceKind, cancellationToken);
+                preparingInput = false;
+                await ProcessStandaloneAsync(db, batch, candidates, cancellationToken);
             }
 
-            await statistics.RecomputeAsync(batch.OwnerId, cancellationToken);
-            var segmentIds = await db.Segments.AsNoTracking()
-                .Where(x => x.OwnerId == batch.OwnerId)
-                .Select(x => x.Id)
-                .ToListAsync(cancellationToken);
-            foreach (var segmentId in segmentIds)
-            {
-                await segments.RecomputeAsync(segmentId, cancellationToken);
-            }
-
-            batch.Status = batch.Warnings > 0 || batch.UnsupportedSkipped > 0
+            var projectionPending = await RefreshProjectionsAsync(db, batch.OwnerId, cancellationToken);
+            batch.Status = batch.Warnings > 0 || batch.UnsupportedSkipped > 0 || projectionPending
                 ? ImportStatus.CompletedWithWarnings
                 : ImportStatus.Completed;
             batch.Summary = $"Created {batch.ActivitiesCreated}, enriched {batch.ActivitiesUpdated}, skipped {batch.DuplicatesSkipped} duplicates." +
-                (string.IsNullOrWhiteSpace(diagnostics.Summary) ? string.Empty : $" {diagnostics.Summary}");
+                (string.IsNullOrWhiteSpace(diagnosticSummary) ? string.Empty : $" {diagnosticSummary}") +
+                (projectionPending ? " Records or segment efforts are pending repair." : string.Empty);
         }
         catch (UnsupportedActivityException exception)
         {
@@ -76,6 +72,11 @@ public sealed class ImportProcessor(
             batch.Warnings++;
             batch.Status = ImportStatus.CompletedWithWarnings;
             batch.Summary = exception.Message;
+        }
+        catch (LegacyImportProgressException exception)
+        {
+            batch.Status = ImportStatus.ReviewRequired;
+            batch.ErrorMessage = exception.Message;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -87,6 +88,7 @@ public sealed class ImportProcessor(
         catch (Exception exception)
         {
             persistOutcomeSeparately = true;
+            rejected = preparingInput && exception is (UnsafeArchiveException or InvalidDataException or System.Xml.XmlException);
             batch.Status = ImportStatus.Failed;
             batch.ErrorMessage = Redact(exception.Message);
             logger.LogError(exception, "Import batch {ImportBatchId} failed.", batch.Id);
@@ -94,7 +96,7 @@ public sealed class ImportProcessor(
         finally
         {
             var terminal = batch.Status is ImportStatus.Completed or ImportStatus.CompletedWithWarnings or ImportStatus.Failed;
-            batch.CompletedAtUtc = terminal ? DateTimeOffset.UtcNow : null;
+            batch.CompletedAtUtc = terminal || batch.Status == ImportStatus.ReviewRequired ? DateTimeOffset.UtcNow : null;
             if (persistOutcomeSeparately)
             {
                 await using var outcomeDb = await contextFactory.CreateDbContextAsync(CancellationToken.None);
@@ -102,14 +104,139 @@ public sealed class ImportProcessor(
                 persisted.Status = batch.Status;
                 persisted.ErrorMessage = batch.ErrorMessage;
                 persisted.CompletedAtUtc = batch.CompletedAtUtc;
+                if (rejected && batch.SourceKind == SourceKind.WatchedFolder)
+                {
+                    var admission = await outcomeDb.Set<WatchedImportAdmission>()
+                        .SingleOrDefaultAsync(x => x.BatchId == batch.Id, CancellationToken.None);
+                    if (admission is not null) admission.Rejected = true;
+                }
                 await outcomeDb.SaveChangesAsync(CancellationToken.None);
             }
             else
             {
                 await db.SaveChangesAsync(CancellationToken.None);
             }
-            if (terminal) CleanupStaging(stagedPath);
+            if (terminal) await CleanupStagingAsync(db, stagedPath);
         }
+    }
+
+    private async Task<bool> RefreshProjectionsAsync(ExplorerDbContext db, Guid ownerId, CancellationToken cancellationToken)
+    {
+        var pending = false;
+        try { await statistics.RecomputeAsync(ownerId, cancellationToken); }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            pending = true;
+            logger.LogWarning(exception, "Record refresh for profile {OwnerId} is pending repair.", ownerId);
+        }
+
+        try
+        {
+            var segmentIds = await ProjectionVersions.PendingSegments(db).Where(segment => segment.OwnerId == ownerId)
+                .Select(segment => segment.Id).ToArrayAsync(cancellationToken);
+            foreach (var segmentId in segmentIds)
+            {
+                try { await segments.RecomputeAsync(segmentId, cancellationToken); }
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    pending = true;
+                    logger.LogWarning(exception, "Effort refresh for segment {SegmentId} is pending repair.", segmentId);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            pending = true;
+            logger.LogWarning(exception, "Effort refresh for profile {OwnerId} is pending repair.", ownerId);
+        }
+        return pending;
+    }
+
+    private async Task<string?> ProcessArchiveAsync(ExplorerDbContext db, ImportBatch batch,
+        ArchiveActivityImporter.ArchiveImportPlan plan, CancellationToken cancellationToken)
+    {
+        var checkpoint = await BeginEntriesAsync(db, batch, plan.EntryCount, plan.FilesDiscovered, plan.DiscoveryUnsupported,
+            plan.DiscoveryWarnings, plan.ReadEntryAsync, cancellationToken);
+        for (var index = checkpoint.NextEntry; index < plan.EntryCount; index++)
+        {
+            var entry = await plan.ReadEntryAsync(index, cancellationToken);
+            checkpoint.NextEntry = index + 1;
+            batch.UnsupportedSkipped += entry.Unsupported;
+            batch.Warnings += entry.Warnings;
+            if (entry.Candidate is { } candidate)
+                await ProcessCandidateAsync(db, batch, candidate, cancellationToken);
+            else
+                await db.SaveChangesAsync(cancellationToken);
+            ClearCandidateState(db, batch, checkpoint);
+        }
+        return plan.Diagnostics(batch.UnsupportedSkipped, batch.Warnings).Summary;
+    }
+
+    private async Task ProcessStandaloneAsync(ExplorerDbContext db, ImportBatch batch,
+        IReadOnlyList<ImportCandidate> candidates, CancellationToken cancellationToken)
+    {
+        var checkpoint = await BeginEntriesAsync(db, batch, candidates.Count, candidates.Count, 0, 0,
+            (index, _) => Task.FromResult(new ArchiveActivityImporter.ArchiveEntry(candidates[index], 0, 0)), cancellationToken);
+        for (var index = checkpoint.NextEntry; index < candidates.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            checkpoint.NextEntry = index + 1;
+            await ProcessCandidateAsync(db, batch, candidates[index], cancellationToken);
+            ClearCandidateState(db, batch, checkpoint);
+        }
+    }
+
+    private static async Task<ImportBatchCheckpoint> BeginEntriesAsync(ExplorerDbContext db, ImportBatch batch,
+        int entries, int discovered, int unsupported, int warnings,
+        Func<int, CancellationToken, Task<ArchiveActivityImporter.ArchiveEntry>> readEntry, CancellationToken cancellationToken)
+    {
+        var checkpoint = await db.Set<ImportBatchCheckpoint>()
+            .SingleOrDefaultAsync(x => x.BatchId == batch.Id, cancellationToken);
+        if (checkpoint is not null)
+        {
+            if (checkpoint.NextEntry < 0 || checkpoint.NextEntry > entries || batch.FilesDiscovered != discovered)
+                throw new InvalidDataException("The staged import no longer matches its recorded progress.");
+            return checkpoint;
+        }
+
+        var next = 0;
+        if (batch.ActivitiesCreated > 0 || batch.ActivitiesUpdated > 0 || batch.DuplicatesSkipped > 0)
+        {
+            // Earlier versions counted some exact-source updates as both an update and a duplicate.
+            // Resume only the prefix that saved provenance can identify without interpreting those counters.
+            if (batch.ActivitiesUpdated != 0 || batch.DuplicatesSkipped != 0) throw new LegacyImportProgressException();
+            var provenance = await db.SourceFiles.AsNoTracking().Where(x => x.ImportBatchId == batch.Id && x.ActivityId != null)
+                .Select(x => new { x.Provider, x.Sha256, x.OriginalName }).ToArrayAsync(cancellationToken);
+            var committed = provenance.Select(x => (x.Provider, x.Sha256, x.OriginalName)).ToHashSet();
+            if (committed.Count != batch.ActivitiesCreated) throw new LegacyImportProgressException();
+            while (committed.Count > 0)
+            {
+                if (next >= entries) throw new LegacyImportProgressException();
+                var item = await readEntry(next++, cancellationToken);
+                if (item.Candidate is { } candidate && !committed.Remove((candidate.Provider, candidate.Sha256, Path.GetFileName(candidate.OriginalName))))
+                    throw new LegacyImportProgressException();
+                unsupported += item.Unsupported;
+                warnings += item.Warnings;
+            }
+        }
+        batch.FilesDiscovered = discovered;
+        batch.UnsupportedSkipped = unsupported;
+        batch.Warnings = warnings;
+        checkpoint = new ImportBatchCheckpoint { BatchId = batch.Id, NextEntry = next };
+        db.Add(checkpoint);
+        await db.SaveChangesAsync(cancellationToken);
+        return checkpoint;
+    }
+
+    private sealed class LegacyImportProgressException() : Exception(
+        "This import stopped before this version could record its exact progress. Its saved activities and staged file were kept. Review the results before importing the original again.");
+
+    private static void ClearCandidateState(ExplorerDbContext db, ImportBatch batch, ImportBatchCheckpoint checkpoint)
+    {
+        // The cursor, report counters and candidate graph are durable together at this point.
+        db.ChangeTracker.Clear();
+        db.Attach(batch);
+        db.Attach(checkpoint);
     }
 
     private async Task ProcessCandidateAsync(
@@ -514,18 +641,18 @@ public sealed class ImportProcessor(
         return ManagedPathGuard.ResolveUnder(paths.StagingPath, candidate);
     }
 
-    private void CleanupStaging(string stagedPath)
+    private async Task CleanupStagingAsync(ExplorerDbContext db, string stagedPath)
     {
         try
         {
             var resolved = ManagedPathGuard.ResolveUnder(paths.StagingPath, stagedPath);
             var parent = Path.GetDirectoryName(resolved);
-            if (parent is not null &&
-                !string.Equals(parent, Path.GetFullPath(paths.StagingPath), StringComparison.OrdinalIgnoreCase) &&
-                Directory.Exists(parent))
-            {
-                Directory.Delete(parent, recursive: true);
-            }
+            if (parent is null || !Guid.TryParseExact(Path.GetFileName(parent), "N", out _) ||
+                !string.Equals(Path.GetDirectoryName(parent), Path.GetFullPath(paths.StagingPath),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return;
+            var active = await StagingRecovery.GetProtectedNamesAsync(db, paths, CancellationToken.None);
+            if (!active.Contains(Path.GetFileName(parent)))
+                ManagedStagingDirectory.DeleteOwned(paths.StagingPath, parent);
         }
         catch (Exception exception)
         {

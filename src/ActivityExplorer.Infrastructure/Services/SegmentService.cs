@@ -17,15 +17,18 @@ public sealed partial class SegmentService(
     public async Task<SegmentDetail?> GetAsync(Guid id, Guid? effortId = null, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        return await GetDetailAsync(db, id, effortId, includeSelectedStream: true, cancellationToken);
+        await using var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken);
+        return await GetDetailAsync(db, id, effortId, includeSelectedStream: true, cancellationToken, snapshot);
     }
 
     private async Task<SegmentDetail?> GetDetailAsync(
-        ExplorerDbContext db, Guid id, Guid? effortId, bool includeSelectedStream, CancellationToken cancellationToken)
+        ExplorerDbContext db, Guid id, Guid? effortId, bool includeSelectedStream, CancellationToken cancellationToken,
+        ReadSnapshot? snapshot = null)
     {
         var segment = await db.Segments.AsNoTracking().Include(x => x.Owner).SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (segment is null) return null;
-        var efforts = await db.SegmentEfforts.AsNoTracking().Include(x => x.Activity)
+        var effortsPending = await ProjectionVersions.PendingSegments(db).AnyAsync(value => value.Id == id, cancellationToken);
+        var efforts = await ProjectionVersions.CurrentEfforts(db)
             .Where(x => x.SegmentId == id)
             .OrderBy(x => x.ElapsedSeconds)
             .ThenBy(x => x.StartTimeUtc)
@@ -40,20 +43,22 @@ public sealed partial class SegmentService(
                 x.MetricComputationVersion >= SegmentEffortMetricVersions.Current))
             .ToListAsync(cancellationToken);
         var selected = effortId.HasValue ? efforts.FirstOrDefault(x => x.Id == effortId) : efforts.FirstOrDefault();
+        var payload = includeSelectedStream && selected is not null
+            ? await db.ActivityStreams.AsNoTracking().Where(x => x.ActivityId == selected.ActivityId)
+                .Select(x => x.CompressedPayload).SingleOrDefaultAsync(cancellationToken)
+            : null;
+        var related = await ReadRelatedSegmentsAsync(db, segment.Id, selected, cancellationToken);
+        if (snapshot is not null) await snapshot.CommitAsync(cancellationToken);
+
         IReadOnlyList<TrackPoint> selectedPoints = [];
-        if (includeSelectedStream && selected is not null)
+        if (payload is not null && selected is not null)
         {
-            var payload = await db.ActivityStreams.AsNoTracking()
-                .Where(x => x.ActivityId == selected.ActivityId).Select(x => x.CompressedPayload).SingleOrDefaultAsync(cancellationToken);
-            if (payload is not null)
+            var all = await TrackCodec.DecodeAsync(payload, cancellationToken);
+            if (selected.StartPointIndex >= 0 && selected.EndPointIndex < all.Count && selected.StartPointIndex <= selected.EndPointIndex)
             {
-                var all = TrackCodec.Decode(payload);
-                if (selected.StartPointIndex >= 0 && selected.EndPointIndex < all.Count && selected.StartPointIndex <= selected.EndPointIndex)
-                {
-                    var slice = all.Skip(selected.StartPointIndex).Take(selected.EndPointIndex - selected.StartPointIndex + 1).ToArray();
-                    var analysis = new TrackPathAnalysis(slice);
-                    selectedPoints = slice.Select((point, index) => point with { DistanceMeters = analysis.DistanceAt(index) }).ToArray();
-                }
+                var slice = all.Skip(selected.StartPointIndex).Take(selected.EndPointIndex - selected.StartPointIndex + 1).ToArray();
+                var analysis = new TrackPathAnalysis(slice);
+                selectedPoints = slice.Select((point, index) => point with { DistanceMeters = analysis.DistanceAt(index) }).ToArray();
             }
         }
         var definitionPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
@@ -61,14 +66,15 @@ public sealed partial class SegmentService(
         var positionedDefinitionPoints = definitionPoints
             .Select((point, index) => point with { DistanceMeters = definitionAnalysis.DistanceAt(index) })
             .ToArray();
-        var (parents, children) = await GetRelatedSegmentsAsync(db, segment, definitionPoints, selected, cancellationToken);
+        var children = await BuildSubsegmentDetailsAsync(related.Children, definitionPoints, cancellationToken);
         return new SegmentDetail(
             new SegmentSummary(segment.Id, segment.OwnerId, segment.Owner?.DisplayName ?? "Unknown profile", segment.Name,
                 segment.Sport, segment.DistanceMeters, segment.ToleranceMeters, efforts.Count,
                 efforts.Count == 0 ? null : efforts.Min(x => x.ElapsedSeconds), segment.AverageGradePercent,
-                segment.ElevationGainMeters, segment.ElevationLossMeters, segment.SourceKind, segment.SourceName, segment.SourceFormat),
+                segment.ElevationGainMeters, segment.ElevationLossMeters, segment.SourceKind, segment.SourceName, segment.SourceFormat)
+            { EffortsPending = effortsPending },
             positionedDefinitionPoints,
-            efforts, selected?.Id, selectedPoints, parents, children, segment.Owner?.TimeZoneId);
+            efforts, selected?.Id, selectedPoints, related.Parents, children, segment.Owner?.TimeZoneId);
     }
 
     public async Task<Guid> CreateFromActivityAsync(CreateSegmentRequest request, CancellationToken cancellationToken = default)
@@ -110,9 +116,7 @@ public sealed partial class SegmentService(
             MaxLatitude = bounds.MaxLat!.Value,
             MaxLongitude = bounds.MaxLon!.Value
         };
-        db.Segments.Add(segment);
-        db.SegmentEfforts.AddRange(await GenerateEffortsAsync(db, segment, points, cancellationToken));
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveNewSegmentAsync(db, segment, points, cancellationToken);
         return segment.Id;
     }
 
@@ -151,20 +155,32 @@ public sealed partial class SegmentService(
             MaxLatitude = bounds.MaxLat!.Value,
             MaxLongitude = bounds.MaxLon!.Value
         };
-        db.Segments.Add(segment);
-        db.SegmentEfforts.AddRange(await GenerateEffortsAsync(db, segment, points, cancellationToken));
-        await db.SaveChangesAsync(cancellationToken);
+        await SaveNewSegmentAsync(db, segment, points, cancellationToken);
         return segment.Id;
     }
 
     public async Task RecomputeAsync(Guid segmentId, CancellationToken cancellationToken = default)
     {
-        await using var mutation = await ownerMutationLock.AcquireAsync([], cancellationToken);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var segment = await db.Segments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == segmentId, cancellationToken);
-        if (segment is null) return;
+        Segment? segment;
+        long activityGeneration;
+        long definitionGeneration;
+        await using (var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken))
+        {
+            segment = await db.Segments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == segmentId, cancellationToken);
+            if (segment is null) return;
+            activityGeneration = await ProjectionVersions.ReadActivityGenerationAsync(db, segment.OwnerId, cancellationToken);
+            definitionGeneration = await ProjectionVersions.ReadDefinitionGenerationAsync(db, segmentId, cancellationToken);
+        }
         var segmentPoints = GeometryCodec.FromWkb(segment.GeometryWkb);
         var generated = await GenerateEffortsAsync(db, segment, segmentPoints, cancellationToken);
+
+        await using var mutation = await ownerMutationLock.AcquireAsync([segment.OwnerId], cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if (activityGeneration != await ProjectionVersions.ReadActivityGenerationAsync(db, segment.OwnerId, cancellationToken) ||
+            definitionGeneration != await ProjectionVersions.ReadDefinitionGenerationAsync(db, segmentId, cancellationToken) ||
+            !await db.Segments.AnyAsync(value => value.Id == segmentId && value.OwnerId == segment.OwnerId, cancellationToken)) return;
+
         var existing = await db.SegmentEfforts.Where(x => x.SegmentId == segmentId).ToListAsync(cancellationToken);
         var existingByKey = existing.ToDictionary(x => (x.ActivityId, x.StartPointIndex));
         foreach (var candidate in generated)
@@ -175,7 +191,29 @@ public sealed partial class SegmentService(
                 db.SegmentEfforts.Add(candidate);
         }
         db.SegmentEfforts.RemoveRange(existingByKey.Values);
+        await ProjectionVersions.PublishSegmentAsync(db, segmentId, activityGeneration, definitionGeneration, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private async Task SaveNewSegmentAsync(ExplorerDbContext db, Segment segment, IReadOnlyList<TrackPoint> points,
+        CancellationToken cancellationToken)
+    {
+        var generation = await ProjectionVersions.ReadActivityGenerationAsync(db, segment.OwnerId, cancellationToken);
+        var generated = await GenerateEffortsAsync(db, segment, points, cancellationToken);
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(cancellationToken) : null;
+        var isCurrent = generation == await ProjectionVersions.ReadActivityGenerationAsync(db, segment.OwnerId, cancellationToken);
+        db.Segments.Add(segment);
+        if (isCurrent) db.SegmentEfforts.AddRange(generated);
+        await db.SaveChangesAsync(cancellationToken);
+        if (isCurrent)
+        {
+            var definitionGeneration = await ProjectionVersions.ReadDefinitionGenerationAsync(db, segment.Id, cancellationToken);
+            await ProjectionVersions.PublishSegmentAsync(db, segment.Id, generation, definitionGeneration, cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task<IReadOnlyList<SegmentEffort>> GenerateEffortsAsync(
@@ -184,17 +222,9 @@ public sealed partial class SegmentService(
         IReadOnlyList<TrackPoint> segmentPoints,
         CancellationToken cancellationToken)
     {
-        var latitudePadding = Math.Max(segment.ToleranceMeters, 30) / 111_000d;
-        var centreLatitude = (segment.MinLatitude + segment.MaxLatitude) / 2d;
-        var longitudeScale = Math.Max(Math.Abs(Math.Cos(centreLatitude * Math.PI / 180d)), 0.01d);
-        var longitudePadding = Math.Min(180d, latitudePadding / longitudeScale);
-        var activities = await db.Activities.AsNoTracking().Include(x => x.Stream)
-            .Where(x => x.OwnerId == segment.OwnerId && x.Sport == segment.Sport && x.HasGps &&
-                x.MaxLongitude >= segment.MinLongitude - longitudePadding &&
-                x.MinLongitude <= segment.MaxLongitude + longitudePadding &&
-                x.MaxLatitude >= segment.MinLatitude - latitudePadding &&
-                x.MinLatitude <= segment.MaxLatitude + latitudePadding)
-            .ToListAsync(cancellationToken);
+        var candidates = db.Activities.AsNoTracking().Include(x => x.Stream)
+            .Where(x => x.OwnerId == segment.OwnerId && x.Sport == segment.Sport && x.HasGps);
+        var activities = await ApplyCandidateBounds(candidates, segment).ToListAsync(cancellationToken);
 
         var generated = new List<SegmentEffort>();
         foreach (var activity in activities)
@@ -251,6 +281,35 @@ public sealed partial class SegmentService(
             .ToArray();
         for (var index = 0; index < ranked.Length; index++) ranked[index].Rank = index + 1;
         return ranked;
+    }
+
+    private static IQueryable<Activity> ApplyCandidateBounds(IQueryable<Activity> candidates, Segment segment)
+    {
+        var latitudePadding = Math.Max(segment.ToleranceMeters, 30) / 111_000d;
+        var south = segment.MinLatitude - latitudePadding;
+        var north = segment.MaxLatitude + latitudePadding;
+        candidates = candidates.Where(x => x.MaxLatitude >= south && x.MinLatitude <= north &&
+            x.MinLongitude.HasValue && x.MaxLongitude.HasValue);
+
+        // Use the closest latitude to a pole within tolerance to avoid pruning possible matches.
+        var furthestFromEquator = Math.Max(Math.Abs(south), Math.Abs(north));
+        var longitudePadding = furthestFromEquator >= 90d ? 180d
+            : Math.Min(180d, latitudePadding / Math.Cos(furthestFromEquator * Math.PI / 180d));
+        var width = segment.MaxLongitude - segment.MinLongitude;
+        if (width < 0d) width += 360d;
+        if (width + 2d * longitudePadding >= 360d) return candidates;
+
+        var west = segment.MinLongitude - longitudePadding;
+        var east = segment.MaxLongitude + longitudePadding;
+        if (west <= -180d) west += 360d;
+        if (east >= 180d) east -= 360d;
+
+        // A stored interval with MinLongitude > MaxLongitude covers both sides of the antimeridian.
+        return west <= east
+            ? candidates.Where(x =>
+                x.MinLongitude <= x.MaxLongitude && x.MaxLongitude >= west && x.MinLongitude <= east ||
+                x.MinLongitude > x.MaxLongitude && (x.MinLongitude <= east || x.MaxLongitude >= west))
+            : candidates.Where(x => x.MinLongitude > x.MaxLongitude || x.MaxLongitude >= west || x.MinLongitude <= east);
     }
 
     public static void ValidateNameAndTolerance(string name, double toleranceMeters, string parameterName)

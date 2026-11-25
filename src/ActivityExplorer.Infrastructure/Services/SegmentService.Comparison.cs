@@ -1,6 +1,7 @@
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Processing;
+using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,8 +27,11 @@ public sealed partial class SegmentService
             var loaded = await GetDetailAsync(db, segmentId, null, includeSelectedStream: false, cancellationToken);
             if (loaded is null) return null;
             detail = loaded;
+            if (detail.Summary.EffortsPending)
+                return new(detail, null, null, null, null, [], [], SegmentComparisonUnavailableReason.ProjectionPending,
+                    "Segment efforts are being recalculated. Try again shortly.");
             var requested = new[] { baselineEffortId, comparisonEffortId };
-            var validIds = await db.SegmentEfforts.AsNoTracking()
+            var validIds = await ProjectionVersions.CurrentEfforts(db)
                 .Where(effort => requested.Contains(effort.Id) && effort.SegmentId == segmentId &&
                     effort.OwnerId == detail.Summary.OwnerId && effort.Activity != null &&
                     effort.Activity.OwnerId == detail.Summary.OwnerId && effort.Activity.Sport == detail.Summary.Sport)
@@ -45,7 +49,7 @@ public sealed partial class SegmentService
                 .Where(stream => activityIds.Contains(stream.ActivityId) && stream.OwnerId == detail.Summary.OwnerId)
                 .ToDictionaryAsync(stream => stream.ActivityId, stream => stream.CompressedPayload, cancellationToken);
             var childIds = detail.Children.Select(child => child.Summary.Id).ToArray();
-            childEfforts = await db.SegmentEfforts.AsNoTracking()
+            childEfforts = await ProjectionVersions.CurrentEfforts(db)
                 .Where(effort => childIds.Contains(effort.SegmentId) && activityIds.Contains(effort.ActivityId) &&
                     effort.OwnerId == detail.Summary.OwnerId && effort.Segment != null &&
                     effort.Segment.OwnerId == detail.Summary.OwnerId && effort.Segment.Sport == detail.Summary.Sport)

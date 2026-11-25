@@ -17,7 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ActivityExplorer.Tests;
 
-public sealed class McpWriteTests
+public sealed partial class McpWriteTests
 {
     [Fact]
     public async Task Write_tools_share_read_tool_capacity_and_reject_waiters_before_calling_the_bridge()
@@ -148,8 +148,9 @@ public sealed class McpWriteTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => setup.Writes.ApproveAsync(preview.PlanId, null, CancellationToken.None));
         var delete = await setup.Writes.PrepareAsync(Request("delete_activities", setup.Fixture.Owner, new { activityIds = new[] { setup.Fixture.Activity } }), CancellationToken.None);
         await Assert.ThrowsAsync<ArgumentException>(() => setup.Writes.ApproveAsync(delete.PlanId, "yes", CancellationToken.None));
-        setup.Writes.Decline(delete.PlanId);
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => setup.Writes.ApproveAsync(delete.PlanId, delete.ConfirmationPhrase, CancellationToken.None));
+        Assert.Equal("declined", (await setup.Writes.DeclineAsync(delete.PlanId, CancellationToken.None)).Status);
+        var declined = await Assert.ThrowsAsync<McpPlanClosedException>(() => setup.Writes.ApproveAsync(delete.PlanId, delete.ConfirmationPhrase, CancellationToken.None));
+        Assert.Equal(McpPlanClosure.Declined, declined.Closure);
         Assert.Empty(await db.McpOperations.ToArrayAsync());
         Assert.Equal(before, await db.Segments.CountAsync());
     }
@@ -222,7 +223,7 @@ public sealed class McpWriteTests
         var asset = await setup.Writes.ApproveFileAsync(owner, "selected.gpx", upload, 1024 * 1024, CancellationToken.None);
         var folderPath = Path.Combine(setup.Fixture.DirectoryPath, "approved-source");
         Directory.CreateDirectory(folderPath);
-        var folderAsset = setup.Writes.ApproveFolder(owner, folderPath);
+        var folderAsset = await setup.Writes.ApproveFolderAsync(owner, folderPath, CancellationToken.None);
         var folderId = await setup.Services.GetRequiredService<IWatchedFolderService>().AddAsync(owner, folderPath);
         var points = TestSupport.Track(30);
         var operations = new List<McpChangeRequest>
@@ -462,8 +463,9 @@ public sealed class McpWriteTests
         await using var setup = await Setup.CreateAsync(clock: clock);
         var preview = await setup.Writes.PrepareAsync(Request("create_tag", setup.Fixture.Owner, new { name = "Expired selection" }), CancellationToken.None);
         clock.Advance(TimeSpan.FromHours(1));
-        Assert.Throws<KeyNotFoundException>(() => setup.Writes.GetPreview(preview.PlanId));
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => setup.Writes.ApproveAsync(preview.PlanId, null, CancellationToken.None));
+        Assert.Equal(McpPlanClosure.Expired, Assert.Throws<McpPlanClosedException>(() => setup.Writes.GetPreview(preview.PlanId)).Closure);
+        var expired = await Assert.ThrowsAsync<McpPlanClosedException>(() => setup.Writes.ApproveAsync(preview.PlanId, null, CancellationToken.None));
+        Assert.Equal(McpPlanClosure.Expired, expired.Closure);
         await using var db = await setup.Fixture.Factory.CreateDbContextAsync();
         Assert.Empty(await db.McpOperations.ToArrayAsync());
     }
@@ -500,25 +502,28 @@ public sealed class McpWriteTests
     public async Task Restart_cleans_orphan_selections_but_preserves_import_and_recovery_sources()
     {
         await using var setup = await Setup.CreateAsync();
-        string MakeSelection()
+        string MakeSelection(bool owned = true)
         {
-            var directory = Path.Combine(setup.Fixture.DirectoryPath, "staging", "mcp-assets", Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(directory);
+            var root = Path.Combine(setup.Fixture.DirectoryPath, "staging", "mcp-assets");
+            var directory = owned ? ManagedStagingDirectory.Create(root) : Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
             var file = Path.Combine(directory, "source.gpx");
             File.WriteAllText(file, TestSupport.Gpx());
             return file;
         }
-        var orphan = MakeSelection(); var importing = MakeSelection(); var recovering = MakeSelection();
+        var orphan = MakeSelection(); var importing = MakeSelection(); var unknown = MakeSelection(owned: false);
+        var recovering = new[] { FileOperationState.Pending, FileOperationState.Prepared, FileOperationState.DatabaseCommitted }
+            .Select(state => (State: state, Path: MakeSelection())).ToArray();
         await using (var db = await setup.Fixture.Factory.CreateDbContextAsync())
         {
             db.ImportBatches.Add(new ImportBatch { OwnerId = setup.Fixture.Owner, Status = ImportStatus.Interrupted, SourceKind = SourceKind.Gpx, StagedPath = Path.GetRelativePath(setup.Fixture.DirectoryPath, importing), DisplayName = "Pending selection" });
-            db.FileOperations.Add(new FileOperationJournal { OwnerId = setup.Fixture.Owner, State = FileOperationState.Pending, Kind = FileOperationKind.Copy, SourceRelativePath = Path.GetRelativePath(setup.Fixture.DirectoryPath, recovering) });
+            db.FileOperations.AddRange(recovering.Select(item => new FileOperationJournal { OwnerId = setup.Fixture.Owner, State = item.State, Kind = FileOperationKind.Copy, SourceRelativePath = Path.GetRelativePath(setup.Fixture.DirectoryPath, item.Path) }));
             await db.SaveChangesAsync();
         }
         await setup.Writes.PublishConnectionAsync("http://localhost", CancellationToken.None);
         Assert.False(File.Exists(orphan));
         Assert.True(File.Exists(importing));
-        Assert.True(File.Exists(recovering));
+        Assert.True(File.Exists(unknown));
+        Assert.All(recovering, item => Assert.True(File.Exists(item.Path)));
     }
 
     [Fact]

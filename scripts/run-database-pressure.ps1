@@ -47,6 +47,27 @@ param(
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path -Parent $PSScriptRoot
+
+function Remove-PressureScratch([IO.DirectoryInfo]$directory) {
+    for ($ancestor = $directory; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        $ancestor.Refresh()
+        if (-not $ancestor.Exists -or ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Cannot verify the owned pressure scratch path $($directory.FullName)."
+        }
+    }
+
+    $entries = @($directory.EnumerateFileSystemInfos())
+    foreach ($entry in $entries) {
+        if ($entry.Attributes -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unexpected directory or link in pressure scratch: $($entry.FullName)."
+        }
+    }
+    foreach ($entry in $entries) {
+        [IO.File]::Delete($entry.FullName)
+    }
+    $directory.Delete()
+}
+
 Push-Location $repo
 try {
     $allowedScales=if($Mode -eq 'Prepare'){@(1,100,1000)}else{@(100,1000)}
@@ -195,7 +216,7 @@ try {
             }
             return
         }
-        [IO.Directory]::CreateDirectory($run)|Out-Null
+        $runDirectory = New-Item -ItemType Directory -Path $run
         $configText|Set-Content -LiteralPath $configFile -Encoding utf8NoBOM
         $start=[Diagnostics.ProcessStartInfo]::new('dotnet')
         $start.WorkingDirectory=$repo;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
@@ -204,13 +225,54 @@ try {
         $start.Environment['AE_DATABASE_PRESSURE_CONFIG']=$configFile
         $start.Environment['DOTNET_CLI_TELEMETRY_OPTOUT']='1'
         $start.Environment['DOTNET_gcServer']=if($GcMode -eq 'Server'){'1'}else{'0'}
-        $process=[Diagnostics.Process]::Start($start)
-        $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
-        $finished=$process.WaitForExit($ProcessTimeoutSeconds*1000)
-        if(-not $finished){$process.Kill($true);$process.WaitForExit()}
-        [IO.File]::WriteAllText((Join-Path $run 'stdout.log'),$stdout.GetAwaiter().GetResult())
-        [IO.File]::WriteAllText((Join-Path $run 'stderr.log'),$stderr.GetAwaiter().GetResult())
-        if(-not $finished -or $process.ExitCode -ne 0){throw "Pressure process failed: $name. Partial evidence retained in $run"}
+        $scratch = $null
+        $process = $null
+        $finished = $false
+        $exitCode = $null
+        try {
+            # Only this invocation may own this directory. An existing run takes the resume path above.
+            $scratch = New-Item -ItemType Directory -Path (Join-Path $runDirectory.FullName 'pressure-scratch')
+            $process = [Diagnostics.Process]::Start($start)
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            do {
+                $finished = $process.WaitForExit(250)
+            } until ($finished -or $timer.Elapsed.TotalSeconds -ge $ProcessTimeoutSeconds)
+        }
+        finally {
+            $canCleanScratch = $null -eq $process
+            try {
+                if ($null -ne $process) {
+                    if (-not $process.HasExited) {
+                        try { $process.Kill($true) }
+                        catch [InvalidOperationException] { if (-not $process.HasExited) { throw } }
+                    }
+                    if (-not $process.WaitForExit(5000)) {
+                        throw "Pressure worker did not exit. Scratch and partial evidence retained in $run."
+                    }
+                    $exitCode = $process.ExitCode
+                    if ([Threading.Tasks.Task]::WaitAll(@($stdout, $stderr), 5000)) {
+                        $canCleanScratch = $true
+                        [IO.File]::WriteAllText((Join-Path $run 'stdout.log'), $stdout.GetAwaiter().GetResult())
+                        [IO.File]::WriteAllText((Join-Path $run 'stderr.log'), $stderr.GetAwaiter().GetResult())
+                    } else {
+                        throw "Pressure worker logs did not close. Partial evidence retained in $run."
+                    }
+                }
+            }
+            finally {
+                try {
+                    if ($null -ne $scratch -and $canCleanScratch) {
+                        Remove-PressureScratch $scratch
+                    }
+                }
+                finally {
+                    if ($null -ne $process) { $process.Dispose() }
+                }
+            }
+        }
+        if(-not $finished -or $exitCode -ne 0){throw "Pressure process failed: $name. Partial evidence retained in $run"}
         if(-not $config.SetupOnly -and -not(Test-Path -LiteralPath $config.ReportFile)){throw "Missing pressure samples: $name"}
         Write-Output $name
         if($StopOnCandidateFailure -and -not $config.SetupOnly -and $config.Variant -eq 'candidate'){

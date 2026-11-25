@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ActivityExplorer.Tests;
 
-public sealed class StorageLifecycleTests
+public sealed partial class StorageLifecycleTests
 {
     [Fact]
     public async Task Enqueue_signals_a_batch_committed_when_request_is_cancelled_after_save()
@@ -345,6 +345,93 @@ public sealed class StorageLifecycleTests
     }
 
     [Fact]
+    public async Task Staging_recovery_reclaims_owned_orphans_and_preserves_recovery_inputs()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var ownerId = await setup.AddOwnerAsync();
+        var root = setup.Paths.StagingPath;
+        var abandoned = ManagedStagingDirectory.Create(root);
+        TestSupport.Write(Directory.CreateDirectory(Path.Combine(abandoned, "expanded")).FullName, "member.gpx", "partial");
+        var completed = ManagedStagingDirectory.Create(root);
+        var completedFile = TestSupport.Write(completed, "complete.gpx", "consumed");
+        var queued = ManagedStagingDirectory.Create(root);
+        var queuedFile = TestSupport.Write(queued, "queued.gpx", "retry");
+        var interrupted = ManagedStagingDirectory.Create(root);
+        var interruptedFile = TestSupport.Write(interrupted, "interrupted.gpx", "retry");
+        var journalSource = ManagedStagingDirectory.Create(root);
+        var sourceFile = TestSupport.Write(journalSource, "copy-source.gpx", "protected");
+        var journalTarget = ManagedStagingDirectory.Create(root);
+        var targetFile = TestSupport.Write(journalTarget, "copy-target.gpx", "protected");
+        var unknown = setup.Stage("unknown.gpx", "legacy");
+
+        await using var db = await setup.Factory.CreateDbContextAsync();
+        db.ImportBatches.AddRange(
+            Batch(ownerId, ImportStatus.Completed, setup.Relative(completedFile)),
+            Batch(ownerId, ImportStatus.Queued, setup.Relative(queuedFile)),
+            Batch(ownerId, ImportStatus.Interrupted, interruptedFile));
+        var journal = new FileOperationJournal
+        {
+            Kind = FileOperationKind.Copy,
+            State = FileOperationState.DatabaseCommitted,
+            SourceRelativePath = setup.Relative(sourceFile),
+            TargetRelativePath = setup.Relative(targetFile)
+        };
+        db.FileOperations.Add(journal);
+        await db.SaveChangesAsync();
+
+        await StagingRecovery.ReconcileAsync(db, setup.Paths, NullLogger.Instance, CancellationToken.None);
+        Assert.False(Directory.Exists(abandoned));
+        Assert.False(Directory.Exists(completed));
+        foreach (var file in new[] { queuedFile, interruptedFile, sourceFile, targetFile, unknown })
+            Assert.True(File.Exists(file), file);
+
+        journal.State = FileOperationState.Completed;
+        await db.SaveChangesAsync();
+        await StagingRecovery.ReconcileAsync(db, setup.Paths, NullLogger.Instance, CancellationToken.None);
+        Assert.False(Directory.Exists(journalSource));
+        Assert.False(Directory.Exists(journalTarget));
+        Assert.True(File.Exists(unknown));
+    }
+
+    [Fact]
+    public async Task Staging_recovery_leaves_an_invalid_marker_and_unknown_root_contents_untouched()
+    {
+        await using var setup = await StorageSetup.CreateAsync();
+        var root = setup.Paths.StagingPath;
+        var invalidMarker = ManagedStagingDirectory.Create(root);
+        var marker = Assert.Single(Directory.GetFiles(invalidMarker));
+        File.WriteAllText(marker, Guid.NewGuid().ToString("N"));
+        var retained = TestSupport.Write(invalidMarker, "retained.txt", "keep");
+        var unmanaged = Directory.CreateDirectory(Path.Combine(root, "third-party")).FullName;
+        var nested = ManagedStagingDirectory.Create(unmanaged);
+
+        await using var db = await setup.Factory.CreateDbContextAsync();
+        await StagingRecovery.ReconcileAsync(db, setup.Paths, NullLogger.Instance, CancellationToken.None);
+
+        Assert.Equal("keep", File.ReadAllText(retained));
+        Assert.True(Directory.Exists(nested));
+        Assert.Throws<InvalidDataException>(() => ManagedStagingDirectory.DeleteOwned(root, unmanaged));
+        Assert.Throws<InvalidDataException>(() => ManagedStagingDirectory.DeleteOwned(root, nested));
+    }
+
+    [Fact]
+    public async Task Staging_recovery_retries_when_a_file_cannot_be_deleted_during_the_first_pass()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        await using var setup = await StorageSetup.CreateAsync();
+        var staged = ManagedStagingDirectory.Create(setup.Paths.StagingPath);
+        var file = TestSupport.Write(staged, "locked.gpx", "retained while in use");
+        await using var db = await setup.Factory.CreateDbContextAsync();
+        await using (var handle = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await StagingRecovery.ReconcileAsync(db, setup.Paths, NullLogger.Instance, CancellationToken.None);
+            Assert.True(File.Exists(file));
+        }
+        await StagingRecovery.ReconcileAsync(db, setup.Paths, NullLogger.Instance, CancellationToken.None);
+        Assert.False(Directory.Exists(staged));
+    }
+
+    [Fact]
     public async Task Watched_folder_removes_staging_when_queueing_fails()
     {
         await using var setup = await StorageSetup.CreateAsync();
@@ -409,6 +496,9 @@ public sealed class StorageLifecycleTests
     {
         public ValueTask<Guid> EnqueueAsync(ImportRequest request, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Synthetic queue failure.");
+
+        public ValueTask<bool> EnqueueWatchedAsync(Guid ownerId, string stagedPath, string displayName,
+            CancellationToken cancellationToken = default) => throw new InvalidOperationException("Synthetic queue failure.");
 
         public IAsyncEnumerable<ImportProgress> WatchAsync(
             Guid importId,

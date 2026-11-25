@@ -35,8 +35,7 @@ public sealed class MultipartUploadReader(AppDataPaths paths, IConfiguration con
         if (string.IsNullOrWhiteSpace(boundary) || boundary.Length > 256)
             throw new InvalidDataException("The multipart boundary is missing or invalid.");
 
-        var directory = ManagedPathGuard.ResolveUnder(paths.StagingPath, Path.Combine(paths.StagingPath, Guid.NewGuid().ToString("N")));
-        Directory.CreateDirectory(directory);
+        var directory = ManagedStagingDirectory.Create(paths.StagingPath);
         try
         {
             var reader = new MultipartReader(boundary, request.Body)
@@ -106,8 +105,7 @@ public sealed class MultipartUploadReader(AppDataPaths paths, IConfiguration con
     {
         try
         {
-            var safe = ManagedPathGuard.ResolveUnder(paths.StagingPath, directory);
-            if (Directory.Exists(safe)) Directory.Delete(safe, recursive: true);
+            ManagedStagingDirectory.DeleteOwned(paths.StagingPath, directory);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {

@@ -216,6 +216,71 @@ public sealed class BadgeTests
     }
 
     [Fact]
+    public void Sparse_calendar_history_bounds_work_and_retains_empty_editions_on_request()
+    {
+        var ancient = Activity("0001-01-01T12:00:00Z", distance: 100000);
+        var recent = Activity("2026-04-01T12:00:00Z", distance: 130000);
+        var input = new[] { ancient, recent };
+        const string family = "cycling-monthly-distance";
+        const string badge = family + "-100";
+        _ = Evaluate(input).Collection(_ => true, null, CancellationToken.None).ToArray();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var snapshot = Evaluate(input);
+        var collection = snapshot.Collection(_ => true, null, CancellationToken.None).ToArray();
+        var emptyYear = snapshot.FamilyEditions(family, 1740);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(1, snapshot.FirstYear);
+        Assert.Equal(new DateOnly(1, 1, 1), snapshot.FindEdition(badge, "0001-01")!.EarnedOn);
+        Assert.Equal(new DateOnly(2026, 4, 1), snapshot.FindEdition(badge, "2026-04")!.EarnedOn);
+        Assert.Null(snapshot.FindEdition("leap-day", "1900"));
+        Assert.Equal(BadgeStatus.NotStarted, snapshot.FindEdition("leap-day", "2000")!.Status);
+        Assert.Equal(48, emptyYear.Count);
+        Assert.All(emptyYear, edition => Assert.Equal(BadgeStatus.NotStarted, edition.Status));
+        Assert.Equal(BadgeCatalog.Definitions.Count, collection.Length);
+        Assert.Equal(2, snapshot.FamilyEarnedCount(family));
+        TestContext.Current.TestOutputHelper!.WriteLine($"Year 1–2026 snapshot, collection, and requested year allocated {allocated:N0} bytes");
+        Assert.InRange(allocated, 1, 2_000_000);
+    }
+
+    [Fact]
+    public void Sparse_collection_matches_logical_history_selection_for_every_status()
+    {
+        var start = new DateTimeOffset(2024, 1, 1, 23, 0, 0, TimeSpan.Zero);
+        var activities = Enumerable.Range(0, 460).Select(i => Activity(start.AddDays(i * 2).ToString("O"),
+            (SportKind)(i % 4 + 1), distance: 10000 * (i % 6 + 1), moving: 300 * (i % 12))).ToArray();
+        var snapshot = Evaluate(activities, new(2025, 4, 1));
+        var history = snapshot.Editions.ToArray();
+        foreach (var status in Enum.GetValues<BadgeStatus>().Select(x => (BadgeStatus?)x).Prepend(null))
+        {
+            var expected = history.Where(x => status is null || x.Status == status).GroupBy(x => x.Definition.Id)
+                .Select(group => group.OrderBy(x => x.StartsOn > snapshot.AsOf)
+                    .ThenByDescending(x => x.StartsOn <= snapshot.AsOf ? x.StartsOn : null)
+                    .ThenBy(x => x.StartsOn > snapshot.AsOf ? x.StartsOn : null).First());
+            var actual = snapshot.Collection(_ => true, status, CancellationToken.None);
+            Assert.Equal(expected.Select(Key), actual.Select(Key));
+        }
+        var month = history.Where(x => x.StartsOn is null || x.StartsOn <= new DateOnly(2025, 4, 30) && x.EndsOn >= snapshot.Month);
+        Assert.Equal(month.Select(Key), snapshot.ForMonth.Select(Key));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        Assert.Throws<OperationCanceledException>(() => snapshot.Collection(_ => true, null, cancelled.Token).ToArray());
+    }
+
+    [Fact]
+    public void Calendar_at_the_last_supported_year_does_not_require_a_future_date()
+    {
+        var snapshot = BadgeEvaluator.Evaluate(Owner, "Example athlete", "UTC", [], new(9999, 12, 1),
+            new DateTimeOffset(9999, 12, 31, 12, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(new DateOnly(9999, 12, 31), snapshot.AsOf);
+        Assert.Null(snapshot.FindEdition("leap-day", null));
+        Assert.Single(snapshot.FamilyYears("cycling-monthly-distance"));
+        Assert.Equal(new DateOnly(9999, 12, 31), snapshot.FindEdition("cycling-quarterly-distance-1000", "9999-Q4")!.EndsOn);
+    }
+
+    [Fact]
     public void Documentation_matches_every_catalogue_family_target_and_point_tier()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

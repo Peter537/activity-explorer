@@ -25,6 +25,8 @@ public sealed class ExplorerDbContext : DbContext
     public DbSet<SegmentLink> SegmentLinks => Set<SegmentLink>();
     public DbSet<SegmentEffort> SegmentEfforts => Set<SegmentEffort>();
     public DbSet<StatisticSnapshot> StatisticSnapshots => Set<StatisticSnapshot>();
+    internal DbSet<OwnerProjectionVersion> OwnerProjectionVersions => Set<OwnerProjectionVersion>();
+    internal DbSet<SegmentProjectionVersion> SegmentProjectionVersions => Set<SegmentProjectionVersion>();
     public DbSet<WatchedFolder> WatchedFolders => Set<WatchedFolder>();
     public DbSet<ApplicationSetting> ApplicationSettings => Set<ApplicationSetting>();
     public DbSet<FileOperationJournal> FileOperations => Set<FileOperationJournal>();
@@ -58,6 +60,8 @@ public sealed class ExplorerDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ProjectionVersions.Configure(modelBuilder);
+        ImportLifecycleSchema.Configure(modelBuilder);
         modelBuilder.HasDbFunction(typeof(ActivitySearchFunctions).GetMethod(nameof(ActivitySearchFunctions.Contains))!)
             .HasName("activity_contains");
         modelBuilder.HasDbFunction(typeof(ActivitySearchFunctions).GetMethod(nameof(ActivitySearchFunctions.EqualsName))!)
@@ -65,6 +69,7 @@ public sealed class ExplorerDbContext : DbContext
         modelBuilder.Entity<OwnerProfile>().HasIndex(x => x.DisplayName);
         modelBuilder.Entity<McpOperation>().Property(x => x.Status).HasConversion(
             state => McpExecutionStates.ToValue(state), value => McpExecutionStates.Parse(value));
+        modelBuilder.Entity<McpOperation>().Property(x => x.RevisionToken).HasColumnName("Fingerprint");
         modelBuilder.Entity<ActivityExplorationIndex>().HasKey(x => x.ActivityId);
         modelBuilder.Entity<ActivityExplorationIndex>().HasIndex(x => new
         {

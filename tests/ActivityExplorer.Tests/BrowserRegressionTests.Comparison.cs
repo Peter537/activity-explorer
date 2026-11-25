@@ -274,6 +274,7 @@ public sealed partial class BrowserRegressionTests
         await using (var db = factory.CreateDbContext())
         {
             await db.Database.EnsureCreatedAsync();
+            await ProjectionVersions.EnsureAsync(db, CancellationToken.None);
             db.AddRange(owner, baseline, comparison, noSensor, otherNoSensor, gap);
             await db.SaveChangesAsync();
         }

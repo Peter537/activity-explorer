@@ -20,7 +20,7 @@ public sealed partial class PageRequestLifecycleTests
             activities: (method, args) => method.Name switch
             {
                 "GetAsync" => Task.FromResult<ActivityDetail?>(Activity((Guid)args[0]!, "Current activity")),
-                "UpdateAsync" => Updated(),
+                "UpdateReviewedAsync" => Updated(),
                 _ => Unexpected(method)
             },
             statistics: (method, args) =>
@@ -43,7 +43,7 @@ public sealed partial class PageRequestLifecycleTests
         await using var renderer = fixture.Renderer();
         var root = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<ActivityDetailPage>(Identity(id)));
         var page = (ActivityDetailPage)fixture.Components.Get(typeof(ActivityDetailPage));
-        await renderer.Dispatcher.InvokeAsync(() => { SetField(page, "_editing", true); SetField(page, "_ownerId", destination); });
+        await renderer.Dispatcher.InvokeAsync(() => { Invoke(page, "ToggleMetadataEditor"); SetField(page, "_ownerId", destination); });
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
         Assert.Contains("Records or segment results still need refreshing", await renderer.Dispatcher.InvokeAsync(root.ToHtmlString), StringComparison.Ordinal);
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "RetryMaintenance"));
@@ -73,14 +73,14 @@ public sealed partial class PageRequestLifecycleTests
         using var fixture = new PageFixture(activities: (method, args) => method.Name switch
         {
             "GetAsync" => Task.FromResult<ActivityDetail?>(Activity((Guid)args[0]!, (Guid)args[0]! == first ? "First activity" : "Second activity")),
-            "UpdateAsync" => Submit(),
+            "UpdateReviewedAsync" => Submit(),
             _ => Unexpected(method)
         });
         await using var renderer = fixture.Renderer();
         var root = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<ActivityDetailPage>(Identity(first)));
         var page = (ActivityDetailPage)fixture.Components.Get(typeof(ActivityDetailPage));
         Task mutation = Task.CompletedTask;
-        await renderer.Dispatcher.InvokeAsync(() => { SetField(page, "_editing", true); mutation = InvokeTask(page, "Save"); });
+        await renderer.Dispatcher.InvokeAsync(() => { Invoke(page, "ToggleMetadataEditor"); mutation = InvokeTask(page, "Save"); });
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
         await renderer.Dispatcher.InvokeAsync(() => page.SetParametersAsync(Identity(second)));
         saved.SetResult(new ActivityUpdateResult(first, Owner, true, true, true));
@@ -104,13 +104,13 @@ public sealed partial class PageRequestLifecycleTests
         using var fixture = new PageFixture(activities: (method, args) => method.Name switch
         {
             "GetAsync" => Read((Guid)args[0]!),
-            "UpdateAsync" => Unconfirmed((UpdateActivityRequest)args[1]!),
+            "UpdateReviewedAsync" => Unconfirmed((UpdateActivityRequest)args[1]!),
             _ => Unexpected(method)
         });
         await using var renderer = fixture.Renderer();
         var root = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<ActivityDetailPage>(Identity(id)));
         var page = (ActivityDetailPage)fixture.Components.Get(typeof(ActivityDetailPage));
-        await renderer.Dispatcher.InvokeAsync(() => SetField(page, "_editing", true));
+        await renderer.Dispatcher.InvokeAsync(() => Invoke(page, "ToggleMetadataEditor"));
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
         await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
         Assert.Equal("Current activity", Assert.Single(updates).Title);
@@ -118,7 +118,7 @@ public sealed partial class PageRequestLifecycleTests
         Assert.Contains("Reload activity before saving again", await renderer.Dispatcher.InvokeAsync(root.ToHtmlString), StringComparison.Ordinal);
 
         Task reload = Task.CompletedTask;
-        await renderer.Dispatcher.InvokeAsync(() => { reload = InvokeTask(page, "LoadAsync"); });
+        await renderer.Dispatcher.InvokeAsync(() => { reload = InvokeTask(page, "ReloadMetadataAsync"); });
         try
         {
             Assert.Equal(new[] { id, id }, reads);
@@ -150,6 +150,56 @@ public sealed partial class PageRequestLifecycleTests
         {
             updates.Add(request);
             return Task.FromException<ActivityUpdateResult>(new IOException("Synthetic unknown outcome"));
+        }
+    }
+
+    [Fact]
+    public async Task Activity_confirmation_and_metadata_draft_keep_the_version_displayed_when_opened()
+    {
+        var id = Guid.NewGuid();
+        var current = Activity(id, "First version");
+        ActivityDeletionReview? deletion = null;
+        var edits = new List<(ActivityMutationTarget Target, UpdateActivityRequest Request)>();
+        using var fixture = new PageFixture(activities: (method, args) => method.Name switch
+        {
+            "GetAsync" => Task.FromResult<ActivityDetail?>(current),
+            "DeleteReviewedAsync" => RejectDelete((ActivityDeletionReview)args[0]!),
+            "UpdateReviewedAsync" => RejectEdit((ActivityMutationTarget)args[0]!, (UpdateActivityRequest)args[1]!),
+            _ => Unexpected(method)
+        });
+        await using var renderer = fixture.Renderer();
+        var root = await renderer.Dispatcher.InvokeAsync(() => renderer.RenderComponentAsync<ActivityDetailPage>(Identity(id)));
+        var page = (ActivityDetailPage)fixture.Components.Get(typeof(ActivityDetailPage));
+        await renderer.Dispatcher.InvokeAsync(() =>
+        {
+            Invoke(page, "ToggleMetadataEditor");
+            SetField(page, "_title", "Pending draft");
+            Invoke(page, "BeginDelete");
+        });
+        current = current with { Summary = current.Summary with { Title = "Second version", MutationVersion = 1 } };
+        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "LoadAsync"));
+
+        var html = await renderer.Dispatcher.InvokeAsync(root.ToHtmlString);
+        Assert.Contains("Delete First version?", html, StringComparison.Ordinal);
+        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "ConfirmDelete"));
+        Assert.Equal(new ActivityMutationTarget(id, Owner, 0), Assert.Single(deletion!.Members));
+
+        await renderer.Dispatcher.InvokeAsync(() => Invoke(page, "CancelDelete"));
+        await renderer.Dispatcher.InvokeAsync(() => InvokeTask(page, "Save"));
+        var (target, request) = Assert.Single(edits);
+        Assert.Equal(new ActivityMutationTarget(id, Owner, 0), target);
+        Assert.Equal("Pending draft", request.Title);
+
+        Task<ActivityDeletionResult> RejectDelete(ActivityDeletionReview review)
+        {
+            deletion = review;
+            return Task.FromException<ActivityDeletionResult>(new InvalidOperationException("The reviewed activity changed."));
+        }
+
+        Task<ActivityUpdateResult> RejectEdit(ActivityMutationTarget target, UpdateActivityRequest request)
+        {
+            edits.Add((target, request));
+            return Task.FromException<ActivityUpdateResult>(new InvalidOperationException("The reviewed activity changed."));
         }
     }
 

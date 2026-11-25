@@ -14,14 +14,15 @@ Regression cases also hold an admitted read call while write preparation and con
 dotnet restore ActivityExplorer.slnx --locked-mode
 dotnet format ActivityExplorer.slnx --verify-no-changes --no-restore
 dotnet build ActivityExplorer.slnx --configuration Release --no-restore -m:1 -p:BuildInParallel=false
-dotnet exec tests/ActivityExplorer.Tests/bin/Release/net10.0/ActivityExplorer.Tests.dll --coverlet --results-directory tests/ActivityExplorer.Tests/TestResults
 ./scripts/verify-coverage.ps1
 ./scripts/verify-package-health.ps1
 ~~~
 
 The test project uses Microsoft Testing Platform v2 and opts out of test-platform telemetry through `testconfig.json`. The release gate is at least 80% line and 60% branch coverage after exclusions for Razor-generated code, build output, and compiler-generated members. The package check fails for known vulnerable or deprecated direct and transitive packages and for mismatched or unlisted vendored MapLibre assets.
 
-The coverage command runs the native MTP test executable directly. Verify that it prints a newly produced Cobertura report and that the report includes `ActivityExplorer.Mcp`; a successful `dotnet test` run alone does not establish that its coverage extension ran. Keep coverage instrumentation separate from concurrent tests using the same output directory. For an isolated results directory, pass the same path to `verify-coverage.ps1 -ResultsDirectory` so it cannot select an older report.
+The coverage script runs the native MTP test executable in a fresh results subdirectory and prints the exact Cobertura report it checked. It requires coverage for Core, Infrastructure, MCP, and Web. Use `-ResultsDirectory` to change the parent of the fresh subdirectory and `-TestAssembly` to select a different built test assembly. Keep coverage instrumentation separate from concurrent tests using the same build output.
+
+Run `./scripts/test-verification-runners.ps1` on Windows to check pressure process cleanup and coverage report selection with a small synthetic worker. The script removes its own fixtures and outputs when it finishes.
 
 ## Browser regressions
 

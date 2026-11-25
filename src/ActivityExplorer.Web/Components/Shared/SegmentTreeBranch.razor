@@ -23,7 +23,7 @@
         </div>
         <dl class="segment-branch-metrics">
             <div><dt>Distance</dt><dd>@Format.Distance(segment.DistanceMeters)</dd></div>
-            <div><dt>Efforts</dt><dd>@segment.EffortCount</dd></div>
+            <div><dt>Efforts</dt><dd>@(segment.EffortsPending ? "Pending" : segment.EffortCount.ToString("N0"))</dd></div>
             <div><dt>Best</dt><dd>@(segment.BestElapsedSeconds.HasValue ? Format.Duration(segment.BestElapsedSeconds.Value) : "--")</dd></div>
         </dl>
     </div>

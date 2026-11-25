@@ -1238,6 +1238,12 @@ public sealed partial class BrowserRegressionTests
                 db.StatisticSnapshots.Add(record);
             }
         }
+        foreach (var publishedOwner in new[] { owner, walkerOwner })
+            db.OwnerProjectionVersions.Add(new OwnerProjectionVersion
+            {
+                OwnerId = publishedOwner.Id,
+                RecordsCount = db.StatisticSnapshots.Local.Count(record => record.OwnerId == publishedOwner.Id)
+            });
         await db.SaveChangesAsync();
         return new TimedDistanceRecordSeed(activity.Id);
     }

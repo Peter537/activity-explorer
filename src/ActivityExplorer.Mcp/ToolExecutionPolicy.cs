@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using ActivityExplorer.Core.Contracts;
+using ActivityExplorer.Core.Models;
 using ActivityExplorer.Mcp.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -58,6 +59,7 @@ public sealed partial class ToolExecutionPolicy(McpOptions options, IProfileRead
         // The SDK prompts after this invocation exits; release admission while the human decides.
         catch (InputRequiredException) { throw; }
         catch (McpBridgeException exception) { result = ToolResultFactory.Error(exception.Code, exception.Message, asOfUtc); }
+        catch (ProjectionPendingException exception) { result = ToolResultFactory.Error("projection_pending", exception.Message, asOfUtc, true); }
         catch (ArgumentException exception) { result = ToolResultFactory.Error("invalid_argument", exception.Message, asOfUtc); }
         catch (SqliteException exception)
         {

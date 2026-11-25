@@ -1,6 +1,6 @@
 # Maps
 
-Activity Explorer serves MapLibre GL JS 6.2.0 as local ESM assets. One persisted global setting controls every world, activity, route, segment, and drawing map.
+Activity Explorer serves MapLibre GL JS 6.4.1 as local ESM assets. One persisted global setting controls every world, activity, route, segment, and drawing map.
 
 ## Blank by default
 
@@ -27,13 +27,15 @@ The Content Security Policy permits OpenFreeMap network origins only while onlin
 
 ## Viewport behavior
 
-Activity, route, segment, and exploration endpoints validate complete finite west/south/east/north bounds, coordinate ranges, reporting periods, dates, and zoom. Malformed internal requests receive a structured HTTP 400 response rather than becoming a server error. Line responses are owner/sport filtered and capped: at most 2,000 activities, 1,000 routes, and 1,000 segments. Activity criteria and dates are filtered before the cap. Each layer reports its complete eligible viewport count and returned count, so a capped result is visibly incomplete. Narrow the sport, period, activity search, or viewport to see the relevant lines. Numeric indexes support route viewport pruning. Exploration totals use the complete scoped history independently of these line limits.
+Activity, route, segment, and exploration endpoints validate complete finite west/south/east/north bounds, coordinate ranges, reporting periods, dates, and zoom. Malformed internal requests receive a structured HTTP 400 response. Line responses are owner/sport filtered and capped at 2,000 activities, 1,000 routes, and 1,000 segments. Activity criteria and dates are filtered before the cap. Each layer reports its eligible viewport count and rendered count, including omissions for unreadable geometry. Narrow the sport, period, activity search, or viewport to see more matching lines. Exploration totals use the complete scoped history independently of these line limits.
+
+Lines at zooms below 6 use at most 96 displayed vertices per feature, with up to 16,384 activity vertices and 8,192 vertices in each definition layer. Zooms 6–11 raise these budgets to 256 per feature, 24,576 for activities, and 12,288 each for routes and segments. At higher zooms, the limits are 512 per feature, 32,768 for activities, and 16,384 for each definition layer. SQLite reads a bounded sample from the saved geometry blobs. Endpoints and point order are retained when sampling, and the original geometry remains available for details, matching, and export.
 
 MapLibre renders repeated world copies and can therefore report viewport longitudes outside `[-180, 180]`. Before requesting GeoJSON, Activity Explorer wraps those longitudes into the accepted range. A viewport at least 360° wide is sent as the full world (`west=-180`, `east=180`); a narrower viewport crossing the antimeridian uses `west > east`.
 
 Stored geometry continues to use the smallest circular interval, so a short route near ±180° is not treated as spanning the world. Latitude padding for segment candidate searches accounts for longitude scale at high latitude.
 
-Lines has independent **Activities**, **Routes**, and **Segments** switches. Hidden layers make no request; each visible layer has its own loading, empty, error, and limit state. The world map restores its center, zoom, bearing, and pitch after detail navigation or reload within the same browser tab's session. Detail and drawing maps keep their existing fit-to-path behavior.
+Lines has independent **Activities**, **Routes**, and **Segments** switches. Hidden layers make no request. Each visible layer has its own loading, empty, error, and limit state. Under the map, **Viewport results** provides keyboard- and touch-operable detail links for the same displayed lines, 20 per page. Links identify the kind, sport, and profile when available. Panning updates the list with the accepted map results and retains focus when the focused line is still present. The world map restores its center, zoom, bearing, and pitch after detail navigation or reload within the same browser tab's session. Detail and drawing maps keep their existing fit-to-path behavior.
 
 ## Reporting dates and URLs
 

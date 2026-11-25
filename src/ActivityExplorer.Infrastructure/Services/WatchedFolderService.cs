@@ -2,6 +2,7 @@ using ActivityExplorer.Core.Contracts;
 using ActivityExplorer.Core.Domain;
 using ActivityExplorer.Core.Models;
 using ActivityExplorer.Infrastructure.Import;
+using ActivityExplorer.Infrastructure.Processing;
 using ActivityExplorer.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
@@ -12,7 +13,8 @@ namespace ActivityExplorer.Infrastructure.Services;
 public sealed class WatchedFolderService(
     IDbContextFactory<ExplorerDbContext> contextFactory,
     IImportQueue queue,
-    AppDataPaths paths, IOwnerMutationLock? ownerMutationLock = null) : IWatchedFolderService
+    AppDataPaths paths, IOwnerMutationLock? ownerMutationLock = null,
+    ILogger<WatchedFolderService>? logger = null) : IWatchedFolderService
 {
     private readonly IOwnerMutationLock _mutations = ownerMutationLock ?? new OwnerMutationLock();
     private static readonly string[] Supported = [".fit", ".gpx", ".tcx", ".gz", ".zip"];
@@ -63,35 +65,53 @@ public sealed class WatchedFolderService(
         foreach (var folder in folders)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!Directory.Exists(folder.Path)) continue;
-            foreach (var file in Directory.EnumerateFiles(folder.Path, "*", SearchOption.TopDirectoryOnly))
+            try
             {
-                if (!Supported.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase)) continue;
-                var info = new FileInfo(file);
-                if (DateTimeOffset.UtcNow - info.LastWriteTimeUtc < TimeSpan.FromSeconds(10)) continue;
-                var hash = await ActivityExplorer.Infrastructure.Processing.Fingerprint.Sha256Async(file, cancellationToken);
-                if (await db.SourceFiles.AsNoTracking().AnyAsync(x => x.OwnerId == folder.OwnerId && (x.ActivityId != null || x.RouteId == null) && x.Sha256 == hash, cancellationToken)) continue;
-                var stageDirectory = ManagedPathGuard.ResolveUnder(
-                    paths.StagingPath,
-                    Path.Combine(paths.StagingPath, Guid.NewGuid().ToString("N")));
-                Directory.CreateDirectory(stageDirectory);
-                var staged = Path.Combine(stageDirectory, Path.GetFileName(file));
-                try
+                foreach (var file in Directory.EnumerateFiles(folder.Path))
                 {
-                    File.Copy(file, staged, overwrite: false);
-                    await queue.EnqueueAsync(
-                        new ImportRequest(folder.OwnerId, staged, Path.GetFileName(file), SourceKind.WatchedFolder),
-                        cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!Supported.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase)) continue;
+                    try
+                    {
+                        if (DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(file) < TimeSpan.FromSeconds(10)) continue;
+                        // Skip staging familiar content. Admission independently hashes the staged bytes.
+                        var hash = await Fingerprint.Sha256Async(file, cancellationToken);
+                        var format = ImportQueue.GetWatchedFormat(file);
+                        if (!await ImportQueue.IsKnownWatchedContentAsync(db, folder.OwnerId, hash, format, cancellationToken))
+                            await StageAsync(folder.OwnerId, file, cancellationToken);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        logger?.LogWarning("Could not stage a file from watched folder {FolderId} ({ErrorType}).", folder.Id, exception.GetType().Name);
+                    }
                 }
-                catch
-                {
-                    if (Directory.Exists(stageDirectory)) Directory.Delete(stageDirectory, recursive: true);
-                    throw;
-                }
+                folder.LastScanAtUtc = DateTimeOffset.UtcNow;
             }
-            folder.LastScanAtUtc = DateTimeOffset.UtcNow;
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                logger?.LogWarning("Could not list watched folder {FolderId} ({ErrorType}).", folder.Id, exception.GetType().Name);
+            }
         }
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task StageAsync(Guid ownerId, string file, CancellationToken cancellationToken)
+    {
+        var stageDirectory = ManagedStagingDirectory.Create(paths.StagingPath);
+        var name = Path.GetFileName(file);
+        var staged = Path.Combine(stageDirectory, name);
+        var admitted = false;
+        try
+        {
+            await using (var input = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true))
+            await using (var output = new FileStream(staged, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, true))
+                await input.CopyToAsync(output, cancellationToken);
+            admitted = await queue.EnqueueWatchedAsync(ownerId, staged, name, cancellationToken);
+        }
+        finally
+        {
+            if (!admitted) ManagedStagingDirectory.DeleteOwned(paths.StagingPath, stageDirectory);
+        }
     }
 }
 

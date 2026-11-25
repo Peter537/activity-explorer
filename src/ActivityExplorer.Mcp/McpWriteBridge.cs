@@ -18,7 +18,17 @@ public sealed class McpBridgeException(string code, string message) : Exception(
 
 public sealed class McpWriteBridge(McpOptions options, AppDataPaths paths) : IDisposable
 {
-    internal sealed record ConfirmationChallenge(string State, DateTimeOffset ExpiresAt);
+    internal sealed record ConfirmationChallenge(string State, DateTimeOffset ExpiresAt)
+    {
+        private TaskCompletionSource<McpApplyResult>? _decision;
+
+        internal (TaskCompletionSource<McpApplyResult> Decision, bool OwnsDecision) BeginDecision()
+        {
+            var proposal = new TaskCompletionSource<McpApplyResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var current = Interlocked.CompareExchange(ref _decision, proposal, null);
+            return current is null ? (proposal, true) : (current, false);
+        }
+    }
     // Tool targets can be recreated between MRTR calls; confirmation state belongs to this shared service.
     internal ConcurrentDictionary<Guid, ConfirmationChallenge> Challenges { get; } = new();
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false })
@@ -48,10 +58,39 @@ public sealed class McpWriteBridge(McpOptions options, AppDataPaths paths) : IDi
     }
     public async Task<McpOperationStatus> ApproveAsync(Guid id, string? phrase, CancellationToken token)
     {
-        _ = await PreviewAsync(id, token);
-        return await SendAsync<McpOperationStatus>(HttpMethod.Post, $"plans/{id}/approve", new McpApplyRequest(phrase), token);
+        try { _ = await PreviewAsync(id, token); }
+        catch (McpBridgeException exception) when (exception.Code == "not_found") { return await StatusAsync(id, token); }
+        var operation = await SendAsync<McpOperationStatus>(HttpMethod.Post, $"plans/{id}/approve", new McpApplyRequest(phrase), token);
+        Authorize(operation.Action, operation.ProfileIds);
+        return operation;
     }
-    public Task DeclineAsync(Guid id, CancellationToken token) => SendAsync<JsonElement>(HttpMethod.Post, $"plans/{id}/decline", new { }, token);
+
+    public async Task<McpApplyResult> DeclineAsync(Guid id, CancellationToken token)
+    {
+        try
+        {
+            _ = await PreviewAsync(id, token);
+            var result = await SendAsync<McpApplyResult>(HttpMethod.Post, $"plans/{id}/decline", new { }, token);
+            if (result.Operation is { } operation) Authorize(operation.Action, operation.ProfileIds);
+            return result;
+        }
+        catch (McpBridgeException exception) when (exception.Code == "not_found")
+        {
+            var operation = await StatusAsync(id, token);
+            return new McpApplyResult(operation.Status, id, Operation: operation);
+        }
+        catch (McpBridgeException exception) when (ClosedPlanStatus(exception) is not null)
+        {
+            return new McpApplyResult(ClosedPlanStatus(exception)!, id);
+        }
+    }
+
+    internal static string? ClosedPlanStatus(McpBridgeException exception) => exception.Code switch
+    {
+        "plan_declined" => "declined",
+        "plan_expired" => "expired",
+        _ => null
+    };
     public async Task<McpOperationStatus> StatusAsync(Guid id, CancellationToken token)
     {
         var status = await SendAsync<McpOperationStatus>(HttpMethod.Get, "operations/" + id, null, token);
@@ -86,7 +125,22 @@ public sealed class McpWriteBridge(McpOptions options, AppDataPaths paths) : IDi
             {
                 var code = response.StatusCode == HttpStatusCode.NotFound ? "not_found" : response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized ? "permission_denied" : "invalid_change";
                 var message = "The Web app rejected the request. Check its permissions and prepare a fresh preview if data changed.";
-                try { var error = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: token); if (error.TryGetProperty("message", out var detail)) message = detail.GetString() ?? message; }
+                try
+                {
+                    var error = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: token);
+                    if (error.TryGetProperty("message", out var detail)) message = detail.GetString() ?? message;
+                    if (response.StatusCode == HttpStatusCode.Conflict && error.TryGetProperty("error", out var errorCode))
+                    {
+                        var closure = errorCode.GetString();
+                        if (closure is "plan_declined" or "plan_expired" && error.TryGetProperty("action", out var action) &&
+                            action.GetString() is { } actionName && error.TryGetProperty("profileIds", out var profiles) &&
+                            profiles.Deserialize<Guid[]>() is { } profileIds)
+                        {
+                            Authorize(actionName, profileIds);
+                            code = closure;
+                        }
+                    }
+                }
                 catch (JsonException) { }
                 throw new McpBridgeException(code, message);
             }

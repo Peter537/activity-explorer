@@ -150,9 +150,9 @@ public partial class Activities
 
     private void BeginBatch(bool allMatching)
     {
-        if (ActionsBlocked || _deleteConfirming || !ProfileState.SelectedOwnerId.HasValue || (!allMatching && _selectedIds.Count == 0)) return;
+        if (ActionsBlocked || _deleteConfirming || !ProfileState.SelectedOwnerId.HasValue || (!allMatching && _selected.Count == 0)) return;
         _batchAll = allMatching;
-        _batchIds = _selectedIds.ToArray();
+        _batchIds = _selected.Keys.ToArray();
         _batchGeneration++;
         _batchEditing = true;
     }

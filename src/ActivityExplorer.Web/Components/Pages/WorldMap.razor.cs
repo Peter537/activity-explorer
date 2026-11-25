@@ -119,7 +119,7 @@ public partial class WorldMap
                 _ = InvokeAsync(() => { if (!_disposed && generation == _generation && _building) { _progress = value; StateHasChanged(); } });
             });
             var status = await ExplorationIndex.GetStatusAsync(query.Scope, token);
-            if (!status.IsComplete || recheck) await ExplorationIndex.BuildAsync(query.Scope, progress, recheck, token);
+            if (!status.IsComplete || recheck) status = await ExplorationIndex.BuildAsync(query.Scope, progress, recheck, token);
             var result = await ExplorationQueries.GetAsync(query, token);
             var detail = _selectedCell.HasValue && result.Index.IsComplete
                 ? await ExplorationQueries.GetCellAsync(query, _selectedCell.Value, _activityPage, token) : null;
@@ -130,7 +130,8 @@ public partial class WorldMap
                 _timelineFirst = summary.FirstDate; _timelineLast = summary.LastDate;
                 _timelineThrough = summary.Through ?? summary.LastDate;
             }
-            if (!result.Index.IsComplete) _error = "The history changed during calculation. Retry to include the latest activities.";
+            if (!result.Index.IsComplete || status.RemainingLimitedRechecks > 0)
+                _error = "The history changed during calculation. Retry to include the latest activities.";
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         { if (generation == _generation && !_disposed) _cancelled = true; }

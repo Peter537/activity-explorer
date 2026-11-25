@@ -48,7 +48,7 @@ public sealed class DatabasePressureLoadTests
         {
             // Reject a live/uncheckpointed source rather than copy an incomplete database.
             CheckNoWal(source);
-            if (config.PrimeClone) await PrimeFixture(source, config.FixtureDirectory, config.Scale, config.Dimension);
+            if (config.PrimeClone) await PrimeFixture(source, config.Scale, config.Dimension);
             if (config.UpgradeReadIndexes) await UpgradeReadIndexesOnClone(source, config.PrimeClone);
             (DerivedTableEvidence? records, ActivityProjectionEvidence? periodRows) = config.PrepareRecordEffortSummaries
                 ? await PrepareRecordEffortSummariesOnClone(source, config.PrimeClone) : (null, null);
@@ -590,13 +590,11 @@ public sealed class DatabasePressureLoadTests
         throw new InvalidOperationException("Priming requires an isolated clone under artifacts/database-pressure-runtime.");
     }
 
-    private static async Task PrimeFixture(string source, string directory, int scale, string dimension)
+    private static async Task PrimeFixture(string source, int scale, string dimension)
     {
         EnsureRuntimePath(source);
         // A marker is created before mutation so interrupted priming cannot be applied twice.
-        var manifest = Path.Combine(directory, $"load-{dimension}-{scale}.db.manifest");
-        if (!File.Exists(manifest) || await File.ReadAllTextAsync(manifest) != $"activity-explorer-load-v1:{dimension}:{scale}")
-            throw new InvalidOperationException("Runtime fixture manifest is missing or incompatible.");
+        var legacy = await DatabaseLoadFixture.IsLegacyFixtureAsync(source, scale, dimension);
         using (new FileStream(source + ".prime-marker", FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
         Dictionary<string, HashSet<string>> columns = new(StringComparer.Ordinal);
         var modelOptions = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite($"Data Source={source};Pooling=False").Options;
@@ -629,14 +627,24 @@ public sealed class DatabasePressureLoadTests
                 command.Transaction = (SqliteTransaction)transaction;
                 command.CommandText = "PRAGMA defer_foreign_keys = ON";
                 await command.ExecuteNonQueryAsync();
+                var present = new HashSet<string>(StringComparer.Ordinal);
+                command.CommandText = "SELECT name FROM sqlite_schema WHERE type = 'table'";
+                await using (var reader = await command.ExecuteReaderAsync())
+                    while (await reader.ReadAsync()) present.Add(reader.GetString(0));
                 static string Quote(string value) => "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
                 foreach (var (table, names) in columns)
                 {
+                    if (legacy && DatabaseLoadFixture.IsLifecycleTable(table) && !present.Contains(table)) continue;
                     command.CommandText = $"UPDATE {Quote(table)} SET {string.Join(", ", names.Select(name => $"{Quote(name)} = prime_guid({Quote(name)})"))}";
                     await command.ExecuteNonQueryAsync();
                 }
                 command.CommandText = "UPDATE \"Owners\" SET \"DisplayName\" = 'Runtime prime ' || \"DisplayName\"; UPDATE \"Activities\" SET \"Title\" = 'Runtime prime ' || \"Title\"";
                 await command.ExecuteNonQueryAsync();
+                if (present.Contains("OwnerProjectionVersions") && present.Contains("SegmentProjectionVersions"))
+                {
+                    command.CommandText = DatabaseLoadFixture.PublishSeededProjectionsSql;
+                    await command.ExecuteNonQueryAsync();
+                }
                 await transaction.CommitAsync();
             }
             await using var checkpoint = connection.CreateCommand();
@@ -665,7 +673,11 @@ public sealed class DatabasePressureLoadTests
         var cs = new SqliteConnectionStringBuilder { DataSource = source, Pooling = false, ForeignKeys = true }.ToString();
         var options = new DbContextOptionsBuilder<ExplorerDbContext>().UseSqlite(cs).Options;
         await using (var db = new ExplorerDbContext(options))
+        {
             await DatabaseInitializer.EnsureReadIndexesAsync(db);
+            if (db.Model.GetEntityTypes().Any(entity => entity.GetTableName() == "OwnerProjectionVersions"))
+                await PrepareProjectionVersionsOnCloneAsync(db);
+        }
         await using (var connection = new SqliteConnection(cs))
         {
             await connection.OpenAsync();
@@ -675,6 +687,13 @@ public sealed class DatabasePressureLoadTests
         }
         SqliteConnection.ClearAllPools();
         CheckNoWal(source);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task PrepareProjectionVersionsOnCloneAsync(ExplorerDbContext db)
+    {
+        await ProjectionVersions.EnsureAsync(db, CancellationToken.None);
+        await db.Database.ExecuteSqlRawAsync(DatabaseLoadFixture.PublishSeededProjectionsSql);
     }
 
     // Isolate the new helper so ordinary runs against the frozen older assembly never resolve it.

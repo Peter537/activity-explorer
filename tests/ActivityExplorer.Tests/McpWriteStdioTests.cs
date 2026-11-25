@@ -30,6 +30,7 @@ public sealed class McpWriteStdioTests
         await using var client = await McpClient.CreateAsync(Transport(runtime.Fixture), new()
         {
             ProtocolVersion = version,
+            DiscoverProbeTimeout = TimeSpan.FromSeconds(20),
             Handlers = new McpClientHandlers
             {
                 ElicitationHandler = (request, _) =>
@@ -74,7 +75,13 @@ public sealed class McpWriteStdioTests
             _ = McpReadOnlyTests.Data(await client.CallToolAsync("apply_prepared_change", new Dictionary<string, object?> { ["planId"] = planId }, cancellationToken: deadline.Token));
             Assert.Equal(1, prompts);
         }
-        else Assert.Equal("declined", applied.GetProperty("status").GetString());
+        else
+        {
+            Assert.Equal("declined", applied.GetProperty("status").GetString());
+            var repeated = McpReadOnlyTests.Data(await client.CallToolAsync("apply_prepared_change", new Dictionary<string, object?> { ["planId"] = planId }, cancellationToken: deadline.Token));
+            Assert.Equal("declined", repeated.GetProperty("status").GetString());
+            Assert.Equal(1, prompts);
+        }
         await using var db = await runtime.Fixture.Factory.CreateDbContextAsync();
         Assert.Equal(accept ? 1 : 0, await db.Tags.CountAsync(tag => tag.Name == "Protocol reviewed tag"));
         Assert.Equal("ReadWrite", McpReadOnlyTests.Data(await client.CallToolAsync("get_server_status", cancellationToken: deadline.Token)).GetProperty("accessMode").GetString());
@@ -105,6 +112,57 @@ public sealed class McpWriteStdioTests
     }
 
     [Fact]
+    public async Task Concurrent_native_continuations_return_the_same_durable_decision()
+    {
+        await using var runtime = await McpWriteRuntime.StartAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(75));
+        var prompts = 0;
+        var bothPrompted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var client = await McpClient.CreateAsync(Transport(runtime.Fixture), new()
+        {
+            ProtocolVersion = "2026-07-28",
+            DiscoverProbeTimeout = TimeSpan.FromSeconds(20),
+            Handlers = new McpClientHandlers
+            {
+                ElicitationHandler = async (_, token) =>
+                {
+                    if (Interlocked.Increment(ref prompts) == 2) bothPrompted.TrySetResult();
+                    await bothPrompted.Task.WaitAsync(token);
+                    return new ElicitResult
+                    {
+                        Action = "accept",
+                        Content = new Dictionary<string, JsonElement> { ["confirm"] = JsonSerializer.SerializeToElement(true) }
+                    };
+                }
+            }
+        }, cancellationToken: deadline.Token);
+
+        const string name = "One overlapping native decision";
+        var preview = McpReadOnlyTests.Data(await client.CallToolAsync("prepare_create_tag", new Dictionary<string, object?>
+        { ["profileId"] = runtime.Fixture.Owner, ["name"] = name }, cancellationToken: deadline.Token));
+        var planId = preview.GetProperty("planId").GetGuid();
+        var arguments = new Dictionary<string, object?> { ["planId"] = planId };
+        async Task<CallToolResult> ApplyAsync() => await client.CallToolAsync("apply_prepared_change", arguments, cancellationToken: deadline.Token);
+        foreach (var answer in await Task.WhenAll(ApplyAsync(), ApplyAsync()))
+        {
+            Assert.False(answer.IsError, JsonSerializer.Serialize(answer));
+            var decision = McpReadOnlyTests.Data(answer).GetProperty("operation");
+            Assert.Equal(planId, decision.GetProperty("operationId").GetGuid());
+        }
+
+        JsonElement receipt;
+        do
+        {
+            await Task.Delay(20, deadline.Token);
+            receipt = McpReadOnlyTests.Data(await client.CallToolAsync("get_operation_status",
+                new Dictionary<string, object?> { ["operationId"] = planId }, cancellationToken: deadline.Token));
+        } while (receipt.GetProperty("status").GetString() is "queued" or "running");
+        Assert.Equal("completed", receipt.GetProperty("status").GetString());
+        await using var db = await runtime.Fixture.Factory.CreateDbContextAsync();
+        Assert.Equal(1, await db.Tags.CountAsync(tag => tag.Name == name, deadline.Token));
+    }
+
+    [Fact]
     public async Task Native_confirmation_releases_capacity_until_the_continuation_is_approved()
     {
         await using var runtime = await McpWriteRuntime.StartAsync();
@@ -114,6 +172,8 @@ public sealed class McpWriteStdioTests
         await using var client = await McpClient.CreateAsync(Transport(runtime.Fixture,
             "--Mcp:MaxConcurrentCalls", "1", "--Mcp:CapacityWaitSeconds", "1"), new()
             {
+                ProtocolVersion = "2026-07-28",
+                DiscoverProbeTimeout = TimeSpan.FromSeconds(20),
                 Handlers = new McpClientHandlers
                 {
                     ElicitationHandler = async (_, token) =>

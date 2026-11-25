@@ -9,33 +9,30 @@ public sealed class BadgeService(IDbContextFactory<ExplorerDbContext> contextFac
 {
     public async Task<BadgeSnapshot> GetCatalogueAsync(Guid ownerId, DateOnly? month = null, CancellationToken cancellationToken = default)
     {
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var owner = await db.Owners.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ownerId, cancellationToken)
-            ?? throw new InvalidOperationException("This profile is unavailable. Choose another profile.");
-        var activities = await db.Activities.AsNoTracking().Where(x => x.OwnerId == ownerId)
-            .OrderBy(x => x.StartTimeUtc).ThenBy(x => x.Id)
-            .Select(x => new BadgeActivity(x.Id, x.Sport, x.StartTimeUtc, x.Title, x.DistanceMeters,
-                x.MovingTimeSeconds, x.MovingTimeSource, x.ElevationGainMeters)).ToArrayAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-        return BadgeEvaluator.Evaluate(owner.Id, owner.DisplayName, owner.TimeZoneId, activities, month, timeProvider.GetUtcNow(), cancellationToken);
+        var (name, timeZone, activities) = await CaptureAsync(ownerId, cancellationToken);
+        return BadgeEvaluator.Evaluate(ownerId, name, timeZone, activities, month, timeProvider.GetUtcNow(), cancellationToken);
     }
 
     public async Task<IReadOnlyList<BadgeProfileOverview>> GetOverviewAsync(DateOnly? month = null, CancellationToken cancellationToken = default)
     {
-        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var owners = await db.Owners.AsNoTracking().OrderBy(x => x.DisplayName).Select(x => new { x.Id, x.DisplayName }).ToArrayAsync(cancellationToken);
+        (Guid Id, string Name)[] owners;
+        await using (var db = await contextFactory.CreateDbContextAsync(cancellationToken))
+        {
+            var rows = await db.Owners.AsNoTracking().OrderBy(x => x.DisplayName).Select(x => new { x.Id, x.DisplayName }).ToArrayAsync(cancellationToken);
+            owners = rows.Select(x => (x.Id, x.DisplayName)).ToArray();
+        }
+        var now = timeProvider.GetUtcNow();
         var result = new List<BadgeProfileOverview>();
         foreach (var owner in owners)
         {
             try
             {
-                var snapshot = await GetCatalogueAsync(owner.Id, month, cancellationToken);
-                result.Add(new(owner.Id, owner.DisplayName, snapshot.Level, snapshot.EarnedCount, snapshot.AsOf, null));
+                var (name, timeZone, activities) = await CaptureAsync(owner.Id, cancellationToken);
+                result.Add(BadgeEvaluator.EvaluateOverview(owner.Id, name, timeZone, activities, month, now, cancellationToken));
             }
             catch (InvalidOperationException exception)
             {
-                result.Add(new(owner.Id, owner.DisplayName, null, 0, null, exception.Message));
+                result.Add(new(owner.Id, owner.Name, null, 0, null, exception.Message));
             }
         }
         return result;
@@ -44,8 +41,21 @@ public sealed class BadgeService(IDbContextFactory<ExplorerDbContext> contextFac
     public async Task<BadgeDetail?> GetDetailAsync(Guid ownerId, string badgeId, string? edition, DateOnly? month = null, CancellationToken cancellationToken = default)
     {
         var snapshot = await GetCatalogueAsync(ownerId, month, cancellationToken);
-        var selected = edition is null ? snapshot.ForMonth.FirstOrDefault(x => x.Definition.Id == badgeId) :
-            snapshot.Editions.FirstOrDefault(x => x.Definition.Id == badgeId && x.Edition == edition);
-        return selected is null ? null : new(snapshot, selected, snapshot.Editions.Where(x => x.Definition.FamilyId == selected.Definition.FamilyId).ToArray());
+        var selected = snapshot.FindEdition(badgeId, edition);
+        return selected is null ? null : new(snapshot, selected);
+    }
+
+    private async Task<(string Name, string? TimeZone, BadgeActivity[] Activities)> CaptureAsync(Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken);
+        var owner = await db.Owners.AsNoTracking().Where(x => x.Id == ownerId).Select(x => new { x.DisplayName, x.TimeZoneId })
+            .SingleOrDefaultAsync(cancellationToken) ?? throw new InvalidOperationException("This profile is unavailable. Choose another profile.");
+        var activities = await db.Activities.AsNoTracking().Where(x => x.OwnerId == ownerId)
+            .OrderBy(x => x.StartTimeUtc).ThenBy(x => x.Id)
+            .Select(x => new BadgeActivity(x.Id, x.Sport, x.StartTimeUtc, x.Title, x.DistanceMeters,
+                x.MovingTimeSeconds, x.MovingTimeSource, x.ElevationGainMeters)).ToArrayAsync(cancellationToken);
+        await snapshot.CommitAsync(cancellationToken);
+        return (owner.DisplayName, owner.TimeZoneId, activities);
     }
 }

@@ -92,6 +92,13 @@ public sealed partial class BrowserRegressionTests
             await Assertions.Expect(page.Locator("[data-map-line-layer='activities']")).ToContainTextAsync("Narrow the activity dates or zoom in");
             await Assertions.Expect(page.Locator("[data-map-line-layer='routes']")).ToContainTextAsync($"{1000:N0} of {1001:N0}");
             await Assertions.Expect(page.Locator("[data-map-line-layer='segments']")).ToContainTextAsync($"{1000:N0} of {1001:N0}");
+            var results = page.GetByRole(AriaRole.Region, new() { Name = "Viewport results" });
+            await Assertions.Expect(results.GetByRole(AriaRole.Link)).ToHaveCountAsync(20);
+            var next = results.GetByRole(AriaRole.Button, new() { Name = "Next results" });
+            await next.FocusAsync();
+            await next.PressAsync("Enter");
+            await Assertions.Expect(results.GetByRole(AriaRole.Link).First).ToContainTextAsync("Synthetic activity line 20");
+            await Assertions.Expect(next).ToBeFocusedAsync();
             var routeRequests = requests.Count(url => url.Contains("/internal/map/routes?", StringComparison.Ordinal));
             await routes.UncheckAsync();
             await Assertions.Expect(canvas).ToHaveAttributeAsync("data-routes-features", "0");

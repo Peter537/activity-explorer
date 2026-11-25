@@ -55,15 +55,10 @@ public interface IActivityImporter
     bool CanImport(string path);
     Task<IReadOnlyList<ImportCandidate>> ReadAsync(string path, SourceKind sourceKind, CancellationToken cancellationToken = default);
 }
-public interface IImporterDiagnosticsSource
-{
-    ImporterDiagnostics ConsumeDiagnostics();
-}
-
-
 public interface IImportQueue
 {
     ValueTask<Guid> EnqueueAsync(ImportRequest request, CancellationToken cancellationToken = default);
+    ValueTask<bool> EnqueueWatchedAsync(Guid ownerId, string stagedPath, string displayName, CancellationToken cancellationToken = default);
     IAsyncEnumerable<ImportProgress> WatchAsync(Guid importId, CancellationToken cancellationToken = default);
 }
 
@@ -81,8 +76,11 @@ public interface IActivityQueryService
     Task<DashboardSummary> GetDashboardAsync(DashboardQuery query, CancellationToken cancellationToken = default);
     Task<TrainingCalendarSummary> GetTrainingCalendarAsync(TrainingCalendarQuery query, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Guid>> GetMatchingActivityIdsAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
+    Task<ActivityDeletionReview> PrepareDeletionAsync(ActivityFilter filter, CancellationToken cancellationToken = default);
+    Task<ActivityDeletionResult> DeleteReviewedAsync(ActivityDeletionReview review, CancellationToken cancellationToken = default);
     Task<ActivityDeletionResult> DeleteAsync(
         IReadOnlyCollection<Guid> activityIds, CancellationToken cancellationToken = default);
+    Task<ActivityUpdateResult> UpdateReviewedAsync(ActivityMutationTarget target, UpdateActivityRequest request, CancellationToken cancellationToken = default);
     Task<ActivityUpdateResult> UpdateAsync(Guid id, UpdateActivityRequest request, CancellationToken cancellationToken = default);
     Task<Guid> AddMetricAsync(Guid activityId, ActivityMetricRequest request, CancellationToken cancellationToken = default);
     Task UpdateMetricAsync(Guid activityId, Guid metricId, ActivityMetricRequest request, CancellationToken cancellationToken = default);

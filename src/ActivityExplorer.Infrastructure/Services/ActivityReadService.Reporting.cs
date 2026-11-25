@@ -92,16 +92,9 @@ public sealed partial class ActivityReadService
             : null;
         var hasAny = await db.Activities.AsNoTracking().AnyAsync(
             activity => !query.OwnerId.HasValue || activity.OwnerId == query.OwnerId, cancellationToken);
-        var records = await db.StatisticSnapshots.AsNoTracking()
-            .Where(snapshot => snapshot.Scope == RecordScope.All &&
-                (!query.OwnerId.HasValue || snapshot.OwnerId == query.OwnerId) &&
-                (!query.Sport.HasValue || snapshot.Sport == query.Sport))
-            .Join(db.Owners.AsNoTracking(), snapshot => snapshot.OwnerId, owner => owner.Id, (snapshot, owner) => new { snapshot, owner })
-            .Join(db.Activities.AsNoTracking(), item => item.snapshot.ActivityId, activity => activity.Id, (item, activity) =>
-                new PersonalRecord(item.snapshot.Id, item.snapshot.OwnerId, item.owner.DisplayName,
-                    item.snapshot.Sport, item.snapshot.Kind, item.snapshot.Key, item.snapshot.Value,
-                    activity.Id, activity.Title, item.snapshot.CoveragePercent, activity.StartTimeUtc))
-            .ToArrayAsync(cancellationToken);
+        var records = await StatisticsReadService.ReadRecordsAsync(db, query.OwnerId, RecordScope.All, cancellationToken, query.Sport);
+        var highlightsPending = await ProjectionVersions.PendingRecords(db)
+            .AnyAsync(state => !query.OwnerId.HasValue || state.OwnerId == query.OwnerId, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var names = periods.ToDictionary(period => period.OwnerId, period => period.OwnerName);
         var recent = selected.OrderByDescending(item => item.Activity.StartTime).ThenBy(item => item.Activity.Id).Take(8)
@@ -114,7 +107,8 @@ public sealed partial class ActivityReadService
             records.OrderBy(record => record.Sport).ThenBy(record => RecordCatalog.CategoryOrder(record.Kind))
                 .ThenBy(record => RecordCatalog.TargetOrder(record.Sport, record.Kind, record.Key))
                 .ThenBy(record => record.Key, StringComparer.Ordinal).ThenBy(record => record.OwnerId).Take(5).ToArray(),
-            Names(selected.Select(item => item.Activity.Device)), Names(selected.Select(item => item.Activity.Gear), includeUnassigned: true), hasAny);
+            Names(selected.Select(item => item.Activity.Device)), Names(selected.Select(item => item.Activity.Gear), includeUnassigned: true), hasAny)
+        { HighlightsPending = highlightsPending };
     }
 
     public async Task<TrainingCalendarSummary> GetTrainingCalendarAsync(

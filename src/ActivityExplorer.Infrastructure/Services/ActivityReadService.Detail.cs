@@ -10,6 +10,8 @@ public sealed partial class ActivityReadService
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var snapshot = await ReadSnapshot.BeginAsync(db, cancellationToken);
+        var efforts = ProjectionVersions.CurrentEfforts(db);
+        var pending = ProjectionVersions.PendingSegments(db);
         var detail = await db.Activities.AsNoTracking().Where(row => row.Id == activityId && row.OwnerId == ownerId)
             .Select(activity => new ActivityReadDetail(new ActivitySummary(activity.Id, activity.OwnerId, activity.Owner!.DisplayName,
                 activity.Title, activity.Sport, activity.StartTimeUtc, activity.DistanceMeters, activity.MovingTimeSeconds,
@@ -19,8 +21,9 @@ public sealed partial class ActivityReadService
                 activity.AverageSpeedMetersPerSecond, activity.MaxSpeedMetersPerSecond, activity.AverageHeartRate,
                 activity.MaxHeartRate, activity.AverageCadence, activity.MaxPowerWatts, activity.NormalizedPowerWatts,
                 db.ActivityLaps.Count(row => row.ActivityId == activityId), db.SourceFiles.Count(row => row.ActivityId == activityId),
-                db.SegmentEfforts.Count(row => row.ActivityId == activityId && row.OwnerId == ownerId),
-                db.ActivityMetrics.Count(row => row.ActivityId == activityId)))
+                efforts.Count(row => row.ActivityId == activityId && row.OwnerId == ownerId),
+                db.ActivityMetrics.Count(row => row.ActivityId == activityId))
+            { SegmentEffortsPending = pending.Any(segment => segment.OwnerId == ownerId && segment.Sport == activity.Sport) })
             .SingleOrDefaultAsync(cancellationToken);
         if (detail is null) return null;
         var summary = detail.Summary with
